@@ -55,7 +55,9 @@ internal suspend fun loadPublicImage(
                 }.execute { response ->
                     if (response.status.value in setOf(301, 302, 303, 307, 308)) {
                         val location = response.headers[HttpHeaders.Location] ?: error("Missing image redirect")
-                        redirected = current.toHttpUrl().resolve(location)?.toString() ?: error("Invalid image redirect")
+                        val next = current.toHttpUrl().resolve(location) ?: error("Invalid image redirect")
+                        require(next.isHttps) { "Image redirect requires HTTPS" }
+                        redirected = next.toString()
                     } else {
                         val unchanged = response.status == HttpStatusCode.NotModified
                         val image = if (unchanged && validator != null &&

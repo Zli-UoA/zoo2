@@ -72,6 +72,21 @@ class PublicImagesTest {
             assertEquals(6, requests)
         } finally { http.close() }
     }
+    @Test fun rejectsDedicatedHostDowngradeBeforeProxyRouting() = runBlocking {
+        val start = "https://emoji.zliusercontent.com/image.png"
+        val requested = mutableListOf<String>()
+        val http = HttpClient(MockEngine { request ->
+            requested += request.url.toString()
+            respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, "http://cdn.example/image.png"))
+        }) { followRedirects = false }
+        try {
+            assertFailsWith<IllegalArgumentException> {
+                loadPublicImage(http, start, redirectRoute = { error("HTTP redirect reached the proxy router") })
+            }
+            assertEquals(listOf(start), requested)
+        } finally { http.close() }
+    }
+
     @Test fun routesEachDedicatedImageRedirectBeforeConnecting() = runBlocking {
         val workspace = "https://zoo.example/image"
         val start = "https://emoji.zli.works/image"
