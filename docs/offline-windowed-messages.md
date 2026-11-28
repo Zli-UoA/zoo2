@@ -86,7 +86,7 @@ Android も、メッセージを on-demand の subset snapshot で取る。以�
 
 `public/sw.js` を v2 に更新した。
 
-- install で `/`、`/index.html`、`/offline.html`、manifest、アイコンを precache する。
+- install で `/`、`/index.html`、`/offline.html`、アイコンを precache する。manifest はキャッシュせず、`/offline.html` はオンラインで取得できたときだけ更新して失敗時は保存済みの案内を返す（`docs/pwa-and-push.md` の「起動時の配色」を参照）。
 - 通常のSPAルートへのナビゲーションでは、保存済みの app shell を即座に返し、ネットワークでの更新は裏で行う。
   明示的な再読み込み（`no-cache` / `reload`）はネットワークを優先し、デプロイ後のチャンク取得エラーから復旧できるようにする。
   ライセンスなどの静的ファイルへの直接遷移もネットワークを優先する。

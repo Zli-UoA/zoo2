@@ -20,7 +20,6 @@ const SHELL = [
   "/",
   "/index.html",
   "/offline.html",
-  "/manifest.webmanifest",
   "/favicon.ico",
   "/icons/zoo.svg",
   "/icons/favicon-32.png",
@@ -48,10 +47,19 @@ function isPrivatePath(pathname) {
   );
 }
 
+async function isOfflinePage(response) {
+  try {
+    return (await response.clone().text()).includes('name="zoo-offline"');
+  } catch {
+    return false;
+  }
+}
+
+// manifest はここから外して素通しにする。旧 SW がキャッシュを返す経路も
+// SHELL からの削除と sw.js の更新（install）で解消される。
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
-    url.pathname === "/manifest.webmanifest" ||
     url.pathname === "/favicon.ico"
   );
 }
@@ -239,7 +247,8 @@ async function precacheShell() {
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
       try {
         const response = await fetch(path, { cache: "reload" });
-        if (response.ok) await cacheResponse(cache, path, response);
+        if (response.ok && (path !== "/offline.html" || (await isOfflinePage(response))))
+          await cacheResponse(cache, path, response);
       } catch {
         /* Offline installs fall back to the runtime cache. */
       }
@@ -514,6 +523,28 @@ self.addEventListener("message", (event) => {
   );
 });
 
+// 案内ページは取得できたときだけ更新し、オフラインでは保存済みの版を返す。
+async function handleOfflinePage(request) {
+  const cache = await caches.open(await findActiveShellCache());
+  let response;
+  try {
+    response = await fetch(request, { cache: "reload" });
+  } catch {
+    return (await cache.match("/offline.html")) || Response.error();
+  }
+  // try_files で index.html が返るなど、案内として読めない応答は保存済みの版を優先する。
+  if (!response.ok || !(await isOfflinePage(response))) {
+    const saved = await cache.match("/offline.html");
+    return saved || response;
+  }
+  try {
+    await cacheResponse(cache, "/offline.html", response.clone());
+  } catch {
+    /* 保存できなくても、取得した応答は返す。 */
+  }
+  return response;
+}
+
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
@@ -529,6 +560,10 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
+  if (url.pathname === "/offline.html") {
+    event.respondWith(handleOfflinePage(event.request));
+    return;
+  }
   if (event.request.mode === "navigate") {
     event.respondWith(handleNavigation(event.request, event));
   } else if (isCacheableAsset(url)) {

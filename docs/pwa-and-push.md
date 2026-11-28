@@ -7,6 +7,16 @@ Zoo はホーム画面へのインストールと Web Push に対応する。左
 - iOS / iPadOS 16.4 以降では Safari の共有メニューから「ホーム画面に追加」し、追加した Zoo を開いて通知を許可する。
 - オフラインでも app shell を起動し、保存済みのチャンネルとメッセージを表示する。送信と最新への同期には接続が必要（`docs/offline-windowed-messages.md`）。
 
+## 起動時の配色
+
+Android の Chrome でインストール済みの PWA を開いた直後に出る OS のスプラッシュ画面は、`public/manifest.webmanifest` の `background_color` で決まる。Zoo は `#000000` に固定している。Android の Chrome はスプラッシュに `prefers-color-scheme` を反映せず、Web 側から起動ごとに色を変える方法もないため、ライトモードの端末でも一瞬だけ黒くなる。白いスプラッシュは夜に眩しいため、暗い色を選ぶ。iOS / iPadOS のホーム画面アプリでは `background_color` だけでは起動画面の色を保証できないため、ここで説明する黒いスプラッシュは Android の Chrome の話である。
+
+スプラッシュの背景は OS の配色設定に従わず、常に manifest の `background_color`（黒）になる。一方、起動後のステータスバーは `<meta name="theme-color">` が OS の明深色に合わせて黄色／黒を切り替える。OS ダークでは変更前の黄色から黒に変わる。どちらもアプリ内のテーマ設定（`zoo-theme`）には従わないため、OS がダークでアプリ内がライトの場合はステータスバーが黒、画面がライトになる。
+
+`public/sw.js` は `/manifest.webmanifest` をキャッシュ対象から外し、Service Worker を通さずサーバーから取得する。旧 Service Worker がキャッシュした manifest を返す経路も、sw.js の更新時に install が走ることで解消される。`/offline.html` は取得できたときだけ保存し、失敗したときは保存済みの案内を返す。OS がスプラッシュの配色自体をキャッシュしている場合は、端末側の更新または再インストールが必要になることがある。
+
+オフライン用の `public/offline.html` も OS のダーク設定に合わせて背景を黒にする。アプリ本体のスケルトンは既存の dark テーマの `--background` に従う。
+
 ## Web の通知一覧
 
 同じメッセージへのリアクションは1件にまとめ、反応した人のアバターと絵文字別の件数を表示する。メンション・返信は個別に表示する。元のメッセージは最大3行・280文字の引用として表示し、引用をクリックすると該当メッセージを開く。

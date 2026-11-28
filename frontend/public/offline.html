@@ -1,7 +1,9 @@
 <!doctype html>
 <html lang="ja">
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#FFD600" />
+  <meta name="zoo-offline" content="true" />
+  <meta name="theme-color" content="#FFD600" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
   <link rel="icon" type="image/svg+xml" href="/icons/zoo.svg" />
   <title>Zoo — Offline</title
   ><style>
@@ -15,6 +17,12 @@
     }
     a {
       color: inherit;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        color: #ffffff;
+        background: #000000;
+      }
     }
   </style>
   <img src="/icons/zoo.svg" alt="" width="64" height="64" style="border-radius: 1rem" />

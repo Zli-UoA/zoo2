@@ -41,3 +41,20 @@ test("本番 CSP 下でインライン script が実行され、違反が出な�
   expect(["light", "dark"]).toContain(state.colorScheme);
   expect(state.violations).toEqual([]);
 });
+
+test("theme-color が OS の明深色ごとに出る", async ({ page }) => {
+  await page.goto("/");
+  const metas = page.locator('meta[name="theme-color"]');
+  await expect(metas).toHaveCount(2);
+  expect(
+    await metas.evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        content: node.getAttribute("content"),
+        media: node.getAttribute("media"),
+      })),
+    ),
+  ).toEqual([
+    { content: "#FFD600", media: "(prefers-color-scheme: light)" },
+    { content: "#000000", media: "(prefers-color-scheme: dark)" },
+  ]);
+});
