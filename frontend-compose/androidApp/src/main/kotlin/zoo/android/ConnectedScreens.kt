@@ -870,6 +870,7 @@ internal fun ConnectedScreens(
             recentCategory = session.t("reactions.recent"),
             customLoading = session.workspaceEmojiLoading,
             customError = session.workspaceEmojiError,
+            retryCustom = { session.scope.launch { session.loadWorkspaceEmojis(force = true) } },
             loadKitchen = emojiCatalog::kitchen,
             loadImage = { url ->
                 try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }

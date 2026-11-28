@@ -79,6 +79,7 @@ internal fun EmojiPicker(
     recentCategory: String = "最近使った絵文字",
     customLoading: Boolean = false,
     customError: Boolean = false,
+    retryCustom: (() -> Unit)? = null,
     loadKitchen: suspend () -> KitchenChoices?,
     loadImage: suspend (String) -> ImageBitmap?,
     dismiss: () -> Unit,
@@ -88,8 +89,14 @@ internal fun EmojiPicker(
     var query by remember { mutableStateOf("") }
     var first by remember { mutableStateOf<EmojiChoice?>(null) }
     var kitchen by remember { mutableStateOf<KitchenChoices?>(null) }
-    LaunchedEffect(tab) {
-        if (tab == EmojiTab.Kitchen && kitchen == null) kitchen = loadKitchen()
+    var kitchenFailed by remember { mutableStateOf(false) }
+    var attempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(tab, attempt) {
+        if (tab == EmojiTab.Kitchen && kitchen == null) {
+            kitchenFailed = false
+            kitchen = try { loadKitchen() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+            kitchenFailed = kitchen == null
+        }
     }
     val recentUnicode = remember(recent, unicode) {
         val catalog = unicode.associateBy { it.value }
@@ -133,7 +140,7 @@ internal fun EmojiPicker(
             ) {
                 EmojiTab.entries.forEach { choice ->
                     Tab(selected = choice == tab, onClick = { tab = choice; query = "" },
-                        text = { Text(choice.title, fontSize = 12.sp, maxLines = 1) }, selectedContentColor = colors.foreground, unselectedContentColor = colors.secondary)
+                        text = { Text(choice.title, fontSize = 14.sp, maxLines = 1) }, selectedContentColor = colors.foreground, unselectedContentColor = colors.secondary)
                 }
             }
             BasicTextField(
@@ -142,7 +149,7 @@ internal fun EmojiPicker(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("emoji-search")
                     .semantics { contentDescription = "絵文字を検索" },
                 singleLine = true,
-                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 15.sp),
+                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
                 cursorBrush = SolidColor(colors.inputText),
                 decorationBox = { field ->
                     Row(
@@ -153,7 +160,7 @@ internal fun EmojiPicker(
                     ) {
                         UiGlyph(UiIcon.Search, colors.inputHint, AndroidControlSize.inlineIcon)
                         Box(Modifier.weight(1f)) {
-                            if (query.isEmpty()) Text("絵文字を検索", color = colors.inputHint, fontSize = 15.sp)
+                            if (query.isEmpty()) Text("絵文字を検索", color = colors.inputHint, fontSize = 16.sp)
                             field()
                         }
                     }
@@ -167,12 +174,15 @@ internal fun EmojiPicker(
             }
             if (filtered.isEmpty()) {
                 val message = when {
+                    tab == EmojiTab.Kitchen && kitchenFailed -> "組み合わせを取得できませんでした"
                     tab == EmojiTab.Custom && customLoading || tab == EmojiTab.Kitchen && kitchen == null -> "絵文字を読み込み中"
                     tab == EmojiTab.Custom && customError -> "カスタム絵文字の読み込みに失敗しました"
                     query.isNotBlank() -> "一致する絵文字がありません"
                     else -> "選べる絵文字がありません"
                 }
                 Text(message, Modifier.padding(vertical = 20.dp), color = colors.secondary)
+                if (tab == EmojiTab.Kitchen && kitchenFailed) TextAction("再試行", colors, icon = UiIcon.Refresh) { attempt++ }
+                if (tab == EmojiTab.Custom && customError && retryCustom != null) TextAction("再試行", colors, icon = UiIcon.Refresh, click = retryCustom)
             } else key(tab, first, query) {
                 LazyVerticalGrid(GridCells.Adaptive(AndroidControlSize.target), Modifier.weight(1f, fill = false),
                     contentPadding = PaddingValues(bottom = 16.dp)) {
@@ -201,7 +211,7 @@ internal fun EmojiPicker(
                                     }
                                     val bitmap = image
                                     if (bitmap != null) Image(bitmap, null, Modifier.size(32.dp))
-                                    else if (choice.glyph.isNotBlank()) Text(choice.glyph, color = colors.foreground, fontSize = 22.sp)
+                                    else if (choice.glyph.isNotBlank()) Text(choice.glyph, color = colors.foreground, fontSize = 24.sp)
                                     else Text(choice.name, color = colors.foreground, fontSize = 10.sp, maxLines = 1)
                                 }
                             }
