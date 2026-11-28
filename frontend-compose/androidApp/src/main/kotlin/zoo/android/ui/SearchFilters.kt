@@ -105,6 +105,20 @@ internal fun SearchFilterRow(
             dispatch(AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.NoBots))
         }
     }
+    if (state.from.isNotEmpty() || state.inChannels.isNotEmpty()) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (field in listOf(SearchFilterField.From, SearchFilterField.In)) {
+                val ids = if (field == SearchFilterField.From) state.from else state.inChannels
+                val options = if (field == SearchFilterField.From) state.people else state.channels
+                ids.forEach { id ->
+                    val label = options.find { it.id == id }?.label ?: id
+                    TextAction(label, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) {
+                        dispatch(AndroidUiAction.SelectSearchFilter(field, ids - id))
+                    }
+                }
+            }
+        }
+    }
     when (open) {
         SearchFilterField.From -> SearchFilterSheet(
             fromLabel, androidLabel("globalSearch.filters.searchPeople", "名前で探す"), state.people, state.from, colors,
