@@ -36,6 +36,11 @@ struct GlobalSearchContent: View {
         }
         .searchable(text: $search.text, placement: .navigationBarDrawer(displayMode: .always), prompt: "メッセージとファイルを検索")
         .onSubmit(of: .search) { search.submit() }
+        .overlay {
+            if case .loading = search.phase {
+                ProgressView("検索中…")
+            }
+        }
         .accessibilityIdentifier("global-search")
     }
 
@@ -50,7 +55,7 @@ struct GlobalSearchContent: View {
                     .accessibilityIdentifier("global-search-prompt")
             }
         case .loading:
-            ProgressView("検索中…").frame(maxWidth: .infinity).listRowSeparator(.hidden)
+            EmptyView()
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Label(message, systemImage: "wifi.exclamationmark")

@@ -213,7 +213,7 @@ private struct CallInviteView: View {
                             Text(error).foregroundStyle(.red)
                             Button("再読み込み") { Task { await workspace.loadMembers(channelID: channel.id) } }
                         } else if workspace.channelMembers[channel.id] == nil {
-                            ProgressView("メンバーを読み込み中…")
+                            ProgressView("メンバーを読み込み中…").frame(maxWidth: .infinity)
                         } else if candidates.isEmpty {
                             Text("招待できるメンバーはいません。")
                         } else {

@@ -345,7 +345,7 @@ private struct ReverifySheet: View {
                     Text("本人が鍵を作り直した場合のほか、アカウントが乗っ取られた可能性もあります。チャンネルの外（対面や通話）で、本人に次の鍵の指紋を読み上げて確かめてください。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if let fingerprint { Text(fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
-                    else if error == nil { ProgressView() }
+                    else if error == nil { ProgressView().frame(maxWidth: .infinity) }
                     Toggle("本人に確かめ、同じ指紋でした", isOn: $confirmed)
                 }
                 if let error { Section { Text(error).foregroundStyle(.red).font(.subheadline) } }

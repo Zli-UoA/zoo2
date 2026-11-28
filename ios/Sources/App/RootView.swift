@@ -11,16 +11,21 @@ struct RootView: View {
             } else if session.isStarting || session.restoring {
                 LaunchScreenView()
             } else {
-                ScrollView {
-                    VStack(spacing: 24) {
-                        welcomeHeader
-                        loginActions
+                GeometryReader { geometry in
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            welcomeHeader
+                            loginActions
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(24)
+                        .frame(minHeight: geometry.size.height)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("login-content")
                     }
-                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("login-screen")
                 }
                 .multilineTextAlignment(.center)
-                .padding(24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         #if DEBUG
