@@ -57,6 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.hapticfeedback.HapticFeedback
@@ -119,7 +121,10 @@ internal data class TimelineItem(
     val mentionsCurrentUser: Boolean = false,
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
+    val operationStatus: Map<EntryOperation, EntryOperationStatus> = emptyMap(),
 )
+internal enum class EntryOperationStatus { Sending, Offline, Denied, Failed }
+
 internal data class ChannelItem(
     val id: String,
     val title: String,
@@ -1125,6 +1130,17 @@ private fun Timeline(
                                     TimelineReactions(entry, colors, showAdd = !posts, dispatch = dispatch)
                                 }
                                 if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
+                                entry.operationStatus.forEach { (operation, status) ->
+                                    val name = if (operation == EntryOperation.React) "リアクション" else "再投稿"
+                                    val label = when (status) {
+                                        EntryOperationStatus.Sending -> "${name}を反映中…"
+                                        EntryOperationStatus.Offline -> "${name}を変更するには接続してください"
+                                        EntryOperationStatus.Denied -> "${name}を変更する権限がありません"
+                                        EntryOperationStatus.Failed -> "${name}を変更できませんでした"
+                                    }
+                                    Text(label, color = colors.secondary, fontSize = 13.sp,
+                                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                                }
                             }
                         }
                     }
@@ -1189,11 +1205,11 @@ private fun PostActions(
         UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
             if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
-            enabled = entry.canRepost, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+            enabled = entry.canRepost && entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.AddReaction, "リアクションを追加",
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
-            enabled = entry.canReact, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+            enabled = entry.canReact && entry.operationStatus[EntryOperation.React] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
     }
 }

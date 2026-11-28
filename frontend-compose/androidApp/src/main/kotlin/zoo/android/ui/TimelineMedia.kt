@@ -449,13 +449,14 @@ internal fun TimelineAvatar(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun TimelineReactions(entry: TimelineItem, colors: AndroidColors, showAdd: Boolean, dispatch: (AndroidUiAction) -> Unit) {
+    val sending = entry.operationStatus[EntryOperation.React] == EntryOperationStatus.Sending
     FlowRow(
         Modifier.fillMaxWidth().padding(top = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         entry.reactions.forEach { reaction ->
-            TimelineReactionChip(reaction.copy(canToggle = entry.canReact && reaction.canToggle), colors) {
+            TimelineReactionChip(reaction.copy(canToggle = entry.canReact && !sending && reaction.canToggle), colors) {
                 dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
             }
         }
@@ -464,7 +465,7 @@ internal fun TimelineReactions(entry: TimelineItem, colors: AndroidColors, showA
             Box(
                 Modifier.size(width = 38.dp, height = 32.dp).clip(ReactionShape)
                     .border(1.dp, colors.inputBoundary, ReactionShape)
-                    .clickable(role = Role.Button) { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) }
+                    .clickable(enabled = !sending, role = Role.Button) { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) }
                     .semantics { contentDescription = label },
                 contentAlignment = Alignment.Center,
             ) {

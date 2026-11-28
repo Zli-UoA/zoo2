@@ -406,9 +406,39 @@ internal class ConnectedScreenState(
                 "remote" to post.flag("remote"), "avatar" to post["avatar"], "avatar_url" to post["avatar_url"])
         }
 
+    private val operationStates = mutableStateMapOf<Pair<String, EntryOperation>, EntryOperationStatus>()
+
     fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
-        val url = entry.link ?: return entry
-        return entry.copy(linkCard = summalyCard(service, url, entry.attachedImageUrls))
+        val status = buildMap {
+            for (operation in listOf(EntryOperation.React, EntryOperation.Repost)) {
+                operationStates[entry.id to operation]?.let { put(operation, it) }
+            }
+        }
+        return entry.copy(operationStatus = status, linkCard = entry.link?.let {
+            summalyCard(service, it, entry.attachedImageUrls)
+        })
+    }
+
+    private fun changeEntry(action: AndroidUiAction.ActOnEntry, change: suspend () -> Unit) {
+        val key = action.item.id to action.operation
+        if (operationStates[key] == EntryOperationStatus.Sending) return
+        if (!platform.env.online) {
+            operationStates[key] = EntryOperationStatus.Offline
+            return
+        }
+        operationStates[key] = EntryOperationStatus.Sending
+        app.scope.launch {
+            try {
+                change()
+                operationStates.remove(key)
+            } catch (cancelled: CancellationException) {
+                operationStates.remove(key)
+                throw cancelled
+            } catch (error: Exception) {
+                operationStates[key] = if (error is ApiException && error.status == 403)
+                    EntryOperationStatus.Denied else EntryOperationStatus.Failed
+            }
+        }
     }
 
     private fun summalyCard(service: String, url: String, attachedImages: Set<String> = emptySet()): EntryCard? {
@@ -442,7 +472,7 @@ internal class ConnectedScreenState(
             EntryOperation.React -> if (action.item.canReact) {
                 if (action.value.isBlank()) {
                     confirmingEntry = action
-                } else request {
+                } else changeEntry(action) {
                     val selectedReaction = action.item.reactions.firstOrNull {
                         it.selected && it.value == action.value &&
                             (action.reactionImageId == null || it.imageId == action.reactionImageId)
@@ -457,7 +487,7 @@ internal class ConnectedScreenState(
                     if (post) refreshPost()
                 }
             }
-            EntryOperation.Repost -> if (post && action.item.canRepost) request {
+            EntryOperation.Repost -> if (post && action.item.canRepost) changeEntry(action) {
                 app.api.request("/api/activitypub/reposts", if (action.item.reposted) "DELETE" else "POST",
                     obj("post_id" to action.item.id))
                 refreshPost()

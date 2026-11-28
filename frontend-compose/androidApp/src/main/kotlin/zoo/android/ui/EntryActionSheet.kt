@@ -37,15 +37,15 @@ internal fun EntryActionSheet(
                     if (posts) UiIcon.Document else UiIcon.Bubble,
                     if (posts) "投稿を開く" else "スレッドを開く",
                     colors,
-                    open,
+                    click = open,
                 )
             }
             if (entry.editable) {
                 SheetAction(UiIcon.Format, "編集", colors) { action(EntryOperation.Edit, "") }
                 SheetAction(UiIcon.Delete, "削除", colors) { action(EntryOperation.Delete, "") }
             }
-            if (entry.canReact) SheetAction(UiIcon.Emoji, "リアクション", colors) { action(EntryOperation.React, "") }
-            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿", colors) {
+            if (entry.canReact) SheetAction(UiIcon.Emoji, "リアクション", colors, entry.operationStatus[EntryOperation.React] != EntryOperationStatus.Sending) { action(EntryOperation.React, "") }
+            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿", colors, entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending) {
                 action(EntryOperation.Repost, "")
             }
             SheetAction(UiIcon.Copy, "本文をコピー", colors) {
@@ -59,10 +59,10 @@ internal fun EntryActionSheet(
 }
 
 @Composable
-private fun SheetAction(icon: UiIcon, title: String, colors: AndroidColors, click: () -> Unit) {
+private fun SheetAction(icon: UiIcon, title: String, colors: AndroidColors, enabled: Boolean = true, click: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-            .clickable(role = Role.Button, onClick = click),
+            .clickable(enabled = enabled, role = Role.Button, onClick = click),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
