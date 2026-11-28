@@ -226,13 +226,19 @@ struct MfmTests {
     func uppercaseLinks() throws {
         let block = try #require(MfmNativeState(content: "**資料** HTTPS://example.com/path").prepare(key: key(), images: [:]).first)
         #expect(block.imageLinks.contains { $0.url.host == "example.com" && $0.url.path == "/path" })
-        for raw in ["HTTPS://example.com/search?user=＠alice", "hTtP://example.com/search?user=@alice"] {
+        for raw in ["HTTPS://example.com/search?user=@alice", "hTtP://example.com/search?user=@alice"] {
             let content = "**資料** " + raw
             let link = try #require(MfmDocument(content).nodes.first { $0.kind == .link })
             #expect(link.argument == raw)
             let rendered = try #require(MfmNativeState(content: content).prepare(key: key(), images: [:]).first)
             let url = try #require(rendered.imageLinks.first { $0.url.host == "example.com" }?.url)
-            #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == (raw.contains("＠") ? "＠alice" : "@alice"))
+            #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "@alice")
+        }
+        for (raw, destination) in [("HTTPS://example.com/pathを見てください", "HTTPS://example.com/path"),
+                                   ("HTTPS://example.com/search?user=＠alice", "HTTPS://example.com/search?user=")] {
+            let nodes = MfmDocument("**資料** " + raw).nodes
+            #expect(nodes.first { $0.kind == .link }?.argument == destination)
+            #expect(nodes.last?.plainText == String(raw.dropFirst(destination.count)))
         }
     }
 
