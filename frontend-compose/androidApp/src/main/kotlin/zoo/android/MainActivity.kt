@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var shared by mutableStateOf<IncomingShare?>(null)
     private var notificationIntent by mutableStateOf<Intent?>(null)
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -161,10 +162,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        notificationIntent = intent
+        receiveLaunchIntent(intent)
         UpdatePreferences(this).confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
+    }
+
+    private fun receiveLaunchIntent(intent: Intent) {
+        if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            shared = incomingShare(intent)
+            if (shared == null) android.widget.Toast.makeText(this, "共有内容を開けません", android.widget.Toast.LENGTH_SHORT).show()
+        } else notificationIntent = intent
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -173,7 +181,7 @@ class MainActivity : ComponentActivity() {
         // 初回ログインと再認証で同じ App Link を使い、待機中の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
-        } else notificationIntent = intent
+        } else receiveLaunchIntent(intent)
     }
 
     @Composable
@@ -346,6 +354,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
             ConnectedScreens(current.session, platform, current.phone.controller,
+                incoming = shared,
+                finishShare = {
+                    shared = null
+                    if (intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) setIntent(Intent(Intent.ACTION_MAIN))
+                },
                 enableNotifications = ::enableNotifications,
                 background = { moveTaskToBack(true) },
                 callPresentation = callPresentation,

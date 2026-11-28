@@ -405,7 +405,7 @@ internal class AndroidPlatform(
         }
     }
 
-    private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
+    internal suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
         val rows =
             withContext(Dispatchers.IO) {
                 selected.map { uri ->

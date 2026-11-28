@@ -9,6 +9,9 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +53,8 @@ internal fun ConnectedScreens(
     phone: PhoneController,
     enableNotifications: () -> Unit,
     background: () -> Unit,
+    incoming: IncomingShare? = null,
+    finishShare: () -> Unit = {},
     callPresentation: Int = 0,
     openIncomingSettings: (() -> Unit)? = null,
     openPictureInPicture: ((String) -> Unit)? = null,
@@ -102,6 +107,42 @@ internal fun ConnectedScreens(
     }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
+    if (incoming != null) key(incoming, session) {
+        val scope = rememberCoroutineScope()
+        var busy by remember { mutableStateOf(false) }
+        var error by remember { mutableStateOf<String?>(null) }
+        val destinations = state.channelSections(channels, usersById, memberships)
+        val resolver = androidx.compose.ui.platform.LocalContext.current.contentResolver
+        ShareDestinationSheet(incoming.text, incoming.images.size, destinations, AndroidColors(env.dark), busy, error, finishShare, preview = {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(incoming.images, key = { it.toString() }) { uri ->
+                    val thumbnail by produceState<ImageBitmap?>(null, uri) {
+                        if (android.os.Build.VERSION.SDK_INT >= 29) {
+                            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                try { resolver.loadThumbnail(uri, android.util.Size(144, 144), null).asImageBitmap() }
+                                catch (e: CancellationException) { throw e }
+                                catch (_: Exception) { null }
+                            }
+                        }
+                    }
+                    thumbnail?.let { Image(it, "共有する画像", Modifier.size(64.dp), contentScale = ContentScale.Crop) }
+                }
+            }
+        }) { dest ->
+            if (!busy) {
+                busy = true
+                scope.launch {
+                    try {
+                        state.receiveShare(incoming, dest)
+                        finishShare()
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { error = "共有内容を開けませんでした" }
+                    finally { busy = false }
+                }
+            }
+        }
+    }
+
     val mentionProfiles = remember(session.accountProfiles) {
         session.accountProfiles.associateBy { it.text("username") }
     }

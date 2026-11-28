@@ -1083,6 +1083,28 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun shareDestinationPreviewUsesTheSameShellInBothThemes() {
+        var dark by mutableStateOf(false)
+        var destination: String? = null
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Home(listOf(TimelineItem("entry", "みずき", "週末の展示に向けて準備しています。", "12:05"))),
+                dark, true, {}) { _, _ -> }
+            ShareDestinationSheet("週末の展示会場はこちらです。", 1, listOf(
+                ChannelSection("参加中", listOf(ChannelItem("dev", "開発"), ChannelItem("gallery", "展示準備"))),
+                ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる", direct = true)))),
+                AndroidColors(dark), false, null, {}, preview = {
+                    androidx.compose.foundation.Image(remember { galleryMap() }, "会場案内", Modifier.size(96.dp, 66.dp))
+                }, select = { destination = it })
+        }
+        capture("share-destination-light", bottomDialog = true)
+        ui.runOnIdle { dark = true }
+        ui.waitForIdle()
+        capture("share-destination-dark", bottomDialog = true)
+        ui.onNodeWithText("開発").performClick()
+        ui.runOnIdle { assertEquals("dev", destination) }
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "ja-rJP-w320dp-h640dp-xhdpi")
     fun narrowScreenWithEnlargedTypeOffersRecovery() {
         var retries = 0

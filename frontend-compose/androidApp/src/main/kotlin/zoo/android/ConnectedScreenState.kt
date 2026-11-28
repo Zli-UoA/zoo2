@@ -63,6 +63,25 @@ internal class ConnectedScreenState(
     /** 暗号化した添付として上げる下書き（[channelFiles] のキー）。 */
     private val encryptedFileKeys = mutableSetOf<String>()
 
+    suspend fun receiveShare(share: IncomingShare, channelId: String?) {
+        val files = if (share.images.isEmpty()) null else platform.registerFiles(share.images)
+        fun append(original: String) = listOf(original, share.text).filter { it.isNotBlank() }.joinToString("\n")
+        if (channelId == null) {
+            postDraft = append(postDraft)
+            postSelection = TextRange(postDraft.length)
+            overlay = "new-post"
+            if (files != null) postFiles.add(files)
+        } else {
+            val old = drafts[channelId] ?: InputState()
+            val text = append(old.text)
+            drafts[channelId] = old.copy(text = text, selection = TextRange(text.length))
+            app.thread = null
+            overlay = null
+            platform.navigate("/channels/${channelId.encodeURLParameter()}")
+            if (files != null) attachmentDrafts(channelId, channelId).add(files)
+        }
+    }
+
     /**
      * チャンネルの添付の下書きを返す。チャンネルの暗号化の状態が、下書きを作ったときと違えば（既存のチャンネルを
      * 暗号化に切り替えた、など）、作り直す（古い上げ方を使い続けないため）。
@@ -741,7 +760,7 @@ internal class ConnectedScreenState(
             val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
             val userName = peers.singleOrNull()?.let { users[it.text("user_id")] }?.let(::author)
                 ?.takeIf { row.flag("is_dm") && it.isNotBlank() }
-            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null)
+            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null, direct = row.flag("is_dm"))
         }
         val activeById = active.associateBy { it.text("id") }
         val unpinned = active.filterNot { it.text("id") in pins }
