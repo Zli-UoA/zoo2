@@ -182,7 +182,7 @@ Robolectric / API 35で実際のCompose部品を描画したキャプチャ。
 | --- | --- | --- |
 | ![Bubble](images/android-design/bubble.png) | ![設定](images/android-design/settings.png) | ![スレッド](images/android-design/thread.png) |
 
-320dp幅のテスト用の会話と下書きを表示する。OSのIMEはRobolectricのキャプチャに含まれない。
+360dp幅のテスト用の会話と下書きを表示する。OSのIMEはRobolectricのキャプチャに含まれない。
 
 | 待機中 | 入力中 | 全画面入力・書式 |
 | --- | --- | --- |
