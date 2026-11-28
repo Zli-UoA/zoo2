@@ -1,5 +1,7 @@
 package zoo
 
+import androidx.compose.runtime.snapshots.Snapshot
+
 import electric4k.RuntimeVisibilityAdapter
 import electric4k.ShapeStreamOptions
 import io.ktor.client.*
@@ -185,6 +187,39 @@ class RepositoryTest {
         assertShapeReconnect("https://network-change.zoo.test") { app, foreground ->
             app.update(foreground, networkChanged = true)
         }
+
+    @Test
+    fun replacingTheDefaultNetworkReconnectsTheSharedHomeSocket() = runTest {
+        val http = HttpClient(MockEngine { error("No Shape or REST request expected") })
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repo, backgroundScope, foreground)
+        val events = mutableListOf<String>()
+        val home = HomeLive(app) { _, _, _, _ ->
+            val dispose = { events += "disconnect" }
+            events += "connect"
+            dispose
+        }
+        try {
+            home.subscribe {}
+            home.subscribe {}
+            runCurrent()
+            assertEquals(listOf("connect"), events)
+
+            app.update(foreground, networkChanged = true)
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertEquals(listOf("connect", "disconnect", "connect"), events)
+
+            app.update(foreground)
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertEquals(listOf("connect", "disconnect", "connect"), events)
+        } finally {
+            home.close()
+            app.close()
+        }
+    }
 
     private fun assertShapeReconnect(
         base: String,

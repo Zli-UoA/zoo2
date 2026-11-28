@@ -333,8 +333,14 @@ class MainActivity : ComponentActivity() {
                 }
                 connectivity.registerDefaultNetworkCallback(callback)
                 updateNetworkStatus()
+                val offlineNetworkCheck = scope.launch {
+                    recheckDefaultNetworkWhileOffline(snapshotFlow { platform.env.visible && !platform.env.online }) {
+                        updateNetworkStatus()
+                    }
+                }
                 onDispose {
                     disposed = true
+                    offlineNetworkCheck.cancel()
                     lifecycle.removeObserver(observer)
                     connectivity.unregisterNetworkCallback(callback)
                 }

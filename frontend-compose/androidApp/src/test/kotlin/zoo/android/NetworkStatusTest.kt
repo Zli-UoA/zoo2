@@ -5,6 +5,12 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import org.robolectric.RuntimeEnvironment
 import kotlin.test.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
@@ -13,6 +19,41 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 35], manifest = Config.NONE)
 class NetworkStatusTest {
+    @Test
+    @Config(sdk = [28, 35], manifest = Config.NONE)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun networkRecheckBacksOffAndStopsWhenNoLongerVisibleAndOffline() = runTest {
+        val visibleAndOffline = MutableStateFlow(false)
+        var checks = 0
+        backgroundScope.launch {
+            recheckDefaultNetworkWhileOffline(visibleAndOffline) {
+                checks++
+                if (checks == 2) visibleAndOffline.value = false
+            }
+        }
+        advanceTimeBy(10_000)
+        assertEquals(0, checks)
+
+        visibleAndOffline.value = true
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(1, checks)
+        advanceTimeBy(3_999)
+        runCurrent()
+        assertEquals(1, checks)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, checks)
+        advanceTimeBy(10_000)
+        assertEquals(2, checks)
+
+        visibleAndOffline.value = true
+        advanceTimeBy(1_000)
+        visibleAndOffline.value = false
+        advanceTimeBy(10_000)
+        assertEquals(2, checks)
+    }
+
     @Test
     @Config(sdk = [35], manifest = Config.NONE)
     fun unblockingTheSameDefaultNetworkRefreshesConnectivityWithoutAnAvailableEvent() {
