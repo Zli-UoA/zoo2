@@ -261,12 +261,29 @@ class AndroidSamplesTest {
         val gallery = galleryMap()
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
+            "embedded-post" to AndroidScreen.Home(listOf(illustratedPost.copy(media = emptyList(), body = "会場からのお知らせです。"))),
+            "shared-post-link" to conversation.copy(entries = listOf(posts.first().copy(body = "昨日のお知らせです。", postLinks = listOf("https://zli.chat/home/posts/42" to "42")))),
+            "article-preview" to conversation.copy(entries = listOf(posts.first().copy(body = "当日の行き方はこちらです。",
+                link = "https://gallery.example/access", linkCard = EntryCard("展示会場へのアクセスと開場時間",
+                    "駅から会場までの道順と、当日の入場方法をご案内します。", "https://gallery.example/access", "美術館だより",
+                    image = TimelineMedia("photo", "展示会場", TimelineMediaKind.Image, url = "https://gallery.example/cover"), summaly = true)))),
+
             "channel-rich" to conversation.copy(entries = listOf(richMessage), input = InputState()),
             "home" to AndroidScreen.Home(homePosts),
             "home-media" to AndroidScreen.Home(listOf(illustratedPost)),
             "channel-media" to conversation.copy(entries = listOf(illustratedMessage), input = InputState()),
             "channels" to channels,
             "notifications" to inbox,
+            "follow-response" to inbox.copy(items = listOf(inbox.items.last().copy(followResponse = "承認済み"))),
+            "notifications-history-error" to inbox.copy(appendFailed = true),
+            "channel-save-error" to AndroidScreen.EditChannel("チャンネルを編集", "開発", "展示の準備", "保存", true,
+                saveError = "保存できませんでした。接続を確認して、もう一度保存してください。"),
+            "post-attachment-retry" to AndroidScreen.NewPost(InputState("展示の写真"), emptyList(), false,
+                attached = listOf(RecentPhoto("poster", "展示.png", true))),
+            "chat-attachment-retry" to conversation.copy(input = InputState("写真を共有します",
+                files = listOf("poster" to "展示.png"), failedFiles = setOf("poster"))),
+            "profile-follow-pending" to AndroidScreen.Profile("はる", "", emptyList(), "フォロー", followBusy = true),
+
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
             "settings" to AndroidScreen.Settings(settings),
             "navigation-cache" to AndroidScreen.SettingsDetail("画面遷移キャッシュ", listOf(
