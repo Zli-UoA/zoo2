@@ -56,6 +56,7 @@ internal class AndroidColors(dark: Boolean) {
     val inputText = if (dark) Color(0xfff5f5f5) else Color(0xff202020)
     val inputHint = if (dark) Color(0xffa6a6a6) else Color(0xff616161)
     val inputBoundary = if (dark) Color(0xff363636) else Color(0xffdedede)
+    val reactionSelectedBoundary = if (dark) Color(0xffffd45a) else Color(0xff806100)
     val unread = if (dark) Color(0xffff9494) else Color(0xffb91c1c)
     val accent = Color(0xffffd400)
     val mentionSurface = if (dark) Color(0xff303030) else Color(0xfffff6cc)

@@ -1086,14 +1086,8 @@ private fun Timeline(
                                             .heightIn(min = 48.dp).padding(vertical = 12.dp),
                                         color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 }
-                                if (entry.reactions.isNotEmpty()) {
-                                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        entry.reactions.forEach { reaction ->
-                                            TimelineReactionChip(reaction, colors) {
-                                                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
-                                            }
-                                        }
-                                    }
+                                if (entry.reactions.isNotEmpty() || (!posts && entry.canReact)) {
+                                    TimelineReactions(entry, colors, showAdd = !posts, dispatch = dispatch)
                                 }
                                 if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                             }
@@ -1149,7 +1143,7 @@ private fun PostActions(
     dispatch: (AndroidUiAction) -> Unit,
     onMore: () -> Unit,
 ) {
-    val actionWidth = Modifier.width(AndroidControlSize.postToolbarIcon)
+    val actionWidth = Modifier.width(AndroidControlSize.postToolbarHeight)
     Row(
         Modifier.fillMaxWidth().height(AndroidControlSize.postToolbarHeight),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1161,7 +1155,7 @@ private fun PostActions(
             if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
             enabled = entry.canRepost, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.Emoji, "リアクションを追加",
+        UiIconButton(UiIcon.AddReaction, "リアクションを追加",
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
             enabled = entry.canReact, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)

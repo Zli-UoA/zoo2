@@ -976,6 +976,79 @@ class AndroidSamplesTest {
     )
 
     @Test
+    fun reactionsCanBeSelectedRemovedAndAddedOnHomeAndChannel() {
+        var channel by mutableStateOf(false)
+        var dark by mutableStateOf(false)
+        var selected by mutableStateOf(false)
+        var hasReactions by mutableStateOf(true)
+        var openPicker = 0
+        ui.setContent {
+            val post = TimelineItem(
+                "exhibit", "はる", "展示の準備ができました。明日は10時からです。", "12:05",
+                canReact = true, canRepost = true,
+                postHeader = PostHeaderData("@haru", "11/28 12:05", PostAudience.Public, null, "zli.chat"),
+                reactions = if (!hasReactions) emptyList() else listOf(
+                    TimelineReaction("👏", "👏", if (selected) "4" else "3", selected),
+                    TimelineReaction("🎉", "🎉", "2", false),
+                ),
+            )
+            val screen = if (channel) AndroidScreen.Conversation("dev", "開発", "", listOf(post), InputState(""))
+                else AndroidScreen.Home(listOf(post))
+            AndroidScreens(screen, dark, foreground = true, dispatch = { action ->
+                if (action is AndroidUiAction.ActOnEntry && action.operation == EntryOperation.React) {
+                    check(action.item.id == post.id)
+                    when (action.value) {
+                        "👏" -> selected = !selected
+                        "" -> openPicker++
+                        else -> error("Unexpected reaction")
+                    }
+                }
+            }, language = "ja") { _, _ -> }
+        }
+        for (room in listOf(false, true)) {
+            for (night in listOf(false, true)) {
+                ui.runOnIdle { channel = room; dark = night }
+                val prefix = "reaction-" + (if (room) "channel" else "home") + (if (night) "-dark" else "-light")
+                val chip = ui.onNode(hasText("👏") and hasClickAction())
+                fun snapshot(state: String) {
+                    capture("$prefix-$state")
+                    val rect = ui.onNodeWithTag("timeline-entry-exhibit", useUnmergedTree = true)
+                        .fetchSemanticsNode().boundsInRoot
+                    val dir = File("build/reports/android-ui")
+                    val full = android.graphics.BitmapFactory.decodeFile(dir.resolve("$prefix-$state.png").path)
+                    val bitmap = Bitmap.createBitmap(full, rect.left.toInt(), rect.top.toInt(), rect.width.toInt(), rect.height.toInt())
+                    dir.resolve("$prefix-$state-detail.png").outputStream().use {
+                        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
+                    }
+                    bitmap.recycle()
+                    full.recycle()
+                }
+                if (!room) {
+                    val controls = listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作")
+                    fun positions() = controls.map { label ->
+                        ui.onNodeWithContentDescription(label).assertHasClickAction().getUnclippedBoundsInRoot().left
+                    }
+                    ui.runOnIdle { hasReactions = false }
+                    val emptyPositions = positions()
+                    snapshot("empty")
+                    ui.onNodeWithContentDescription("リアクションを追加").performClick()
+                    ui.runOnIdle { hasReactions = true }
+                    assertEquals(emptyPositions, positions())
+                }
+                chip.assertIsNotSelected().assertTextContains("3")
+                snapshot("before")
+                chip.performClick()
+                chip.assertIsSelected().assertTextContains("4")
+                snapshot("after")
+                chip.performClick()
+                chip.assertIsNotSelected().assertTextContains("3")
+                ui.onNodeWithContentDescription("リアクションを追加").performClick()
+            }
+        }
+        ui.runOnIdle { assertEquals(6, openPicker) }
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "ja-rJP-w320dp-h640dp-xhdpi")
     fun narrowScreenWithEnlargedTypeOffersRecovery() {
         var retries = 0

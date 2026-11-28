@@ -1,5 +1,7 @@
 package zoo.android.ui
 
+import androidx.compose.ui.semantics.selected
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -440,6 +442,36 @@ internal fun TimelineAvatar(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun TimelineReactions(entry: TimelineItem, colors: AndroidColors, showAdd: Boolean, dispatch: (AndroidUiAction) -> Unit) {
+    FlowRow(
+        Modifier.fillMaxWidth().padding(top = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        entry.reactions.forEach { reaction ->
+            TimelineReactionChip(reaction.copy(canToggle = entry.canReact && reaction.canToggle), colors) {
+                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
+            }
+        }
+        if (showAdd && entry.canReact) {
+            val label = androidLabel("home.addReaction", "リアクションを追加")
+            Box(
+                Modifier.size(width = 38.dp, height = 32.dp).clip(ReactionShape)
+                    .border(1.dp, colors.inputBoundary, ReactionShape)
+                    .clickable(role = Role.Button) { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) }
+                    .semantics { contentDescription = label },
+                contentAlignment = Alignment.Center,
+            ) {
+                UiGlyph(UiIcon.AddReaction, colors.foreground, 20.dp)
+            }
+        }
+    }
+}
+
+private val ReactionShape = RoundedCornerShape(9.dp)
+
 @Composable
 internal fun TimelineReactionChip(reaction: TimelineReaction, colors: AndroidColors, toggle: () -> Unit) {
     val kitchen = LocalKitchenReactionImage.current
@@ -450,14 +482,17 @@ internal fun TimelineReactionChip(reaction: TimelineReaction, colors: AndroidCol
     } else reaction.image
     val image = timelineIcon(url)
     Row(
-        Modifier.alpha(if (reaction.canToggle) 1f else 0.55f).heightIn(min = AndroidControlSize.target)
-            .background(if (reaction.selected) colors.headerLight else colors.background, CircleShape)
-            .clickable(enabled = reaction.canToggle, role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 12.dp),
+        Modifier.alpha(if (reaction.canToggle) 1f else 0.55f).heightIn(min = 32.dp)
+            .clip(ReactionShape)
+            .background(if (reaction.selected) colors.headerLight else colors.inputSurface)
+            .border(1.dp, if (reaction.selected) colors.reactionSelectedBoundary else colors.inputBoundary, ReactionShape)
+            .semantics { selected = reaction.selected }
+            .clickable(enabled = reaction.canToggle, role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (image == null) Text(reaction.label, color = colors.foreground)
+        if (image == null) Text(reaction.label, color = colors.foreground, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp))
         else Image(image, contentDescription = reaction.label, Modifier.size(18.dp), contentScale = ContentScale.Fit)
-        Text(reaction.count, color = colors.foreground)
+        Text(reaction.count, color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.emphasis)
     }
 }

@@ -27,7 +27,7 @@ internal object AndroidControlSize {
     val inputExpandThreshold = 72.dp
     val postActionInset = 8.dp
     val postToolbarHeight = 36.dp
-    val postToolbarIcon = 14.dp
+    val postToolbarIcon = 18.dp
     val icon = 24.dp
     val inlineIcon = 16.dp
     val metadataIcon = 12.dp
@@ -40,6 +40,8 @@ internal object AndroidControlSize {
 // Google Material Design Icons (Outlined, 24px), Apache-2.0.
 // Source and license are bundled in assets/licenses/material-design-icons.txt.
 internal enum class UiIcon(val pathData: String) {
+    // Zoo 独自。右上を開いた笑顔と追加記号を、一つの24単位の座標系に描く。
+    AddReaction("M14.1 3.65a9.6 9.6 0 1 0 6.25 6.25l-1.8.5a7.75 7.75 0 1 1-4.95-4.95z M7.8 10a1 1 0 1 0 .01 0z M13 10a1 1 0 1 0 .01 0z M6.6 14.1q4.1 5.8 8.2 0l-1.5-.9q-2.6 3.8-5.2 0z M18.2 1.2h1.8v3h3v1.8h-3v3h-1.8V6h-3V4.2h3z"),
     Back("M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"),
     Next("M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z"),
     Home("M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"),
