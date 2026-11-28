@@ -289,6 +289,7 @@ internal class ConnectedScreenState(
                 original.text("content"), distinctTimelineMedia(original.array("media").rows().mapNotNull(::postMedia)),
                 displayEmoji(original, original, original.text("content"), isPost = true),
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
+                time = original.text("created_at").takeIf(String::isNotBlank)?.let(platform::messageTimestamp),
                 postAuthor = postAuthor(original),
                 local = quoteRow.flag("local"),
                 remotePostAvailable = original.flag("remote") && original.text("id").isNotBlank(),
@@ -343,7 +344,7 @@ internal class ConnectedScreenState(
         if (!isPost) searchPreviewLinks.remember(data, url.takeUnless { data.present("deleted_at") })
 
         val createdAt = data.text("created_at")
-        val time = platform.time(createdAt)
+        val time = platform.messageTimestamp(createdAt)
         val postHeader = if (isPost) {
             val username = data.text("user_name").ifBlank { users[data.text("user_id")]?.text("user_name").orEmpty() }
             val handle = username.trimStart('@').substringBefore('@').takeIf { it.isNotBlank() }?.let { "@$it" }
@@ -352,7 +353,7 @@ internal class ConnectedScreenState(
             val server = if (remote) {
                 publicUrl(data.text("user_id"))?.host ?: publicUrl(data.text("url"))?.host
             } else publicUrl(app.config.apiBaseUrl)?.host
-            PostHeaderData(handle, listOf(platform.day(createdAt).substringAfter('/'), time).filter { it.isNotBlank() }.joinToString(" "),
+            PostHeaderData(handle, time,
                 PostAudience.fromApi(data.text("visibility")), channelName, server,
                 remoteServer = remote, serverRgb = if (remote && server != null) instanceColors[server] else null)
         } else null
@@ -770,7 +771,6 @@ internal class ConnectedScreenState(
         val memberChannels = searchMemberChannels(members)
         val guest = isSearchGuest(users[app.config.userId])
         val messagesByChannel = mutableMapOf<String, Map<String, Row>>()
-        val year = platform.day(platform.now()).substringBefore('/')
         return AndroidScreen.Search(SearchScreenState(
             searchText, search.query, search.type,
             search.items.mapNotNull { row ->
@@ -788,7 +788,6 @@ internal class ConnectedScreenState(
                     searchPreviewLinks.cached(row, current)
                 }
                 val createdAt = row.text("created_at")
-                val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 // Like Web, keep the first hit within the three lines of a narrow screen.
                 val body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query))
                 val emoji = if (file) emptyMap() else displayEmoji(row, row, body, isPost = false)
@@ -796,7 +795,7 @@ internal class ConnectedScreenState(
                     key = globalSearchKey(row, search.type),
                     author = author(user).ifBlank { row.text("user_id") },
                     body = body,
-                    time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
+                    time = platform.messageTimestamp(createdAt),
                     destination = searchDestination(row, channel, users, members),
                     dm = isDm(row, channel),
                     inThread = row.text("parent_id").isNotEmpty(),

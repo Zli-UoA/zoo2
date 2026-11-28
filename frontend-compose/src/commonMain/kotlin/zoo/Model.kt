@@ -119,11 +119,13 @@ interface Platform {
 
     fun time(timestamp: String): String
 
+    fun messageCalendar(): MessageCalendar = MessageCalendar.current()
+
+    fun messageTimestamp(timestamp: String): String = messageCalendar().format(timestamp)
+
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun relativeTimestamp(timestamp: String): String = fullTimestamp(timestamp)
-
-    fun notificationTime(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun day(timestamp: String): String
 
