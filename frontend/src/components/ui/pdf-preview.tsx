@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { useTranslation } from "react-i18next";
@@ -70,8 +71,11 @@ const PdfPageSlot = memo(function PdfPageSlot({
   }, [onSlotMount, onSlotUnmount, pageNumber]);
 
   const slotStyle = size
-    ? { aspectRatio: `${size.width} / ${size.height}`, maxWidth: `${size.width}px` }
-    : { maxWidth: "100%", minHeight: "12rem" };
+    ? ({
+        "--pdf-aspect": `${size.width} / ${size.height}`,
+        "--pdf-width": `${size.width}px`,
+      } as CSSProperties)
+    : undefined;
 
   return (
     <div
@@ -79,7 +83,11 @@ const PdfPageSlot = memo(function PdfPageSlot({
       data-pdf-page={pageNumber}
       aria-hidden={mounted ? undefined : true}
       style={slotStyle}
-      className="relative mx-auto w-full overflow-hidden rounded-xs bg-white shadow-xs"
+      className={
+        size
+          ? "relative mx-auto aspect-(--pdf-aspect) w-full max-w-(--pdf-width) overflow-hidden rounded-xs bg-white shadow-xs"
+          : "relative mx-auto w-full max-w-full min-h-48 overflow-hidden rounded-xs bg-white shadow-xs"
+      }
     >
       {mounted ? (
         <PdfPageCanvas

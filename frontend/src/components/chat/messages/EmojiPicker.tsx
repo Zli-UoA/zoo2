@@ -316,7 +316,7 @@ type CustomEmojiSearch = ReturnType<typeof useCustomEmojiSearch>;
  * Reserve picker image dimensions from metadata before decode while still letting the
  * decoded image's natural (post-EXIF) aspect ratio take over once loaded.
  */
-function customEmojiImageStyle(emoji: CustomEmojiOption): CSSProperties | undefined {
+function customEmojiAspectRatio(emoji: CustomEmojiOption): string | undefined {
   if (
     typeof emoji.width !== "number" ||
     !Number.isFinite(emoji.width) ||
@@ -327,7 +327,7 @@ function customEmojiImageStyle(emoji: CustomEmojiOption): CSSProperties | undefi
   ) {
     return undefined;
   }
-  return { aspectRatio: `auto ${emoji.width} / ${emoji.height}` };
+  return `auto ${emoji.width} / ${emoji.height}`;
 }
 
 function CustomEmojiButton({
@@ -339,6 +339,7 @@ function CustomEmojiButton({
   imageUrl: (url: string) => string;
   onSelect: (value: string) => void;
 }) {
+  const aspectRatio = customEmojiAspectRatio(e);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -356,8 +357,10 @@ function CustomEmojiButton({
           <img
             src={imageUrl(e.url)}
             alt={`:${e.name}:`}
-            className="h-7 w-auto max-w-40 object-contain"
-            style={customEmojiImageStyle(e)}
+            className="h-7 aspect-(--emoji-aspect-ratio) w-auto max-w-40 object-contain"
+            style={
+              aspectRatio ? ({ "--emoji-aspect-ratio": aspectRatio } as CSSProperties) : undefined
+            }
           />
         )}
       </TooltipTrigger>

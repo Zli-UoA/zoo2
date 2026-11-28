@@ -17,7 +17,7 @@ export function composerTextareaFitClass(value: string) {
 /** Shared input frame; each composer owns its draft, action and keyboard behavior. */
 export function ComposerField({ children }: { children: ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
+    <div className="flex items-start gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 [&_textarea]:bg-transparent dark:bg-input/30 dark:[&_textarea]:bg-transparent">
       {children}
     </div>
   );

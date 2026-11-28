@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { LockIcon, UploadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -584,7 +584,10 @@ function Progress({ label, value }: { label: string; value: number }) {
         aria-valuenow={percent}
         className="h-2 overflow-hidden rounded-full bg-muted"
       >
-        <div className="h-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+        <div
+          className="h-full w-(--progress-width) bg-primary transition-all"
+          style={{ "--progress-width": `${percent}%` } as CSSProperties}
+        />
       </div>
     </div>
   );

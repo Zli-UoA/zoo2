@@ -32,7 +32,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { DM_MAX_MEMBERS, DM_MAX_TARGETS, filterDmCandidates, waitForDmAvailability } from "./dm";
 import { sortUsersByLabel, userLabel } from "./memberCandidates";
@@ -234,10 +233,7 @@ export function CreateDmDialog({
             />
             <Input
               type="search"
-              className={cn(
-                inputClassName(),
-                "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
-              )}
+              className="w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none"
               placeholder={t("dms.search")}
               aria-label={t("dms.search")}
               value={query}

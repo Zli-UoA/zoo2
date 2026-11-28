@@ -54,8 +54,105 @@ const config = defineConfig({
   },
   fmt: {},
   lint: {
-    jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
-    rules: { "vite-plus/prefer-vite-plus-imports": "error" },
+    jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }, "@shadcn/lint"],
+    settings: {
+      shadcn: {
+        // UI は相対 import も多く、components.json の alias だけでは認識できない。
+        componentImports: ["^@/components/ui/", "(\\.\\./)+ui/"],
+        themeImports: ["tw-animate-css"],
+        note: "デザイン上の例外は frontend/README.md を参照。",
+      },
+    },
+    rules: {
+      "vite-plus/prefer-vite-plus-imports": "error",
+      "shadcn/no-restyle": [
+        "error",
+        {
+          allow: ["layout"],
+          // 呼び出し側が責任を持つ範囲だけを component ごとに開ける。
+          // 色と形は基本 variant で表現し、contract では開けない。
+          contracts: [
+            { pattern: "^Skeleton$", allow: ["layout", "shape"] },
+            { pattern: "^Input$", allow: ["layout", "typography", "spacing"] },
+            {
+              pattern: "^Textarea$",
+              allow: ["layout", "typography", "spacing", "shape", "effects"],
+            },
+            {
+              pattern: "^DialogContent$",
+              allow: ["layout", "spacing", "shape", "motion"],
+            },
+            {
+              pattern: "^DialogHeader$",
+              allow: ["layout", "spacing", "shape"],
+            },
+            {
+              pattern: "^DialogTitle$",
+              allow: ["layout", "spacing", "typography"],
+            },
+            {
+              pattern: "^DialogDescription$",
+              allow: ["layout", "typography"],
+            },
+            {
+              pattern: "^ExternalLink$",
+              allow: ["layout", "typography", "color"],
+            },
+            { pattern: "^SettingsSection$", allow: ["layout", "color"] },
+            { pattern: "^Spinner$", allow: ["layout", "color", "spacing"] },
+            {
+              pattern: "^TooltipTrigger$",
+              allow: ["layout", "shape", "color"],
+            },
+            { pattern: "^ScrollArea$", allow: ["layout", "spacing"] },
+            { pattern: "^AvatarFallback$", allow: ["layout", "typography"] },
+            { pattern: "^ContentLink$", allow: ["layout", "typography"] },
+            {
+              pattern: "^QuotePostLink$",
+              allow: ["layout", "typography", "spacing", "color"],
+            },
+            { pattern: "^Image$", allow: ["layout", "shape"] },
+            { pattern: "^DropdownMenuTrigger$", allow: ["layout", "effects"] },
+            { pattern: "^AppAvatar$", allow: ["layout", "typography"] },
+          ],
+          message: {
+            spacing:
+              "Use a {{component}} size: {{sizes|none defined}}, or put margin here / gap on the parent.",
+            default:
+              "Use a {{component}} variant: {{variants|none defined}}. Add one in {{file}} only if the design calls for it.",
+          },
+        },
+      ],
+      "shadcn/no-raw-colors": [
+        "error",
+        { message: "Use a theme color from {{file}}: {{suggestions|a declared token}}." },
+      ],
+      "shadcn/no-arbitrary-values": ["error", { allow: ["layout"] }],
+      "shadcn/no-inline-styles": "error",
+      "shadcn/no-unknown-classes": ["error", { allow: ["mfm-math", "mfm-search", "toaster"] }],
+      "shadcn/require-static-classes": "error",
+    },
+    overrides: [
+      {
+        // コンポーネント自身は内部スタイルを所有する（上流の推奨に従う）。
+        files: ["src/components/ui/**"],
+        rules: {
+          "shadcn/no-restyle": "off",
+          "shadcn/no-arbitrary-values": "off",
+          "shadcn/require-static-classes": "off",
+        },
+      },
+      {
+        // テスト／Story の固定サイズや style はハーネスなので対象外。
+        files: ["**/*.browser.test.tsx", "**/*.stories.tsx", "src/test/vrt/**", "e2e/**"],
+        rules: {
+          "shadcn/no-restyle": "off",
+          "shadcn/no-arbitrary-values": "off",
+          "shadcn/no-inline-styles": "off",
+          "shadcn/require-static-classes": "off",
+        },
+      },
+    ],
     options: { typeAware: true, typeCheck: true },
   },
   resolve: { tsconfigPaths: true, alias: { buffer: "buffer/" } },

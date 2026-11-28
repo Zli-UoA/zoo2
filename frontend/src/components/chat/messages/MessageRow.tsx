@@ -35,7 +35,7 @@ import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
 import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
 import { hidesContent, parseComponents } from "../components/parse";
-import { Button, buttonVariants } from "../../ui/button";
+import { Button } from "../../ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -148,7 +148,7 @@ export function UnencryptedMessageBadge() {
   const { t } = useTranslation();
   return (
     <span
-      className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300"
+      className="inline-flex w-fit items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-micro font-medium text-warning-strong"
       title={t("e2ee.legacy.unencryptedBadgeHelp")}
     >
       <LockKeyholeOpenIcon className="size-3" aria-hidden="true" />
@@ -162,7 +162,7 @@ export function SenderTrustBadge({ trust }: { trust: SenderTrust }) {
   const { t } = useTranslation();
   if (trust === "verified") return null;
   return (
-    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-micro font-medium text-warning-strong">
       <ShieldAlertIcon className="size-3" aria-hidden="true" />
       {t(trust === "unverified" ? "e2ee.sender.unverified" : "e2ee.sender.unauthenticated")}
     </span>
@@ -173,7 +173,7 @@ export function SenderTrustBadge({ trust }: { trust: SenderTrust }) {
 export function RevisionWarningBadge({ warning }: { warning: "stale" | "conflict" }) {
   const { t } = useTranslation();
   return (
-    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-micro font-medium text-warning-strong">
       <ShieldAlertIcon className="size-3" aria-hidden="true" />
       {t(warning === "stale" ? "e2ee.revision.stale" : "e2ee.revision.conflict")}
     </span>
@@ -190,7 +190,7 @@ function DateSeparator({ value }: { value: string }) {
       aria-label={formatDateSeparator(value, t, locale)}
     >
       <span className="h-px flex-1 bg-border" />
-      <span className="rounded-full border bg-background/80 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+      <span className="rounded-full border bg-background/80 px-2.5 py-0.5 text-micro font-medium text-muted-foreground">
         {formatDateSeparator(value, t, locale)}
       </span>
       <span className="h-px flex-1 bg-border" />
@@ -426,7 +426,7 @@ export function MessageRow({
         ) : (
           <div className="flex h-lh w-8 shrink-0 items-center justify-end text-sm leading-relaxed">
             <time
-              className="text-[10px] leading-none text-muted-foreground tabular-nums opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100"
+              className="text-2xs leading-none text-muted-foreground tabular-nums opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100"
               dateTime={normalizeUtcTimestamp(message.created_at)}
               title={fullTimestamp(message.created_at, locale)}
             >
@@ -440,7 +440,7 @@ export function MessageRow({
             <div className="flex flex-wrap items-center gap-2">
               {item.isGroupStart ? <AuthorIdentity message={message} /> : null}
               <time
-                className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+                className="shrink-0 text-micro text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(message.created_at)}
                 title={fullTimestamp(message.created_at, locale)}
               >
@@ -704,14 +704,11 @@ export function MessageRow({
               ) : null}
               {canDelete ? (
                 <Button
-                  variant="ghost"
+                  variant="destructive"
                   size="icon-xs"
                   aria-label={t("messages.delete")}
                   title={t("messages.delete")}
-                  className={cn(
-                    "text-destructive hover:bg-destructive/10 hover:text-destructive",
-                    touchHitArea,
-                  )}
+                  className={touchHitArea}
                   onClick={onRequestDelete}
                 >
                   <TrashIcon />
@@ -721,15 +718,9 @@ export function MessageRow({
             {/* PC はホバー、タッチは長押し、キーボードはフォーカスで操作する。 */}
             <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
               <DropdownMenuTrigger
+                render={<Button variant="ghost" size="icon-xs" className={touchHitArea} />}
                 aria-label={t("messages.more")}
                 title={t("messages.more")}
-                className={cn(
-                  buttonVariants({
-                    variant: "ghost",
-                    size: "icon-xs",
-                  }),
-                  touchHitArea,
-                )}
               >
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>

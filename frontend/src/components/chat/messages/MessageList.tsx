@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -1305,7 +1306,12 @@ function MessageScrollViewport({
         data-scroll-restoration-id={channelId ? `message-scroll:${channelId}` : "message-scroll"}
         className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
       >
-        <div role="list" ref={listRef} className="relative w-full" style={{ height: totalSize }}>
+        <div
+          role="list"
+          ref={listRef}
+          className="relative h-(--message-list-height) w-full"
+          style={{ "--message-list-height": `${totalSize}px` } as CSSProperties}
+        >
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const item = items[virtualRow.index];
             if (!item) {
@@ -1318,8 +1324,8 @@ function MessageScrollViewport({
                 data-index={virtualRow.index}
                 data-message-id={item.message.id}
                 role="listitem"
-                className="absolute left-0 top-0 w-full"
-                style={{ transform: `translateY(${virtualRow.start}px)` }}
+                className="absolute left-0 top-0 w-full translate-y-(--message-row-offset)"
+                style={{ "--message-row-offset": `${virtualRow.start}px` } as CSSProperties}
               >
                 {virtualRow.index > 0 && virtualRow.index === firstEncryptedIndex ? (
                   // 暗号化に切り替える前と後の境目（#367）。上は平文、下は暗号化したメッセージ。
@@ -1400,14 +1406,12 @@ function MessageScrollViewport({
       </div>
 
       {hasNewBelow ? (
-        <Button
-          size="sm"
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md"
-          onClick={() => scrollToBottom("smooth")}
-        >
-          <ArrowDownIcon />
-          {t("messages.new")}
-        </Button>
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md">
+          <Button shape="circle" size="sm" onClick={() => scrollToBottom("smooth")}>
+            <ArrowDownIcon />
+            {t("messages.new")}
+          </Button>
+        </div>
       ) : null}
     </>
   );

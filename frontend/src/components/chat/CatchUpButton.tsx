@@ -23,7 +23,7 @@ export function CatchUpButton() {
       {unreadConversationCount > 0 ? (
         <span
           aria-hidden="true"
-          className="absolute -right-1 -top-1 rounded-full bg-destructive px-1 text-[10px] text-white tabular-nums"
+          className="absolute -right-1 -top-1 rounded-full bg-destructive px-1 text-2xs text-white tabular-nums"
         >
           {unreadConversationCount > 99 ? "99+" : unreadConversationCount}
         </span>

@@ -6,6 +6,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { parse, toString, type MfmNode } from "mfm-js";
@@ -13,7 +14,6 @@ import katex from "katex";
 import hljs from "highlight.js/lib/common";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { DisplayEmoji } from "../../../lib/electric/types";
-import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import { kitchenFromShortcode, kitchenImageUrl, kitchenLabel } from "../../../lib/emoji/kitchen";
 import { useShortcodes } from "../../../lib/emoji/shortcodes";
@@ -115,8 +115,7 @@ function KitchenCode({ value }: { value: string }) {
       src={url}
       alt={label}
       title={label}
-      className="mfm-custom-emoji"
-      style={{ width: "1.5em", height: "1.5em" }}
+      className="mfm-custom-emoji size-[1.5em]"
       loading="lazy"
       referrerPolicy="no-referrer"
       onError={() => setFailedUrl(url)}
@@ -149,11 +148,19 @@ function EmojiCode({
   }, [emojiUrls]);
   const urls = emojiUrls ?? registry;
   const url = Object.hasOwn(urls, name) ? urls[name] : undefined;
+  const emoji = emojis?.[name];
+  const ratio = emoji?.width && emoji.height ? emoji.width / emoji.height : 1;
   if (url && (/^\/(?!\/)/.test(url) || /^https?:\/\//.test(url)))
     return (
       <img
-        className="mfm-custom-emoji"
-        style={emojiImageStyle(emojis?.[name], "1.5em")}
+        className="mfm-custom-emoji h-(--mfm-emoji-height) w-(--mfm-emoji-width) max-w-(--mfm-emoji-max-width) object-contain"
+        style={
+          {
+            "--mfm-emoji-height": "1.5em",
+            "--mfm-emoji-width": `calc(1.5em * ${ratio})`,
+            "--mfm-emoji-max-width": "8em",
+          } as CSSProperties
+        }
         src={url}
         alt={`:${name}:`}
         loading="lazy"

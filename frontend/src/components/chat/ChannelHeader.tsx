@@ -2,7 +2,6 @@ import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useNavigate } from "@tanstack/react-router";
-import { cn } from "cn";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
@@ -51,7 +50,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { SettingRow, SettingsSection } from "../ui/control-panel";
-import { Button, buttonVariants } from "../ui/button";
+import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import {
   DropdownMenu,
@@ -217,7 +216,7 @@ export function ChannelHeader({
             <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
           ) : null}
           {isArchived && !isDm ? (
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
               {t("moderation.archived")}
             </span>
           ) : null}
@@ -227,7 +226,7 @@ export function ChannelHeader({
       <div ref={headerActionsRef} className="flex shrink-0 items-center gap-1">
         {!isArchived ? (
           <Button
-            variant={isInThisCall ? "secondary" : hasActiveCall ? "outline" : "ghost"}
+            variant={isInThisCall ? "success-solid" : hasActiveCall ? "outline" : "ghost"}
             size="sm"
             onClick={() => void handleCallClick()}
             disabled={call.connectionState === "connecting"}
@@ -245,22 +244,13 @@ export function ChannelHeader({
                   ? `${t("call.join")} (${activeCallCount})`
                   : t("call.start")
             }
-            className={
-              isInThisCall
-                ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
-                : hasActiveCall
-                  ? "border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
-                  : ""
-            }
           >
             <HeadphonesIcon aria-hidden="true" />
             <span className="hidden sm:inline">
               {isInThisCall ? t("call.inCall") : hasActiveCall ? t("call.join") : t("call.start")}
             </span>
             {hasActiveCall && !isInThisCall ? (
-              <span className="tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
-                {activeCallCount}
-              </span>
+              <span className="tabular-nums font-semibold text-success">{activeCallCount}</span>
             ) : null}
           </Button>
         ) : null}
@@ -289,27 +279,29 @@ export function ChannelHeader({
           </Button>
         ) : null}
         {showPinButton ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="size-11 aria-disabled:opacity-50 md:size-8"
-            aria-label={t(pinned ? "channelPins.unpin" : "channelPins.pin")}
-            title={t(pinned ? "channelPins.unpin" : "channelPins.pin")}
-            aria-pressed={pinned}
-            aria-disabled={pinPending}
-            onFocus={() => {
-              pinButtonFocused.current = true;
-            }}
-            onClick={() => {
-              // `aria-disabled` では押下自体は届くため、保留中は何もしない。
-              if (pinPending) {
-                return;
-              }
-              void (pinned ? pins.unpinChannel(channel.id) : pins.pinChannel(channel.id));
-            }}
-          >
-            {pinned ? <PinOffIcon /> : <PinIcon />}
-          </Button>
+          <span className={pinPending ? "inline-flex opacity-50" : "inline-flex"}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="size-11 md:size-8"
+              aria-label={t(pinned ? "channelPins.unpin" : "channelPins.pin")}
+              title={t(pinned ? "channelPins.unpin" : "channelPins.pin")}
+              aria-pressed={pinned}
+              aria-disabled={pinPending}
+              onFocus={() => {
+                pinButtonFocused.current = true;
+              }}
+              onClick={() => {
+                // `aria-disabled` では押下自体は届くため、保留中は何もしない。
+                if (pinPending) {
+                  return;
+                }
+                void (pinned ? pins.unpinChannel(channel.id) : pins.pinChannel(channel.id));
+              }}
+            >
+              {pinned ? <PinOffIcon /> : <PinIcon />}
+            </Button>
+          </span>
         ) : null}
         {isDm ? (
           <DmHeaderMenu channel={channel} />
@@ -407,13 +399,13 @@ export function ChannelHeader({
             {channel.encrypted || channel.imported_from_slack ? (
               <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                 {channel.encrypted ? (
-                  <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                  <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
                     <LockKeyholeIcon className="size-3" aria-hidden="true" />
                     {t("e2ee.badge")}
                   </span>
                 ) : null}
                 {channel.imported_from_slack ? (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
                     {slackImportBadge(channel, t, i18n.language)}
                   </span>
                 ) : null}
@@ -533,9 +525,16 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger
-          aria-label={t("dms.menu")}
-          title={t("dms.menu")}
-          className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "size-11 md:size-7")}
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="size-11 md:size-7"
+              aria-label={t("dms.menu")}
+              title={t("dms.menu")}
+            />
+          }
         >
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>

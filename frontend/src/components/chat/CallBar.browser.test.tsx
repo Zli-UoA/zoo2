@@ -230,7 +230,7 @@ describe("CallBar browser tests", () => {
     renderCallBar();
 
     const avatar = screen.getByTitle("Alice (発話中)");
-    expect(avatar.className).toContain("ring-2 ring-emerald-500");
+    expect(avatar.className).toContain("ring-2 ring-success");
   });
 
   it("複数参加者のアバターが表示されること", () => {

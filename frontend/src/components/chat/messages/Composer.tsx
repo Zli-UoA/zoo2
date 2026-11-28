@@ -1,11 +1,7 @@
 import { ComposerEmojiButton } from "./ComposerEmojiButton";
 import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
-import {
-  ComposerField,
-  composerTextareaClassName,
-  composerTextareaFitClass,
-} from "./ComposerField";
+import { ComposerField } from "./ComposerField";
 import { useTranslation } from "react-i18next";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
 import { PaperclipIcon, SendIcon, XIcon } from "lucide-react";
@@ -488,7 +484,7 @@ export function Composer({
                     />
                     <div className="min-w-0">
                       <p className="truncate text-xs font-medium">{draft.file_name}</p>
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-micro text-muted-foreground">
                         {formatAttachmentSize(draft.file_size, locale)}
                       </p>
                     </div>
@@ -635,7 +631,11 @@ export function Composer({
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className={`${composerTextareaClassName} ${composerTextareaFitClass(value)} max-h-[200px] min-h-11 px-2 py-2.5`}
+          className={`min-w-0 flex-1 resize-none rounded-none border-0 text-base leading-6 shadow-none focus-visible:ring-0 md:text-sm max-h-[200px] min-h-11 px-2 py-2.5 ${
+            value.length === 0
+              ? "field-sizing-fixed overflow-y-hidden"
+              : "field-sizing-content overflow-y-auto"
+          }`}
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
@@ -722,7 +722,7 @@ export function Composer({
         </Button>
       </ComposerField>
       {!isTouch ? (
-        <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
+        <p className="mt-1.5 px-1 text-micro text-muted-foreground">
           {composerSendHint(platform, t, isTouch)}
         </p>
       ) : null}

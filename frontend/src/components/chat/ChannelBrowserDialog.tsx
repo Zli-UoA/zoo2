@@ -1,7 +1,6 @@
 import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
-import { cn } from "cn";
 import { ArchiveIcon, ArrowUpDownIcon, CheckIcon, HashIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -15,7 +14,6 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import {
   CHANNEL_SORTS,
@@ -112,10 +110,7 @@ export function ChannelBrowserDialog({
             />
             <Input
               type="search"
-              className={cn(
-                inputClassName(),
-                "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
-              )}
+              className="w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none"
               placeholder={t("channels.browseSearch")}
               aria-label={t("channels.browseSearch")}
               value={query}

@@ -18,6 +18,8 @@ const buttonVariants = cva(
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-link underline-offset-4 hover:underline",
+        "success-solid":
+          "bg-success-solid text-success-solid-foreground hover:bg-success-solid-hover",
       },
       size: {
         default:
@@ -32,10 +34,16 @@ const buttonVariants = cva(
           "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg",
         "icon-lg": "size-9",
       },
+      // size の角丸より shape を優先させるため、宣言順を後ろに置く。
+      shape: {
+        default: "",
+        circle: "rounded-full",
+      },
     },
     defaultVariants: {
       variant: "default",
       size: "default",
+      shape: "default",
     },
   },
 );
@@ -43,13 +51,14 @@ const buttonVariants = cva(
 function Button({
   className,
   variant = "default",
+  shape = "default",
   size = "default",
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
   return (
     <ButtonPrimitive
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={cn(buttonVariants({ variant, shape, size, className }))}
       {...props}
     />
   );

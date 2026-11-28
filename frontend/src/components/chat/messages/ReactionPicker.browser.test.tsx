@@ -258,7 +258,7 @@ describe("ReactionPicker", () => {
 
     const wide = (await screen.findByRole("img", { name: ":wide-emoji:" })) as HTMLImageElement;
     expect(wide.complete).toBe(false);
-    expect(wide.style.aspectRatio).toBe("auto 3 / 1");
+    expect(wide.style.getPropertyValue("--emoji-aspect-ratio")).toBe("auto 3 / 1");
     expect(Math.abs(wide.getBoundingClientRect().width - 84)).toBeLessThanOrEqual(1);
     expect(Math.abs(wide.getBoundingClientRect().height - 28)).toBeLessThanOrEqual(1);
 
@@ -266,7 +266,7 @@ describe("ReactionPicker", () => {
     expect(Math.abs(ultra.getBoundingClientRect().width - 160)).toBeLessThanOrEqual(1);
 
     const legacy = screen.getByRole("img", { name: ":legacy-emoji:" }) as HTMLImageElement;
-    expect(legacy.style.aspectRatio).toBe("");
+    expect(legacy.style.getPropertyValue("--emoji-aspect-ratio")).toBe("");
   });
 
   it("uses the decoded image aspect ratio after load when stored metadata orientation differs", async () => {

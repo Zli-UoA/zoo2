@@ -94,6 +94,17 @@ body {
   --color-highlight-foreground: var(--highlight-foreground);
   --color-mention: var(--mention);
   --color-message-target: var(--message-target);
+  --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
+  --color-success-solid: var(--success-solid);
+  --color-success-solid-hover: var(--success-solid-hover);
+  --color-success-solid-foreground: var(--success-solid-foreground);
+  --color-warning: var(--warning);
+  --color-warning-strong: var(--warning-strong);
+  --color-destructive-foreground: #ffffff;
+  --text-3xs: 0.5625rem;
+  --text-2xs: 0.625rem;
+  --text-micro: 0.6875rem;
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -134,6 +145,15 @@ body {
   --mention: #f0b232;
   /* メッセージリンクなどで開いた行の強調（背景と左端のアクセント）。 */
   --message-target: #3b82f6;
+  /* 通話状態・検証状態など、成功と警告を表す状態色。 */
+  --success: #059669;
+  --success-hover: #047857;
+  /* 白文字でも 4.5:1 以上になる塗り用の背景と前景。 */
+  --success-solid: #047857;
+  --success-solid-hover: #065f46;
+  --success-solid-foreground: #ffffff;
+  --warning: #d97706;
+  --warning-strong: #92400e;
   --border: #e5e5e5;
   --input: #d4d4d4;
   /* focus-visible:ring-ring/50 で 50% 透過されるため、白背景でも 3:1 を超えるよう暗くする。 */
@@ -180,6 +200,14 @@ body {
   --highlight-foreground: #ffffff;
   --mention: #f0b232;
   --message-target: #6ea8ff;
+  --success: #34d399;
+  --success-hover: #10b981;
+  /* 明るい背景には濃い前景を組み合わせる（コントラスト 7.6:1）。 */
+  --success-solid: #34d399;
+  --success-solid-hover: #10b981;
+  --success-solid-foreground: #052e2b;
+  --warning: #fbbf24;
+  --warning-strong: #fcd34d;
   --border: #454545;
   --input: #575757;
   --ring: #bdbdbd;
@@ -347,13 +375,16 @@ body {
 .mfm-blur:focus {
   filter: none;
 }
-.mfm-custom-emoji {
-  display: inline-block;
-  height: 1.5em;
-  width: auto;
-  max-width: 8em;
-  object-fit: contain;
-  vertical-align: middle;
+@layer components {
+  /* 呼び出し側のユーティリティ（幅・高さのカスタムプロパティ）が効くように components 層に置く。 */
+  .mfm-custom-emoji {
+    display: inline-block;
+    height: 1.5em;
+    width: auto;
+    max-width: 8em;
+    object-fit: contain;
+    vertical-align: middle;
+  }
 }
 .mfm-math-block {
   display: block;

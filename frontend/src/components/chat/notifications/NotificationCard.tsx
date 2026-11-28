@@ -266,7 +266,7 @@ export function NotificationCard({
                 {actorSummary}
               </p>
               {users.get(group.actorIds[0]!)?.is_bot ? (
-                <span className="rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
+                <span className="rounded bg-muted px-1 text-2xs font-medium text-muted-foreground">
                   APP
                 </span>
               ) : null}
@@ -369,7 +369,7 @@ export function NotificationTimestamp({ createdAt }: { createdAt: string }) {
   );
   return (
     <time
-      className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+      className="shrink-0 text-micro text-muted-foreground tabular-nums"
       dateTime={normalizeUtcTimestamp(createdAt)}
       title={fullTimestamp(createdAt, locale)}
     >

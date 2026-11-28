@@ -43,7 +43,7 @@ export function IncomingCallCard({
       <span className="relative flex shrink-0">
         <span
           aria-hidden="true"
-          className="absolute inset-0 animate-ping rounded-full bg-emerald-400/40"
+          className="absolute inset-0 animate-ping rounded-full bg-success/40"
         />
         <AppAvatar label={inviterName} src={inviterAvatarUrl} className="relative size-10" />
       </span>
@@ -66,8 +66,8 @@ export function IncomingCallCard({
         <Button
           type="button"
           variant="destructive"
-          size="icon-sm"
-          className="size-9 rounded-full"
+          size="icon-lg"
+          shape="circle"
           aria-label={t("call.decline")}
           title={t("call.decline")}
           disabled={busy}
@@ -77,8 +77,9 @@ export function IncomingCallCard({
         </Button>
         <Button
           type="button"
-          size="icon-sm"
-          className="size-9 rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+          variant="success-solid"
+          size="icon-lg"
+          shape="circle"
           aria-label={t("call.accept")}
           title={t("call.accept")}
           disabled={busy}

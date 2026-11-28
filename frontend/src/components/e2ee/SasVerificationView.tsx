@@ -91,7 +91,7 @@ export function SasEmojiList({ emoji }: { emoji: number[] }) {
           <span aria-hidden="true" className="text-3xl leading-none">
             {SAS_EMOJI[index]}
           </span>
-          <span className="w-full break-words text-[11px] leading-tight text-muted-foreground">
+          <span className="w-full break-words text-micro leading-tight text-muted-foreground">
             {
               // 翻訳のキーは 0〜63 の文字列（型では 1 つに代表させる）。
               t(`e2ee.sas.emoji.${String(index) as "0"}`)

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { mediaPreviewKind } from "../../lib/attachments";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
@@ -94,8 +94,8 @@ export function MediaPreview({
           <ImagePreview
             {...metadata}
             alt={alt || name}
-            className="w-full max-h-96"
-            style={{ aspectRatio: imageAspectRatio(metadata) }}
+            className="aspect-(--preview-aspect) w-full max-h-96"
+            style={{ "--preview-aspect": imageAspectRatio(metadata) } as CSSProperties}
           />
         </div>
       ) : (
@@ -110,9 +110,17 @@ export function MediaPreview({
           src={thumbnail ?? src}
           alt={alt || name}
           className={
-            expanded ? (embedded ? "h-full w-full" : "h-[75dvh] w-full") : "w-full max-h-96"
+            expanded
+              ? embedded
+                ? "h-full w-full"
+                : "h-[75dvh] w-full"
+              : "aspect-(--preview-aspect) w-full max-h-96"
           }
-          style={expanded ? undefined : { aspectRatio: imageAspectRatio(metadata) }}
+          style={
+            expanded
+              ? undefined
+              : ({ "--preview-aspect": imageAspectRatio(metadata) } as CSSProperties)
+          }
           onError={thumbnail ? () => setBrokenThumbnail(thumbnail) : errorHandler}
         />
       );
@@ -189,10 +197,14 @@ export function MediaPreview({
       <div
         style={
           kind === "image"
-            ? { aspectRatio: imageAspectRatio(metadata), minHeight: 80, maxHeight: 384 }
+            ? ({ "--preview-aspect": imageAspectRatio(metadata) } as CSSProperties)
             : undefined
         }
-        className="w-full overflow-auto"
+        className={
+          kind === "image"
+            ? "aspect-(--preview-aspect) w-full min-h-20 max-h-96 overflow-auto"
+            : "w-full overflow-auto"
+        }
       >
         {kind === "image" && !error && src && !loading ? (
           <button
