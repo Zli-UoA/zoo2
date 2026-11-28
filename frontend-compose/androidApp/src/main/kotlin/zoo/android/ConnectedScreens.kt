@@ -577,7 +577,7 @@ internal fun ConnectedScreens(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,
             state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name, it.failed, it.description, it.sensitive) },
-            state.federatePost.takeIf { state.federationAvailable },
+            state.federatePost.takeIf { state.federationAvailable }, quoting = state.quoteDraft,
         )
         state.overlay == "edit-entry" -> AndroidScreen.EditEntry(
             InputState(state.editDraft, expanded = true, canSend = env.online && !state.saving && state.editDraft.isNotBlank(),

@@ -87,7 +87,7 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 
-internal enum class EntryOperation { Edit, Delete, React, Repost, Attachment, Link, Media, Quote }
+internal enum class EntryOperation { Edit, Delete, React, Repost, QuoteRenote, Attachment, Link, Media, Quote }
 
 internal data class TimelineItem(
     val id: String, val author: String, val body: String, val time: String,
@@ -121,6 +121,7 @@ internal data class TimelineItem(
     val mentionsCurrentUser: Boolean = false,
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
+    val canQuoteRenote: Boolean = false,
     val delivery: String? = null,
     val recoverDraft: (() -> Unit)? = null,
     val operationStatus: Map<EntryOperation, EntryOperationStatus> = emptyMap(),
@@ -206,7 +207,7 @@ internal sealed interface AndroidScreen {
         val accountLoadFailed: Boolean = false, val followBusy: Boolean = false,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
-        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
+        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null, val quoting: TimelineItem? = null) : AndroidScreen
     data class SignIn(val restoring: Boolean) : AndroidScreen
     data class Call(val caller: String, val incoming: Boolean, val active: Boolean = false,
         val muted: Boolean = false, val speaker: Boolean = false, val avatar: ImageBitmap? = null,
@@ -264,6 +265,7 @@ internal sealed interface AndroidUiAction {
     data object Answer : AndroidUiAction
     data object HangUp : AndroidUiAction
     data object Browse : AndroidUiAction
+    data object RemoveQuote : AndroidUiAction
     data object ComposePost : AndroidUiAction
     data object CreateChannel : AndroidUiAction
     data object CreateDm : AndroidUiAction
@@ -1214,6 +1216,13 @@ private fun PostActions(
     dispatch: (AndroidUiAction) -> Unit,
     onMore: () -> Unit,
 ) {
+    var choosingRenote by remember(entry.id) { mutableStateOf(false) }
+    if (choosingRenote) {
+        RenoteSheet(entry, colors, dismiss = { choosingRenote = false }) { operation ->
+            choosingRenote = false
+            dispatch(AndroidUiAction.ActOnEntry(entry, operation))
+        }
+    }
     val actionWidth = Modifier.width(AndroidControlSize.postToolbarHeight)
     Row(
         Modifier.fillMaxWidth().height(AndroidControlSize.postToolbarHeight),
@@ -1224,7 +1233,7 @@ private fun PostActions(
             iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート",
             if (entry.reposted) colors.renote else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
-            { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
+            { if (entry.canQuoteRenote) choosingRenote = true else dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
             enabled = entry.canRepost && entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.AddReaction, "リアクションを追加",
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),

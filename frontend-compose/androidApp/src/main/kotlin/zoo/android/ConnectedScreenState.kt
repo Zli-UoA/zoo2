@@ -238,6 +238,7 @@ internal class ConnectedScreenState(
     /** The `/search` field; the controller searches it after typing pauses. */
     var searchText by mutableStateOf(app.globalSearch.query)
     var postSelection by mutableStateOf<TextRange?>(null)
+    var quoteDraft by mutableStateOf<TimelineItem?>(null)
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
     val bubble = BubbleController(app)
@@ -383,6 +384,7 @@ internal class ConnectedScreenState(
         return withLinkCard(TimelineItem(id, name, body, time,
             editable = (writable || isPost) && data.text("user_id") == app.config.userId && !data.flag("remote"),
             canReact = writable || isPost,
+            canQuoteRenote = isPost && (data.flag("apub") || data.flag("remote")) && data.text("visibility") in setOf("public", "unlisted"),
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             attachmentSizes = fileRows.associate { it.text("id") to it.text("file_size") },
@@ -490,6 +492,11 @@ internal class ConnectedScreenState(
                     confirmingEntry = null
                     if (post) refreshPost()
                 }
+            }
+            EntryOperation.QuoteRenote -> if (post && action.item.canQuoteRenote) {
+                quoteDraft = action.item
+                if (action.item.postHeader?.audience == PostAudience.Unlisted && postVisibility == "public") postVisibility = "unlisted"
+                overlay = "new-post"
             }
             EntryOperation.Repost -> if (post && action.item.canRepost) changeEntry(action) {
                 app.api.request("/api/activitypub/reposts", if (action.item.reposted) "DELETE" else "POST",
@@ -1353,6 +1360,7 @@ internal class ConnectedScreenState(
                 overlay = "create"
             }
             AndroidUiAction.CreateDm -> { query = ""; dmTargets = emptySet(); encryptedDm = false; overlay = "dm" }
+            AndroidUiAction.RemoveQuote -> quoteDraft = null
             AndroidUiAction.ComposePost -> overlay = "new-post"
             AndroidUiAction.SystemPhotos -> postFiles.pick(photos = true)
             is AndroidUiAction.SelectPhoto -> request { postFiles.add(platform.invoke("pickRecentPhoto", action.id)) }
@@ -1363,7 +1371,7 @@ internal class ConnectedScreenState(
             AndroidUiAction.LoadOlderMessages -> if (channelId.isNotBlank()) app.scope.launch {
                 app.repo.messages(channelId).loadOlder(app.thread?.let(PageScope::Replies) ?: PageScope.Main)
             }
-            is AndroidUiAction.SelectPostVisibility -> postVisibility = action.id
+            is AndroidUiAction.SelectPostVisibility -> if (quoteDraft?.postHeader?.audience != PostAudience.Unlisted || action.id != "public") postVisibility = action.id
             AndroidUiAction.MinimizeCall, AndroidUiAction.FloatCall -> Unit
             AndroidUiAction.Answer -> phone.answer()
             AndroidUiAction.HangUp -> phone.hangup()
@@ -1451,6 +1459,7 @@ internal class ConnectedScreenState(
         val sent = files?.items.orEmpty().toList()
         val uploaded = sent.map { requireNotNull(it.uploaded) }
         val parent = app.thread
+        val quoted = quoteDraft.takeIf { homePost }
         val visibility = postVisibility
         val federate = federatePost && federationAvailable
         val id = platform.uuid()
@@ -1460,6 +1469,7 @@ internal class ConnectedScreenState(
         outgoing.add(pending)
         files?.items?.clear()
         if (homePost) {
+            quoteDraft = null
             postDraft = ""
             postSelection = null
             overlay = null
@@ -1472,7 +1482,7 @@ internal class ConnectedScreenState(
                         val descriptions = sent.mapNotNull { item ->
                             item.description.takeIf { it.isNotBlank() }?.let { item.uploaded!!.text("id") to JsonPrimitive(it) }
                         }.toMap()
-                        app.api.request("/api/home", "POST", obj("content" to text, "visibility" to visibility,
+                        app.api.request("/api/home", "POST", obj("content" to text, "visibility" to visibility, "quote_post_id" to quoted?.id,
                             "image_ids" to JsonArray(uploaded.map { JsonPrimitive(it.text("id")) }),
                             "image_descriptions" to JsonObject(descriptions), "apub" to federate,
                             "sensitive_image_ids" to JsonArray(sent.filter { it.sensitive }.mapNotNull { it.uploaded?.get("id") })))
@@ -1492,6 +1502,7 @@ internal class ConnectedScreenState(
                         if (current.isNotEmpty() || !files?.items.isNullOrEmpty()) app.toast = "編集中の下書きを先に送信してください"
                         else {
                             if (homePost) {
+                                quoteDraft = quoted
                                 postDraft = text
                                 postVisibility = visibility
                                 federatePost = federate

@@ -130,7 +130,7 @@ internal fun NewPostPage(
 ) {
     val input = screen.input
     var describing by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
-    PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
+    PageHeader(if (screen.quoting != null) "引用リノート" else "新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
         screen.visibility?.let { PostAudienceButton(it, colors, dispatch) }
         screen.federate?.let { enabled ->
             FederationButton(enabled, colors) { dispatch(AndroidUiAction.OpenSetting("toggle-federation")) }
@@ -152,11 +152,24 @@ internal fun NewPostPage(
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
                 Box {
-                    if (input.text.isEmpty()) Text("いま何してる？", color = colors.inputHint)
+                    if (input.text.isEmpty()) Text(if (screen.quoting == null) "いま何してる？" else "コメントを追加", color = colors.inputHint)
                     field()
                 }
             },
         )
+        screen.quoting?.let { entry ->
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).background(colors.inputSurface, RoundedCornerShape(12.dp))
+                .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TimelineAvatar(entry.author, entry.avatar, colors, 20.dp)
+                    Text(entry.author, Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    UiIconButton(UiIcon.Close, "引用元を外す", colors.secondary, { dispatch(AndroidUiAction.RemoveQuote) },
+                        iconSize = 16.dp, modifier = Modifier.size(32.dp))
+                }
+                EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji, maxLines = 3)
+            }
+        }
         CharacterCount(input.text, 1000, colors)
         if (screen.showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {

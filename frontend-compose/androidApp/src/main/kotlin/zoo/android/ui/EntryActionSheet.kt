@@ -29,8 +29,8 @@ internal fun EntryActionSheet(
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = colors.background) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
-            Text(entry.body, color = colors.secondary, fontSize = entryTextSize, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            Text(entry.body, Modifier.padding(horizontal = 20.dp), color = colors.secondary, fontSize = entryTextSize, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(12.dp))
             if (open != null) {
                 SheetAction(
@@ -48,6 +48,7 @@ internal fun EntryActionSheet(
             if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート", colors, entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending) {
                 action(EntryOperation.Repost, "")
             }
+            if (entry.canQuoteRenote) SheetAction(UiIcon.Create, "引用リノート", colors) { action(EntryOperation.QuoteRenote, "") }
             SheetAction(UiIcon.Copy, "本文をコピー", colors) {
                 scope.launch {
                     clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, entry.body)))
@@ -62,11 +63,23 @@ internal fun EntryActionSheet(
 private fun SheetAction(icon: UiIcon, title: String, colors: AndroidColors, enabled: Boolean = true, click: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-            .clickable(enabled = enabled, role = Role.Button, onClick = click),
+            .clickable(enabled = enabled, role = Role.Button, onClick = click).padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         UiGlyph(icon, colors.foreground, iconSize = AndroidControlSize.inlineIcon)
         Text(title, color = colors.foreground, fontWeight = AndroidWeights.emphasis)
+    }
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun RenoteSheet(entry: TimelineItem, colors: AndroidColors, dismiss: () -> Unit, choose: (EntryOperation) -> Unit) {
+    ModalBottomSheet(onDismissRequest = dismiss, containerColor = colors.background) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            SheetAction(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート", colors) { choose(EntryOperation.Repost) }
+            SheetAction(UiIcon.Create, "引用リノート", colors) { choose(EntryOperation.QuoteRenote) }
+        }
     }
 }
