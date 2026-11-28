@@ -158,7 +158,8 @@ internal fun NewPostPage(
             },
         )
         screen.quoting?.let { entry ->
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).background(colors.inputSurface, RoundedCornerShape(12.dp))
+            Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                .testTag("composer-quote").background(colors.inputSurface, RoundedCornerShape(12.dp))
                 .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TimelineAvatar(entry.author, entry.avatar, colors, 20.dp)

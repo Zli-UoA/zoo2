@@ -422,6 +422,11 @@ class AndroidSamplesTest {
             for (night in listOf(false, true)) {
                 ui.runOnIdle { screen = example; dark = night }
                 ui.waitForIdle()
+                if (name == "quote-renote") {
+                    val quote = ui.onNodeWithTag("composer-quote").getUnclippedBoundsInRoot()
+                    val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()
+                    assertEquals(12.dp, toolbar.top - quote.bottom)
+                }
                 if (name == "post-attachment-retry" || name == "chat-attachment-retry") {
                     fun target(label: String) = ui.onNodeWithContentDescription("展示.png" + label)
                         .fetchSemanticsNode().touchBoundsInRoot
