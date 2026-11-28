@@ -24,7 +24,7 @@ internal class AndroidNotifications(
     private val manager = activity.getSystemService(NotificationManager::class.java)
     private val token = java.util.UUID.randomUUID().toString()
     private val inbox = NotificationInbox()
-    private val shown = mutableStateMapOf<String, Row>()
+    private val shown = mutableMapOf<String, Row>()
     private val summaries = mutableSetOf<String>()
     private val errors = mutableMapOf<String, String>()
     private val avatars = linkedMapOf<String, Bitmap>()
@@ -49,6 +49,8 @@ internal class AndroidNotifications(
     private val observer: Job
     private val pictureAccessObserver: Job
     private val pictureVersions = mutableMapOf<String, Long>()
+    private data class PostedPicture(val attachmentId: String, val accessVersion: Long)
+    private val postedPictures = mutableStateMapOf<String, PostedPicture>()
 
     init {
         active = this
@@ -62,19 +64,18 @@ internal class AndroidNotifications(
         }
         pictureAccessObserver = app.scope.launch {
             snapshotFlow {
-                shown.values.mapNotNull { previewImage(it)?.text("id") }.associateWith(app.attachmentLinks::accessVersion)
-            }.collect { versions ->
-                for (id in pictureVersions.keys.toList() - versions.keys) {
-                    pictureVersions.remove(id)
-                    pictures.remove(id)
+                postedPictures.filterValues {
+                    app.attachmentLinks.accessVersion(it.attachmentId) != it.accessVersion
                 }
-                for ((id, version) in versions) {
-                    val postedVersion = pictureVersions[id] ?: continue
-                    if (version == postedVersion) continue
-                    pictureVersions.remove(id)
-                    pictures[id] = null
-                    shown.values.filter { previewImage(it)?.text("id") == id }.toList()
-                        .forEach { post(it, refreshSummary = false) }
+            }.collect { revoked ->
+                for ((notificationId, picture) in revoked) {
+                    if (postedPictures[notificationId] != picture) continue
+                    val id = picture.attachmentId
+                    if (pictureVersions[id] == picture.accessVersion) {
+                        pictureVersions.remove(id)
+                        pictures.remove(id)
+                    }
+                    shown[notificationId]?.let { post(it, refreshSummary = false, suppressPicture = true) }
                 }
             }
         }
@@ -137,6 +138,7 @@ internal class AndroidNotifications(
         row: Row,
         error: String? = errors[row.text("id")],
         refreshSummary: Boolean = true,
+        suppressPicture: Boolean = false,
     ) {
         if (!allowed()) return
         val id = row.text("id")
@@ -152,10 +154,11 @@ internal class AndroidNotifications(
         val decrypted = preservedDecryptedBody(manager, tag)
         val body = decrypted ?: notificationBody(row) { key, name -> app.t(key, "actor" to name) }
         val avatar = avatars[notificationAvatar(row)]
-        val image = previewImage(row)
-        val picture = image?.text("id")?.takeIf {
+        val image = if (suppressPicture) null else previewImage(row)
+        val pictureId = image?.text("id")?.takeIf {
             !app.attachmentLinks.isDenied(it) && pictureVersions[it] == app.attachmentLinks.accessVersion(it)
-        }?.let(pictures::get)
+        }
+        val picture = pictureId?.let(pictures::get)
         val self = app.repo.users.rows.value.find { it.text("id") == app.config.userId }
             ?.let(::author)?.ifEmpty { null } ?: "Zoo"
         val destination = PushBinding(activity).openIntent(app.config.userId, id,
@@ -201,8 +204,14 @@ internal class AndroidNotifications(
                     .setStyle(if (picture != null) Notification.BigPictureStyle().bigPicture(picture).setSummaryText(latest)
                         else notificationStyle(row, latest, self, avatar))
             }
-            try { manager.notify(tag, 0, builder.build()) }
-            catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
+            try {
+                manager.notify(tag, 0, builder.build())
+                if (error == null && picture != null && pictureId != null) {
+                    postedPictures[id] = PostedPicture(pictureId, app.attachmentLinks.accessVersion(pictureId))
+                } else {
+                    postedPictures.remove(id)
+                }
+            } catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
         }
         if (refreshSummary) updateSummaries()
         loadAvatar(row)
@@ -221,7 +230,11 @@ internal class AndroidNotifications(
                 if (closed) return
                 pictures[id] = bitmap
                 if (bitmap != null) pictureVersions[id] = app.attachmentLinks.accessVersion(id)
-                while (pictures.size > 8) pictures.remove(pictures.keys.first())
+                while (pictures.size > 8) {
+                    val oldest = pictures.keys.first()
+                    pictures.remove(oldest)
+                    pictureVersions.remove(oldest)
+                }
                 shown.values.filter { previewImage(it)?.text("id") == id }.toList()
                     .forEach { post(it, refreshSummary = false) }
             }
@@ -336,6 +349,7 @@ internal class AndroidNotifications(
     private fun dismiss(id: String, refreshSummary: Boolean = true) {
         manager.cancel(notificationTag(app.repo.config.userId, id), 0)
         shown.remove(id)
+        postedPictures.remove(id)
         errors.remove(id)
         if (refreshSummary) updateSummaries()
     }
@@ -359,6 +373,7 @@ internal class AndroidNotifications(
         observer.cancel()
         pictureAccessObserver.cancel()
         pictureVersions.clear()
+        postedPictures.clear()
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
         pictureJobs.values.forEach { it.cancel() }

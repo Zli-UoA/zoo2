@@ -370,7 +370,16 @@ class ZooMessagingService : FirebaseMessagingService() {
                 images.use {
                     enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
                         val bytes = proxy.image(url, client, images, limit = 4 * 1024 * 1024, push = true)
-                        withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                        try {
+                            withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            normalizedImageSource(base, url)?.toString()?.let { source ->
+                                images.discardUndecodableImage(source, null, bytes)
+                            }
+                            throw failure
+                        }
                     }
                 }
             } finally {
