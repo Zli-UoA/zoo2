@@ -58,7 +58,7 @@ export function CallInvitePicker({
               <label className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted">
                 <input
                   type="checkbox"
-                  className="size-4 accent-emerald-600"
+                  className="size-4 accent-success"
                   checked={checked}
                   disabled={busy || (!checked && chosen.length >= slots)}
                   onChange={(event) =>

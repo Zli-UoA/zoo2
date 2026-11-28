@@ -4,7 +4,6 @@ import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
 import { Button } from "../../ui/button";
 import { SettingsSection } from "../../ui/control-panel";
-import { inputClassName } from "../../ui/input-styles";
 import { useAllUsers } from "../../../hooks/useRealtime";
 import type { SectionProps } from "./AppConsole";
 import {
@@ -80,7 +79,7 @@ function ListField({
       {label}
       {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
       <Textarea
-        className={`${inputClassName()} min-h-20 font-mono text-xs`}
+        className="min-h-20 font-mono text-xs"
         value={text}
         spellCheck={false}
         onChange={(event) => {
@@ -113,24 +112,19 @@ export function BasicSection(props: SectionProps) {
       >
         <label className="flex flex-col gap-1 text-sm">
           {t("apps.name")}
-          <Input className={inputClassName()} required maxLength={80} {...field("name")} />
+          <Input required maxLength={80} {...field("name")} />
         </label>
         <label className="flex flex-col gap-1 text-sm">
           {t("appConsole.basic.username")}
-          <Input
-            className={inputClassName()}
-            maxLength={80}
-            spellCheck={false}
-            {...field("bot_username")}
-          />
+          <Input maxLength={80} spellCheck={false} {...field("bot_username")} />
         </label>
         <label className="flex flex-col gap-1 text-sm">
           {t("apps.about")}
-          <Textarea className={inputClassName()} maxLength={4000} {...field("description")} />
+          <Textarea maxLength={4000} {...field("description")} />
         </label>
         <label className="flex flex-col gap-1 text-sm">
           {t("apps.icon")}
-          <Input className={inputClassName()} type="url" {...field("icon_url")} />
+          <Input type="url" {...field("icon_url")} />
         </label>
       </SettingsSection>
       <SettingsSection title={t("appConsole.basic.summary")}>
@@ -259,7 +253,6 @@ export function EventsSection(props: SectionProps) {
           <label className="flex flex-col gap-1 text-sm">
             {t("appConsole.events.requestUrl")}
             <Input
-              className={inputClassName()}
               type="url"
               value={manifest.event_url ?? ""}
               placeholder="https://"
@@ -284,7 +277,6 @@ export function EventsSection(props: SectionProps) {
         description={t("appConsole.events.subscriptionsHelp")}
       >
         <Input
-          className={inputClassName()}
           aria-label={t("appConsole.events.filter")}
           placeholder={t("appConsole.events.filter")}
           value={filter}
@@ -461,7 +453,7 @@ export function ManifestSection(props: SectionProps) {
         id={id}
         aria-label={t("apps.manifest")}
         aria-invalid={invalid !== null}
-        className={`${inputClassName()} min-h-80 font-mono text-xs`}
+        className="min-h-80 font-mono text-xs"
         spellCheck={false}
         value={text}
         onChange={(event) => setText(event.target.value)}

@@ -6,7 +6,6 @@ import { Input } from "../../ui/input";
 import { Select } from "../../ui/select";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { SettingsSection } from "../../ui/control-panel";
-import { inputClassName } from "../../ui/input-styles";
 import { describeApiError } from "../../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useActiveChannels, useAllUsers } from "../../../hooks/useRealtime";
@@ -589,7 +588,6 @@ export function WebhooksSection(props: SectionProps) {
             <label className="flex min-w-40 flex-1 flex-col gap-1 text-sm">
               {t("webhooks.name")}
               <Input
-                className={inputClassName()}
                 value={name}
                 maxLength={80}
                 onChange={(event) => setName(event.target.value)}

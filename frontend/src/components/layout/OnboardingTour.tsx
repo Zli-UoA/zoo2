@@ -207,12 +207,12 @@ export function OnboardingButton() {
     <Button
       variant="ghost"
       size="icon"
-      className="size-10 rounded-xl text-muted-foreground"
+      className="size-10"
       onClick={start}
       aria-label={t("onboarding.replay")}
       title={t("onboarding.replay")}
     >
-      <CompassIcon aria-hidden="true" className="size-5" />
+      <CompassIcon aria-hidden="true" className="size-5 text-muted-foreground" />
     </Button>
   );
 }

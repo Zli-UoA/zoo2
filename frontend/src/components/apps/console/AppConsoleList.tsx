@@ -11,7 +11,6 @@ import { PaneHeader } from "../../layout/PaneHeader";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
-import { inputClassName } from "../../ui/input-styles";
 import {
   Dialog,
   DialogContent,
@@ -227,7 +226,6 @@ function CreateAppDialog({ onClose }: { onClose: () => void }) {
           <label className="flex flex-col gap-1 text-sm">
             {t("apps.name")}
             <Input
-              className={inputClassName()}
               required
               maxLength={80}
               value={name}
@@ -237,7 +235,6 @@ function CreateAppDialog({ onClose }: { onClose: () => void }) {
           <label className="flex flex-col gap-1 text-sm">
             {t("apps.about")}
             <Textarea
-              className={inputClassName()}
               maxLength={4000}
               value={description}
               onChange={(event) => setDescription(event.target.value)}

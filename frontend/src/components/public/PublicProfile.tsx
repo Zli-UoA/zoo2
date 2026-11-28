@@ -77,7 +77,7 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
         <Link
           to="/"
           aria-label="Zoo"
-          className="inline-flex items-center gap-2.5 text-[2.5rem] font-extrabold leading-none tracking-[-.06em] text-foreground"
+          className="inline-flex items-center gap-2.5 text-4xl font-extrabold leading-none tracking-tighter text-foreground"
         >
           <img src="/icons/zoo.svg" alt="" width={40} height={40} className="size-10 rounded-xl" />
           <span>

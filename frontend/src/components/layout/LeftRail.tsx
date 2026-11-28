@@ -85,7 +85,7 @@ export function LeftRail() {
           <DialogTrigger
             aria-label={t("aboutZoo.title")}
             title={t("aboutZoo.title")}
-            render={<Button size="icon" variant="ghost" className="size-11 rounded-xl" />}
+            render={<Button size="icon" variant="ghost" className="size-11" />}
           >
             <img src="/icons/zoo.svg" alt="" width={36} height={36} className="size-9 rounded-xl" />
           </DialogTrigger>

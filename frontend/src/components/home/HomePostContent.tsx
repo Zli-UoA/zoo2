@@ -79,14 +79,16 @@ function QuoteCard({ quote }: { quote: HomeQuote }) {
     >
       {post ? (
         <>
-          <QuotePostLink quote={quote} className="flex min-w-0 items-center gap-2">
-            <ActivityPubAvatar name={name} avatar={post.avatar} avatarUrl={post.avatar_url} />
-            <span className="min-w-0">
-              <span className="block break-words font-semibold text-foreground">
-                <ActivityPubText text={name} emojis={post.actor_emojis} />
-              </span>
-              <span className="block break-words text-xs text-muted-foreground">
-                @{post.user_name}
+          <QuotePostLink quote={quote} className="min-w-0">
+            <span className="flex min-w-0 items-center gap-2">
+              <ActivityPubAvatar name={name} avatar={post.avatar} avatarUrl={post.avatar_url} />
+              <span className="min-w-0">
+                <span className="block break-words font-semibold text-foreground">
+                  <ActivityPubText text={name} emojis={post.actor_emojis} />
+                </span>
+                <span className="block break-words text-xs text-muted-foreground">
+                  @{post.user_name}
+                </span>
               </span>
             </span>
           </QuotePostLink>
@@ -149,7 +151,7 @@ export const HomePostContent = memo(function HomePostContent({
             : content
         : content;
   return (
-    <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+    <div className="mfm-body mt-2 whitespace-pre-wrap break-words wrap-anywhere text-sm leading-relaxed">
       {body.trim() ? <ActivityPubContent text={body} emojis={emojis} /> : null}
       {previewLinks ? (
         <LinkPreviews

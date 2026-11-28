@@ -258,7 +258,7 @@ export function DeviceSummary({
         {cleanup.length > 0 ? (
           // 削除を勧める理由を文字でも出す（背景の色だけで区別しない）。30 日の印があれば、7 日の印は
           // 重ねない。
-          <span className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300">
+          <span className="flex items-center gap-1 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-xs text-warning-strong">
             <ClockIcon aria-hidden="true" className="size-3" />
             {cleanup.includes("stale")
               ? t("e2ee.devices.stale", { days: STALE_DEVICE_DAYS })
@@ -274,7 +274,7 @@ export function DeviceSummary({
           .filter(Boolean)
           .join(" · ")}
       </p>
-      <p className="font-mono text-[11px] text-muted-foreground" translate="no">
+      <p className="font-mono text-micro text-muted-foreground" translate="no">
         {device.deviceId}
       </p>
     </div>
@@ -392,7 +392,7 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
             key={device.deviceId}
             className={cn(
               "flex items-start justify-between gap-3 p-3",
-              (cleanup.get(device.deviceId)?.length ?? 0) > 0 && "bg-amber-500/5",
+              (cleanup.get(device.deviceId)?.length ?? 0) > 0 && "bg-warning/5",
             )}
           >
             <div className="flex min-w-0 items-start gap-3">
