@@ -997,7 +997,12 @@ class RepositoryTest {
                                     secondSubsetStarted.complete(Unit)
                                     respond("{}", HttpStatusCode.BadRequest)
                                 }
-                                else -> respond(snapshot(listOf(message(10))), headers = protocolHeaders(handle))
+                                else -> {
+                                    // The replacement page belongs to the second generation. A timer retry
+                                    // from the first generation must not serve the second snapshot early.
+                                    if (p["handle"] != "h2") respond("{}", HttpStatusCode.BadRequest)
+                                    else respond(snapshot(listOf(message(10))), headers = protocolHeaders(handle))
+                                }
                             }
                         }
                         p["live"] == "true" || p["live_sse"] == "true" -> {
