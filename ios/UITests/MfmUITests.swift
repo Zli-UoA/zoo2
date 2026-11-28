@@ -168,7 +168,17 @@ final class MfmUITests: XCTestCase {
         XCTAssertLessThanOrEqual(input.frame.height, firstHeight * 6 + 2)
         let prefix = input.value as? String ?? ""
         input.typeText("$je")
-        app.buttons["mfm-option-jelly"].tap()
+        let candidate = app.buttons["mfm-option-jelly"]
+        var previousFrame = CGRect.null
+        var stableSince = Date()
+        let stableFrame = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard candidate.exists, candidate.isHittable else { return false }
+            let frame = candidate.frame
+            if frame != previousFrame { previousFrame = frame; stableSince = Date(); return false }
+            return Date().timeIntervalSince(stableSince) >= 0.5
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stableFrame], timeout: 8), .completed)
+        candidate.tap()
         input.typeText("本文😀")
         XCTAssertEqual(input.value as? String, prefix + "$[jelly 本文😀]")
     }
