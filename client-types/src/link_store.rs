@@ -101,10 +101,16 @@ enum Looked<'a> {
     Failed,
 }
 
-fn look<'a>(fetched: &'a Fetched, key: &LinkedMessage) -> Looked<'a> {
+fn look<'a>(
+    fetched: &'a Fetched,
+    live: &HashSet<LinkedMessage>,
+    key: &LinkedMessage,
+) -> Looked<'a> {
     match fetched.get(key) {
         None | Some(LinkedFetch::Loading { stalled: false }) => Looked::Waiting,
         Some(LinkedFetch::Loading { stalled: true } | LinkedFetch::Failed) => Looked::Failed,
+        // 購読が途切れた結果は、削除などを見落としているかもしれないので、取り直しを待つ。
+        Some(_) if !live.contains(key) => Looked::Waiting,
         Some(LinkedFetch::Found(message))
             if message.id == key.message_id
                 && message.channel_id == key.channel_id
@@ -116,13 +122,19 @@ fn look<'a>(fetched: &'a Fetched, key: &LinkedMessage) -> Looked<'a> {
     }
 }
 
-/// 取得した結果で、`message_id` へ移れるか。返信は、送る先になる親の行も確かめる。
-pub fn destination(fetched: &Fetched, channel_id: &str, message_id: &str) -> Destination {
+/// 取得した結果で、`message_id` へ移れるか。返信は、送る先になる親の行も確かめる。`live` は、
+/// 変化を受け取り続けている結果のリンク先で、ほかの結果は使わない。
+pub fn destination(
+    fetched: &Fetched,
+    live: &HashSet<LinkedMessage>,
+    channel_id: &str,
+    message_id: &str,
+) -> Destination {
     let key = |message_id: &str| LinkedMessage {
         channel_id: channel_id.to_owned(),
         message_id: message_id.to_owned(),
     };
-    let message = match look(fetched, &key(message_id)) {
+    let message = match look(fetched, live, &key(message_id)) {
         Looked::Shown(message) => message,
         Looked::Waiting => return Destination::Waiting(vec![key(message_id)]),
         Looked::Unavailable => return Destination::Unavailable,
@@ -131,7 +143,7 @@ pub fn destination(fetched: &Fetched, channel_id: &str, message_id: &str) -> Des
     let Some(parent_id) = &message.parent_id else {
         return Destination::Ready;
     };
-    match look(fetched, &key(parent_id)) {
+    match look(fetched, live, &key(parent_id)) {
         Looked::Shown(parent) if parent.parent_id.is_none() => Destination::Ready,
         Looked::Shown(_) | Looked::Unavailable => Destination::Unavailable,
         Looked::Waiting => Destination::Waiting(vec![key(message_id), key(parent_id)]),
@@ -389,7 +401,8 @@ mod tests {
     #[test]
     fn another_channel_is_opened_only_when_its_row_is_shown() {
         let mut fetched = Fetched::new();
-        let check = |fetched: &Fetched, id| destination(fetched, "there", id);
+        let live: HashSet<LinkedMessage> = ["a", "r", "p"].map(|id| key("there", id)).into();
+        let check = |fetched: &Fetched, id| destination(fetched, &live, "there", id);
         assert_eq!(
             check(&fetched, "a"),
             Destination::Waiting(vec![key("there", "a")])
@@ -416,6 +429,22 @@ mod tests {
             fetched.insert(key("there", "p"), failed);
             assert_eq!(check(&fetched, "r"), Destination::Failed);
         }
+        // 購読が途切れた結果は、表示できてもできなくても、取り直しを待つ。
+        fetched.insert(key("there", "a"), found("a", "there", json!({})));
+        fetched.insert(key("there", "p"), found("p", "there", json!({})));
+        let stale = |live: &[&str], id| {
+            let live = live.iter().map(|id| key("there", id)).collect();
+            destination(&fetched, &live, "there", id)
+        };
+        assert_eq!(
+            stale(&[], "a"),
+            Destination::Waiting(vec![key("there", "a")])
+        );
+        assert_eq!(
+            stale(&["r"], "r"),
+            Destination::Waiting(vec![key("there", "r"), key("there", "p")])
+        );
+        assert_eq!(stale(&["r", "p"], "r"), Destination::Ready);
     }
 
     #[test]

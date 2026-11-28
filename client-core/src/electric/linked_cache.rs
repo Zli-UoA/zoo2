@@ -32,9 +32,17 @@ pub type LinkedKey = (String, String);
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkReport {
     /// 状態が変わったリンク先。分かっていたことがなくなったものは `None`。
-    pub linked: Vec<(LinkedKey, Option<LinkedFetch>)>,
+    pub linked: Vec<(LinkedKey, Option<LinkedState>)>,
     /// 暗号文の行が届いたことのあるチャンネルのすべて。
     pub ciphertext: Vec<String>,
+}
+
+/// [`LinkedCache::report`] で返す、リンク先の状態。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkedState {
+    pub fetch: LinkedFetch,
+    /// [`LinkedCache::is_live`]。
+    pub live: bool,
 }
 
 struct Fetching {
@@ -64,6 +72,8 @@ pub struct LinkedCache {
     /// 取得できた結果。その ID のメッセージがなければ `None`。
     results: HashMap<LinkedKey, Option<Box<Message>>>,
     order: VecDeque<LinkedKey>,
+    /// いまの購読で取得できて、追い続けているリンク先。
+    confirmed: HashSet<LinkedKey>,
     failed: HashSet<LinkedKey>,
     started: HashMap<LinkedKey, Instant>,
     /// 購読するチャンネルの上限を超えて、取得していないリンク先。
@@ -75,7 +85,7 @@ pub struct LinkedCache {
     /// 暗号文の行が届いたことのあるチャンネル。行を捨てたあとも忘れない。
     ciphertext: BTreeSet<String>,
     /// [`Self::report`] で返した状態。
-    reported: HashMap<LinkedKey, LinkedFetch>,
+    reported: HashMap<LinkedKey, LinkedState>,
     /// 前の [`Self::report`] のあとで、[`Self::ciphertext`] が増えたか。
     ciphertext_changed: bool,
     /// 次の [`Self::report`] で、画面の近くのリンク先は変わっていなくても返す。
@@ -105,6 +115,12 @@ impl LinkedCache {
                     .is_some_and(|at| now.duration_since(*at) >= LOAD_TIMEOUT),
             },
         }
+    }
+
+    /// このリンク先の結果を、いまの購読で取得して、変化を受け取り続けているか。購読を閉じたり、
+    /// 追うのをやめたりしたあとに残る結果は、削除などを見落としているかもしれない。
+    pub fn is_live(&self, key: &LinkedKey) -> bool {
+        self.confirmed.contains(key) && self.channels.get(&key.0).is_some_and(Fetching::is_running)
     }
 
     /// いまの購読の番号。購読していなければ `None`。
@@ -145,11 +161,13 @@ impl LinkedCache {
         let mut linked = Vec::new();
         for key in keys {
             let again = again.contains(&key);
+            let live = self.is_live(&key);
             // 変わっていない行は、写さずに比べる。
             if !again
-                && let (Some(Some(message)), Some(LinkedFetch::Found(sent))) =
+                && let (Some(Some(message)), Some(sent)) =
                     (self.results.get(&key), self.reported.get(&key))
-                && message == sent
+                && sent.live == live
+                && matches!(&sent.fetch, LinkedFetch::Found(sent) if sent == message)
             {
                 continue;
             }
@@ -158,9 +176,12 @@ impl LinkedCache {
                 if self.reported.remove(&key).is_some() {
                     linked.push((key, None));
                 }
-            } else if again || self.reported.get(&key) != Some(&fetch) {
-                self.reported.insert(key.clone(), fetch.clone());
-                linked.push((key, Some(fetch)));
+                continue;
+            }
+            let state = LinkedState { fetch, live };
+            if again || self.reported.get(&key) != Some(&state) {
+                self.reported.insert(key.clone(), state.clone());
+                linked.push((key, Some(state)));
             }
         }
         if linked.is_empty() && !self.ciphertext_changed {
@@ -269,10 +290,12 @@ impl LinkedCache {
                 }
             });
             fetching.last_wanted = now;
-            if fetching.wanted.insert(message_id.clone(), now).is_none()
-                && !self.results.contains_key(&key)
-            {
-                self.started.entry(key.clone()).or_insert(now);
+            if fetching.wanted.insert(message_id.clone(), now).is_none() {
+                // 追うのをやめていたものは、取り直すまで確かめられていない。
+                self.confirmed.remove(&key);
+                if !self.results.contains_key(&key) {
+                    self.started.entry(key.clone()).or_insert(now);
+                }
             }
         }
         let expired: Vec<String> = self
@@ -295,6 +318,7 @@ impl LinkedCache {
             channels,
             visible,
             results,
+            confirmed,
             failed,
             started,
             ..
@@ -310,6 +334,7 @@ impl LinkedCache {
                 let keep = now.duration_since(*at) < RELEASE_DELAY;
                 if !keep {
                     let key = (channel_id.clone(), id.clone());
+                    confirmed.remove(&key);
                     started.remove(&key);
                     failed.remove(&key);
                 }
@@ -352,6 +377,7 @@ impl LinkedCache {
         if let Some(fetching) = self.channels.remove(channel_id) {
             fetching.task.abort();
         }
+        self.confirmed.retain(|(channel, _)| channel != channel_id);
         // 失敗は覚えず、次に表示したときに取り直す。
         self.failed.retain(|(channel, _)| channel != channel_id);
         self.started.retain(|(channel, _), _| channel != channel_id);
@@ -369,6 +395,7 @@ impl LinkedCache {
             self.results.remove(key);
         }
         self.order.retain(|(channel, _)| channel != channel_id);
+        self.confirmed.retain(|(channel, _)| channel != channel_id);
         keys
     }
 
@@ -457,6 +484,7 @@ impl LinkedCache {
                         Some(Ok(message)) => Some(Box::new(message)),
                         // 読めない行は、取得できなかったものとする。
                         Some(Err(_)) => {
+                            self.confirmed.remove(&key);
                             self.started.remove(&key);
                             if self.results.remove(&key).is_some() {
                                 self.order.retain(|old| *old != key);
@@ -468,6 +496,14 @@ impl LinkedCache {
                     };
                     self.started.remove(&key);
                     self.failed.remove(&key);
+                    // 追うのをやめたあとに届いたものは、次の変化を受け取らない。
+                    if self
+                        .channels
+                        .get(&key.0)
+                        .is_some_and(|fetching| fetching.wanted.contains_key(&key.1))
+                    {
+                        self.confirmed.insert(key.clone());
+                    }
                     if self.results.insert(key.clone(), message).is_none() {
                         self.order.push_back(key);
                     }
@@ -475,6 +511,9 @@ impl LinkedCache {
                 self.evict();
             }
             LinkedEvent::Ciphertext { .. } => {}
+            LinkedEvent::Restarted { channel_id } => {
+                self.confirmed.retain(|(channel, _)| *channel != channel_id);
+            }
             LinkedEvent::Failed {
                 channel_id,
                 message_ids,
@@ -782,7 +821,7 @@ mod tests {
             .unwrap_or_default()
             .into_iter()
             .map(|(key, fetch)| {
-                let name = fetch.map(|fetch| match fetch {
+                let name = fetch.map(|state| match state.fetch {
                     LinkedFetch::Found(_) => "found",
                     LinkedFetch::Missing => "missing",
                     LinkedFetch::Failed => "failed",
@@ -837,6 +876,67 @@ mod tests {
             [(key("m1"), None), (key("m2"), None)]
         );
         assert!(links.visible.is_empty());
+    }
+
+    #[tokio::test]
+    async fn results_kept_after_unsubscribing_are_not_live_until_fetched_again() {
+        let mut links = LinkedCache::default();
+        let start = Instant::now();
+        let live = |report: Option<LinkReport>| -> Vec<bool> {
+            let linked = report.map(|report| report.linked).unwrap_or_default();
+            linked
+                .into_iter()
+                .filter_map(|(_, state)| state.map(|state| state.live))
+                .collect()
+        };
+        let generation = subscribe(&mut links, start, &["m1"]);
+        links.apply(generation, rows("m1", Some("本文")));
+        assert!(links.is_live(&key("m1")));
+        assert_eq!(live(links.report(start)), [true]);
+        assert_eq!(live(links.report(start)), Vec::<bool>::new());
+        // 画面の近くから外れて購読を閉じても内容は残すが、確かめられていないものにする。
+        links.watch(start, Vec::new(), |_, _, _| idle());
+        let later = start + RELEASE_DELAY;
+        links.sync(later, |_, _, _| idle());
+        assert_eq!(links.generation("c1"), None);
+        assert!(!links.is_live(&key("m1")));
+        assert_eq!(live(links.report(later)), [false]);
+        let generation = subscribe(&mut links, later, &["m1"]);
+        assert!(!links.is_live(&key("m1")));
+        assert!(matches!(
+            links.fetch(&key("m1"), later),
+            LinkedFetch::Found(_)
+        ));
+        // 内容が同じでも、取り直せたら伝える。
+        links.apply(generation, rows("m1", Some("本文")));
+        assert_eq!(live(links.report(later)), [true]);
+        // サーバーの指示で取り直す間も、確かめられていないものにする。
+        let channel_id = "c1".to_owned();
+        links.apply(generation, LinkedEvent::Restarted { channel_id });
+        assert_eq!(live(links.report(later)), [false]);
+        links.apply(generation, rows("m1", Some("本文")));
+        assert_eq!(live(links.report(later)), [true]);
+    }
+
+    #[tokio::test]
+    async fn a_link_tracked_again_waits_for_a_new_result() {
+        let mut links = LinkedCache::default();
+        let start = Instant::now();
+        let generation = subscribe(&mut links, start, &["m1", "m2"]);
+        links.apply(generation, rows("m1", Some("本文")));
+        // 同じ購読のまま、m1 だけを追うのをやめる。
+        links.watch(start, vec![key("m2")], |_, _, _| idle());
+        let later = start + RELEASE_DELAY;
+        links.sync(later, |_, _, _| idle());
+        assert_eq!(links.generation("c1"), Some(generation));
+        assert!(!links.is_live(&key("m1")));
+        // 追っていない間に届いたものは、確かめたことにしない。
+        links.apply(generation, rows("m1", Some("本文")));
+        assert!(!links.is_live(&key("m1")));
+        links.watch(later, vec![key("m1"), key("m2")], |_, _, _| idle());
+        assert!(!links.is_live(&key("m1")));
+        links.apply(generation, rows("m1", None));
+        assert!(links.is_live(&key("m1")));
     }
 
     #[tokio::test]

@@ -1611,12 +1611,13 @@ fn link_update(report: LinkReport) -> LinkedUpdate {
         linked: report
             .linked
             .into_iter()
-            .map(|((channel_id, message_id), fetch)| Linked {
+            .map(|((channel_id, message_id), state)| Linked {
                 target: LinkedMessage {
                     channel_id,
                     message_id,
                 },
-                fetch,
+                live: state.as_ref().is_some_and(|state| state.live),
+                fetch: state.map(|state| state.fetch),
             })
             .collect(),
         ciphertext: report.ciphertext,

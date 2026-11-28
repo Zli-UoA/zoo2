@@ -229,16 +229,20 @@ impl Ctx {
         match to {
             // 別のチャンネルのメッセージは、表示できると分かるまで移らない（書きかけの本文を保つ）。
             Some(to) if !here => self.check_destination(to),
-            to => {
-                self.open_channel(target.channel_id.clone());
-                self.jump.set(to);
+            // 開いているチャンネルの中は、行へ送るだけ。
+            Some(to) => {
+                self.notice.set(None);
+                self.jump.set(Some(to));
             }
+            None => self.open_channel(target.channel_id.clone()),
         }
     }
 
+    /// 取得した結果で、行き先へ移れるか。読んだ値が変わると、呼び出し元はもう一度調べる。
     fn destination(&self, to: &Jump) -> Destination {
-        self.linked.with_untracked(|fetched| {
-            link_store::destination(fetched, &to.channel_id, &to.message_id)
+        self.linked.with(|fetched| {
+            self.live
+                .with(|live| link_store::destination(fetched, live, &to.channel_id, &to.message_id))
         })
     }
 
@@ -249,7 +253,7 @@ impl Ctx {
 
     fn check_destination(&self, to: Jump) {
         self.jump.set(None);
-        match self.destination(&to) {
+        match untrack(|| self.destination(&to)) {
             Destination::Ready => self.open_destination(to),
             Destination::Unavailable => self.notice.set(Some(UNAVAILABLE_MESSAGE)),
             Destination::Waiting(_) | Destination::Failed => {
@@ -266,8 +270,26 @@ impl Ctx {
                 self.watch_round.update_value(|round| *round += 1);
                 self.notice.set(Some(CHECKING));
                 self.pending.set(Some(to));
+                self.give_up_destination_later();
             }
         }
+    }
+
+    /// 時間がたっても行き先が分からなければ、読み込めなかったものとする。前の結果が残る行き先は、
+    /// 取り直せなくても、取得の時間切れにならない。
+    fn give_up_destination_later(self) {
+        let round = self.watch_round.get_value();
+        set_timeout(
+            move || {
+                if self.watch_round.try_get_value() == Some(round)
+                    && self.pending.with_untracked(Option::is_some)
+                {
+                    self.pending.set(None);
+                    self.notice.set(Some(LOAD_FAILED));
+                }
+            },
+            links::LOAD_TIMEOUT,
+        );
     }
 
     /// 知らせを閉じる。行き先を確かめていたら、やめる。
@@ -278,17 +300,12 @@ impl Ctx {
 
     /// 行き先を確かめるために、取得してもらうリンク先。
     fn pending_targets(&self) -> Vec<LinkedMessage> {
-        self.pending.with(|pending| {
-            let Some(to) = pending else {
-                return Vec::new();
-            };
-            self.linked.with(|fetched| {
-                match link_store::destination(fetched, &to.channel_id, &to.message_id) {
-                    Destination::Waiting(targets) => targets,
-                    _ => Vec::new(),
-                }
-            })
-        })
+        self.pending.with(
+            |pending| match pending.as_ref().map(|to| self.destination(to)) {
+                Some(Destination::Waiting(targets)) => targets,
+                _ => Vec::new(),
+            },
+        )
     }
 
     /// 本文のアプリ内リンクのクリック。WebView を移動させず、アプリの中で開く（修飾キーを
@@ -351,7 +368,6 @@ pub fn follow_destination() {
         let Some(to) = ctx.pending.get() else {
             return;
         };
-        ctx.linked.track();
         let note = match ctx.destination(&to) {
             Destination::Waiting(_) => return,
             Destination::Ready => {

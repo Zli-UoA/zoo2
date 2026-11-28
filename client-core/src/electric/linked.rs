@@ -27,6 +27,8 @@ pub enum LinkedEvent {
     },
     /// 暗号文のある行が届いた（取得を頼まれていない行を含む）。購読ごとに 1 回で、その行より先に送る。
     Ciphertext { channel_id: String },
+    /// サーバーの指示で取り直す。取得した行は、届き直すまで変化を受け取れていないかもしれない。
+    Restarted { channel_id: String },
     /// 再試行しても取得できない失敗（4xx）。購読は止まる。
     Failed {
         channel_id: String,
@@ -39,6 +41,7 @@ impl LinkedEvent {
         match self {
             LinkedEvent::Rows { channel_id, .. }
             | LinkedEvent::Ciphertext { channel_id }
+            | LinkedEvent::Restarted { channel_id }
             | LinkedEvent::Failed { channel_id, .. } => channel_id,
         }
     }
@@ -190,6 +193,10 @@ async fn run(
                 }
                 Ok(Ok(None)) => {
                     wanted.refetch();
+                    let channel_id = channel_id.clone();
+                    if !events(LinkedEvent::Restarted { channel_id }) {
+                        return;
+                    }
                     continue;
                 }
                 Ok(Err(err)) if is_fatal(&err) => (false, Err(err)),
@@ -233,6 +240,10 @@ async fn run(
                     live_backoff = FIRST_BACKOFF;
                     if batch.reset {
                         wanted.refetch();
+                        let channel_id = channel_id.clone();
+                        if !events(LinkedEvent::Restarted { channel_id }) {
+                            return;
+                        }
                     }
                     let ciphertext = batch.changes.iter().any(
                         |change| matches!(change, Change::Upsert { row, .. } if has_ciphertext(row)),
@@ -688,6 +699,10 @@ mod tests {
             assert_eq!(rows[0].0, id);
         }
         requests.send(ids(&["m2"])).unwrap();
+        assert!(matches!(
+            next(&mut events).await,
+            LinkedEvent::Restarted { .. }
+        ));
         let LinkedEvent::Rows { rows, .. } = next(&mut events).await else {
             panic!("取り直した行が届く");
         };

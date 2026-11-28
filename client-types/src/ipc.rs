@@ -349,6 +349,9 @@ pub struct Linked {
     pub target: LinkedMessage,
     /// `None` は、分かっていたことがなくなった（捨てた）。画面も捨てる。
     pub fetch: Option<LinkedFetch>,
+    /// いまの購読で取得して、変化を受け取り続けている結果か。偽の結果は、埋め込みには出すが、
+    /// 削除などを見落としているかもしれないので、移動先の判定には使わない。
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

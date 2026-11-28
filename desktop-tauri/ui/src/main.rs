@@ -137,6 +137,8 @@ struct Ctx {
     starting: RwSignal<bool>,
     /// 本文のリンクが指すメッセージで、Rust 側が取った結果。
     linked: RwSignal<link_store::Fetched>,
+    /// その結果のうち、変化を受け取り続けているもの。
+    live: RwSignal<HashSet<LinkedMessage>>,
     /// 開いているチャンネルの同期した行に、暗号文の行があるか。
     open_ciphertext: Memo<bool>,
     /// 暗号文の行が届いたことのあるチャンネル（Rust 側のリンク先の取得を含む）。
@@ -210,6 +212,7 @@ impl Ctx {
             self.store.set(Store::default());
             self.channel.set(None);
             self.linked.set(Default::default());
+            self.live.set(Default::default());
             self.ciphertext.set(Default::default());
             self.stopped.set(Default::default());
             self.watched.set_value(None);
@@ -222,22 +225,31 @@ impl Ctx {
         }
     }
 
-    /// チャンネルを切り替える。前のチャンネルの行は捨ててから購読を切り替えてもらう。
+    /// チャンネルを切り替える。前のチャンネルの行は捨ててから購読を切り替えてもらう。同期が停止した
+    /// チャンネルを選び直したときは、書きかけの本文を保って、購読し直してもらう。
     fn open_channel(&self, channel_id: String) {
         self.jump.set(None);
         self.pending.set(None);
         self.notice.set(None);
-        if let Some(old) = self.channel.get_untracked() {
-            if old == channel_id {
-                return;
-            }
+        let old = self.channel.get_untracked();
+        let switching = old.as_ref() != Some(&channel_id);
+        let stopped = self
+            .stopped
+            .with_untracked(|stopped| stopped.contains(&channel_id));
+        if !switching && !stopped {
+            return;
+        }
+        if let Some(old) = old {
             self.store
                 .update(|store| store.forget(&ShapeId::Messages(old)));
         }
         self.stopped.update(|stopped| {
             stopped.remove(&channel_id);
         });
-        self.channel.set(Some(channel_id.clone()));
+        // 同じチャンネルでは、入力欄を作り直さないよう、値を変えない。
+        if switching {
+            self.channel.set(Some(channel_id.clone()));
+        }
         self.wait_for_rows();
         let ctx = *self;
         spawn_local(async move {
@@ -316,6 +328,15 @@ impl Ctx {
                 .update(|seen| seen.extend(update.ciphertext));
         }
         if !update.linked.is_empty() {
+            self.live.update(|live| {
+                for update in &update.linked {
+                    if update.live {
+                        live.insert(update.target.clone());
+                    } else {
+                        live.remove(&update.target);
+                    }
+                }
+            });
             self.linked.update(|linked| {
                 for update in update.linked {
                     match update.fetch {
@@ -387,6 +408,7 @@ fn App() -> impl IntoView {
         generation: RwSignal::new(0),
         starting: RwSignal::new(false),
         linked: RwSignal::new(Default::default()),
+        live: RwSignal::new(Default::default()),
         watched: StoredValue::new(None),
         watching: StoredValue::new(false),
         jump: RwSignal::new(None),
