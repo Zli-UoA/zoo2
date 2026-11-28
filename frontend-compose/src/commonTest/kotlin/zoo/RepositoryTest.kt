@@ -1021,8 +1021,18 @@ class RepositoryTest {
                             liveUpdate.await()
                             sentUpdate = true
                             respond(
-                                """[{"key":"live-channel","value":{"id":"live-channel"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]""",
-                                headers = protocolHeaders("new", cursor = "live-cursor"),
+                                """
+                                data: {"key":"live-channel","value":{"id":"live-channel"},"headers":{"operation":"insert"}}
+
+                                data: {"headers":{"control":"up-to-date"}}
+
+                                """.trimIndent() + "\n",
+                                headers = headersOf(
+                                    "content-type" to listOf("text/event-stream"),
+                                    "electric-handle" to listOf("new"),
+                                    "electric-offset" to listOf("3_0"),
+                                    "electric-cursor" to listOf("live-cursor"),
+                                ),
                             )
                         }
                         invalidate && handle == "old" -> {
