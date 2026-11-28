@@ -59,6 +59,7 @@ internal fun NotificationPage(
     onOpen: (String) -> Unit,
     loadMore: () -> Unit,
     loadFailed: Boolean,
+    appendFailed: Boolean = false,
     retry: () -> Unit,
     respond: (String, String, Boolean) -> Unit,
 ) {
@@ -84,7 +85,7 @@ internal fun NotificationPage(
     val nextPage by rememberUpdatedState(loadMore)
     val lastVisible = items.lastOrNull()?.id?.takeIf { it in visible }
     LaunchedEffect(lastVisible, foreground, nextCursor) {
-        if (foreground && lastVisible != null && nextCursor != null) nextPage()
+        if (foreground && !appendFailed && lastVisible != null && nextCursor != null) nextPage()
     }
     val viewed by rememberUpdatedState(onViewed)
     LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp)) {
@@ -170,6 +171,12 @@ internal fun NotificationPage(
                         }
                     }
                 }
+            }
+        }
+        if (appendFailed) item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("過去の通知を取得できませんでした", Modifier.weight(1f), color = colors.secondary)
+                TextAction("再試行", colors, icon = UiIcon.Refresh, click = loadMore)
             }
         }
     }

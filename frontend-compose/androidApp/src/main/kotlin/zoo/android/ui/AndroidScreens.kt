@@ -134,7 +134,7 @@ internal sealed interface AndroidScreen {
         val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
     ) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
-    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
+    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false, val appendFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
     data class Conversation(
@@ -391,7 +391,7 @@ private fun RenderAndroidScreen(
                 onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
                 onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
                 loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },
-                loadFailed = screen.loadFailed, retry = { dispatch(AndroidUiAction.RetryNotifications) },
+                appendFailed = screen.appendFailed, loadFailed = screen.loadFailed, retry = { dispatch(AndroidUiAction.RetryNotifications) },
                 respond = { actor, activity, accept -> dispatch(AndroidUiAction.RespondFollow(actor, activity, accept)) },
             )
             is AndroidScreen.Bubble -> {

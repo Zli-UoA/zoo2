@@ -25,6 +25,9 @@ class ActivityPubNotificationsState(
     var error by mutableStateOf(false)
         private set
 
+    var appendError by mutableStateOf(false)
+        private set
+
     var nextCursor by mutableStateOf<String?>(null)
         private set
 
@@ -129,11 +132,14 @@ class ActivityPubNotificationsState(
             } else if (gap == null && nextCursor != null && retained.all { it.text("id") in headIds }) {
                 nextCursor = cursor
             }
+            if (append || nextCursor == null) appendError = false
             error = false
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            if (ticket == generation) error = true
+            if (ticket == generation) {
+                if (append) appendError = true else error = true
+            }
         } finally {
             if (ticket == generation) {
                 if (append) loadingMore = false else loading = false

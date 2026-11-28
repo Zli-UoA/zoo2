@@ -28,6 +28,7 @@ internal class NotificationInboxBinding(private val app: Session) {
                 it.reactionContext?.let { context -> InboxReactionContext(context.id, context.actorIds) }) },
             nextCursor = inbox.nextCursor,
             loadFailed = inbox.loadFailed,
+            appendFailed = app.activityPubNotifications.appendError,
         )
     }
 
