@@ -70,8 +70,8 @@ describe("Message card rendering", () => {
     );
     expect(cards).toHaveLength(3);
     const html = cards!.map((card) => renderCard(card)).join("");
-    expect(html).toContain("border-left-color:#2eb886");
-    expect(html).toContain("border-left-color:#ff0000");
+    expect(html).toContain("--card-accent:#2eb886");
+    expect(html).toContain("--card-accent:#ff0000");
     expect(html).not.toContain("evil");
     expect(parseMessageCards('{"cards":[]}')).toBeNull();
     expect(parseMessageCards('{"cards":[{"title":"ok"},null]}')).toBeNull();

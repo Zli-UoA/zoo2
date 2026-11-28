@@ -115,7 +115,7 @@ export function ForwardedMessageCard({
   if (resolved.status === "loading") {
     return (
       <div
-        className="mt-1.5 max-w-2xl rounded-r-lg border border-l-[3px] border-l-muted-foreground/40 bg-muted/30 px-3 py-2"
+        className="mt-1.5 max-w-2xl rounded-r-lg border border-l-4 border-l-muted-foreground/40 bg-muted/30 px-3 py-2"
         aria-busy="true"
         aria-label={t("messages.forwardLoading")}
       >
@@ -130,7 +130,7 @@ export function ForwardedMessageCard({
 
   if (resolved.status === "deleted") {
     return (
-      <div className="mt-1.5 flex max-w-2xl items-center gap-2 rounded-r-lg border border-l-[3px] border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+      <div className="mt-1.5 flex max-w-2xl items-center gap-2 rounded-r-lg border border-l-4 border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <CircleSlash2Icon className="size-3.5 shrink-0" aria-hidden="true" />
         <span>{t("messages.forwardDeleted")}</span>
       </div>
@@ -139,7 +139,7 @@ export function ForwardedMessageCard({
 
   if (resolved.status === "unavailable") {
     return (
-      <div className="mt-1.5 flex max-w-2xl items-center gap-2 rounded-r-lg border border-l-[3px] border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+      <div className="mt-1.5 flex max-w-2xl items-center gap-2 rounded-r-lg border border-l-4 border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <LockKeyholeIcon className="size-3.5 shrink-0" aria-hidden="true" />
         <span>{t("messages.forwardUnavailable")}</span>
       </div>
@@ -148,7 +148,7 @@ export function ForwardedMessageCard({
 
   if (resolved.status === "error") {
     return (
-      <div className="mt-1.5 flex max-w-2xl flex-wrap items-center justify-between gap-2 rounded-r-lg border border-l-[3px] border-destructive/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+      <div className="mt-1.5 flex max-w-2xl flex-wrap items-center justify-between gap-2 rounded-r-lg border border-l-4 border-destructive/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <span>{t("messages.forwardLoadError")}</span>
         <Button type="button" variant="ghost" size="xs" onClick={() => handleRetry(messageId)}>
           <RefreshCwIcon className="size-3" aria-hidden="true" />
@@ -169,7 +169,7 @@ export function ForwardedMessageCard({
 
   return (
     <blockquote
-      className="mt-1.5 max-w-2xl rounded-r-lg border border-l-[3px] border-l-brand/60 bg-muted/30 px-3 py-2"
+      className="mt-1.5 max-w-2xl rounded-r-lg border border-l-4 border-l-brand/60 bg-muted/30 px-3 py-2"
       aria-label={t("messages.forwardQuoteLabel", { author: authorName })}
     >
       <div className="flex items-start gap-2">
@@ -194,12 +194,12 @@ export function ForwardedMessageCard({
               <span className="truncate font-semibold text-foreground">{authorName}</span>
             )}
             {resolved.author?.is_bot ? (
-              <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-semibold text-muted-foreground">
+              <span className="rounded bg-muted px-1 py-0.5 text-3xs font-semibold text-muted-foreground">
                 APP
               </span>
             ) : null}
             <time
-              className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+              className="shrink-0 text-micro text-muted-foreground tabular-nums"
               dateTime={normalizeUtcTimestamp(resolved.created_at)}
               title={fullTimestamp(resolved.created_at, locale)}
             >

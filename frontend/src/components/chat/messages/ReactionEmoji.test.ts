@@ -23,7 +23,9 @@ describe("ReactionEmoji", () => {
         emojis: { wide: { url: "/wide.png", width: 120, height: 20 } },
       }),
     );
-    expect(html).toContain("height:20px;width:120px");
+    expect(html).toContain("--emoji-height:20px");
+    expect(html).toContain("--emoji-width:120px");
+    expect(html).toContain("w-(--emoji-width)");
     expect(html).toContain('alt=":wide:"');
   });
   it("keeps the image slot before the kitchen catalog loads", () => {
@@ -31,7 +33,8 @@ describe("ReactionEmoji", () => {
       createElement(ReactionEmoji, { emoji: "kitchen:1f600_1f431", catalog: null }),
     );
 
-    expect(html).toContain('style="width:20px;height:20px"');
+    expect(html).toContain('style="--emoji-size:20px"');
+    expect(html).toContain("size-(--emoji-size)");
     expect(html).toContain("😀");
     expect(html).not.toContain("<img");
   });
@@ -41,7 +44,8 @@ describe("ReactionEmoji", () => {
       createElement(ReactionEmoji, { emoji: "kitchen:1f600_1f431", catalog }),
     );
 
-    expect(html).toContain('style="width:20px;height:20px"');
+    expect(html).toContain('style="--emoji-size:20px"');
+    expect(html).toContain("size-(--emoji-size)");
     expect(html).toContain("<img");
     expect(html).toContain('alt=""');
     expect(html).toContain('width="20"');
@@ -50,7 +54,9 @@ describe("ReactionEmoji", () => {
   it("renders a plain emoji in the same slot as a kitchen emoji", () => {
     const html = renderToStaticMarkup(createElement(ReactionEmoji, { emoji: "👍", catalog: null }));
 
-    expect(html).toContain("width:20px;height:20px;font-size:20px");
+    expect(html).toContain('style="--emoji-size:20px"');
+    expect(html).toContain("size-(--emoji-size)");
+    expect(html).toContain("text-(length:--emoji-size)");
     expect(html).toContain("👍</span>");
   });
 });
