@@ -95,6 +95,10 @@ shared-post-link-light, typing-channel-dark, typing-channel-light, os-notificati
 
 ## リノートと引用リノート
 
+引用リノートの作成画面では、引用カードと投稿操作列を12dp離す。左が変更前、右が変更後。
+
+![引用カードと投稿操作列の間隔](quote-bottom-spacing.png)
+
 ![リノート行と引用をライト・ダークで比較し、引用リノートを作成](renote-and-quote.png)
 
 名前は太字、アイコンと文字はライトで #007747、ダークで #52D9A1。リノートした人の写真は元の色で円形に表示する。引用ヘッダーの表示名とアカウントIDはベースラインを揃え、アバターと本文を同じ左端から始める。
