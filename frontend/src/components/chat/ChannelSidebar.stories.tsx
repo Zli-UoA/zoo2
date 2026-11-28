@@ -320,6 +320,21 @@ export const MobilePinned: Story = {
   globals: { viewport: { value: "mobile" } },
 };
 
+export const PinnedLoading: Story = {
+  args: { channels: [...storyChannels, dm, nsfw], loading: true },
+  parameters: {
+    a11y: { test: "error" },
+    collections: pinnedCollections,
+    msw: { handlers: [pinnedApi] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("region", { name: "ピン留め" })).not.toBeInTheDocument();
+    await expect(canvas.queryAllByRole("link")).toHaveLength(0);
+    await expect(canvasElement.querySelector('[data-slot="skeleton"]')).toBeInTheDocument();
+  }),
+};
+
 // スレッドのあるチャンネルをピン留めすると、ピン留めの行の下にも同じスレッドのツリーを出す
 // （通常のチャンネル一覧の行のツリーはそのまま残る）。DM にはツリーを出さない。
 export const PinnedThreads: Story = {

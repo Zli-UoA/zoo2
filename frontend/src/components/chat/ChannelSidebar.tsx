@@ -8,6 +8,7 @@ import { useThreadIndex } from "../../hooks/useThreadIndex";
 import { useUnread } from "../../hooks/useUnread";
 import { useChannelLeaveDates } from "../../hooks/useChannelLeaveDates";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { usePinnedChannels } from "../../hooks/usePinnedChannels";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
@@ -48,6 +49,7 @@ export function ChannelSidebar({
   const { channelUsers } = useCollections();
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
+  const pins = usePinnedChannels();
   const { unreadChannelIds } = useUnread();
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -76,10 +78,10 @@ export function ChannelSidebar({
     return counts;
   }, [membershipsQuery.data]);
   const leaveDates = useChannelLeaveDates(currentUserId, joinedChannelIds);
-  // サイドバーは参加中だけを出すため、参加状態が解決するまでは一覧を確定しない
-  // （解決前に空の一覧を一瞬出さない）。
+  // 参加状態とピン留めがそろってから一覧を出し、ピン留めの後挿入で行が動くのを防ぐ。
   const sidebarLoading =
     loading ||
+    pins.loading ||
     (membershipsQuery.isLoading &&
       !(membershipsQuery.isPersistedReady && joinedChannelIds.size > 0)) ||
     currentUserLoading;

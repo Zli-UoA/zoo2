@@ -25,6 +25,8 @@ const fixture = vi.hoisted(() => ({
     reorderChannelPins: vi.fn(),
   },
   live: undefined as unknown,
+  liveLoading: false,
+  persistedReady: false,
   currentUserId: "user-alice",
   collections: {
     config: {},
@@ -49,7 +51,12 @@ vi.mock("../lib/electric/writes", () => ({
 }));
 
 vi.mock("@tanstack/react-db", () => ({
-  useLiveQuery: () => ({ data: fixture.live, isLoading: false, isError: false }),
+  useLiveQuery: () => ({
+    data: fixture.live,
+    isLoading: fixture.liveLoading,
+    isPersistedReady: fixture.persistedReady,
+    isError: false,
+  }),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -88,6 +95,8 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   fixture.live = undefined;
+  fixture.liveLoading = false;
+  fixture.persistedReady = false;
   fixture.currentUserId = "user-alice";
   fixture.translate = (key: string) => key;
   fixture.api.getChannelPins.mockReset().mockResolvedValue({ pins: [], version: 0 });
@@ -157,6 +166,40 @@ describe("pure pin helpers", () => {
 });
 
 describe("usePinnedChannels", () => {
+  it("同期前の空配列で初回の読み込みを完了しない", async () => {
+    fixture.live = [];
+    fixture.liveLoading = true;
+    fixture.persistedReady = true;
+    let resolveInitial!: (value: unknown) => void;
+    fixture.api.getChannelPins.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveInitial = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    expect(result.current.loading).toBe(true);
+    await act(async () => {
+      resolveInitial({ pins: [pin("a", 0)], version: 2 });
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.isPinned("a")).toBe(true);
+    expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(1);
+  });
+
+  it("保存済みのピンは遅い通信を待たずに表示する", () => {
+    fixture.live = [pin("a", 0)];
+    fixture.liveLoading = true;
+    fixture.persistedReady = true;
+    fixture.api.getChannelPins.mockImplementationOnce(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.isPinned("a")).toBe(true);
+    expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(1);
+  });
+
   it("loads the authoritative version and tracks the version returned by writes", async () => {
     fixture.api.getChannelPins.mockResolvedValue({ pins: [pin("a", 0)], version: 2 });
     fixture.api.pinChannel.mockResolvedValue({
@@ -373,6 +416,9 @@ describe("usePinnedChannels", () => {
     });
     expect(result.current.version).toBe(3);
     expect(result.current.pins.map((item) => item.channel_id)).toEqual(["a", "b"]);
+
+    // 書き込みの応答で一覧がそろえば、遅い初回 GET を待たずに表示できる。
+    expect(result.current.loading).toBe(false);
 
     // 初回 GET が書き込みより後に古い版で返っても、採用して巻き戻さない。
     await act(async () => {

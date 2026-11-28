@@ -145,6 +145,7 @@
         "MobileSections",
         "Pinned",
         "MobilePinned",
+        "PinnedLoading",
         "PinnedThreads",
         "PinnedReorderError"
       ]
@@ -1213,7 +1214,7 @@
       "file": "src/components/chat/PinnedSection.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。PinnedLoading で一覧の読み込み中に保存済みのピンを先に表示しないことを確認する。ピン留めと通常一覧の同時表示は ChannelSidebar.browser.test.tsx、保存済みデータの即時表示と同期前の空配列の扱いは usePinnedChannels.test.ts で検証する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
     },
     {
       "file": "src/components/chat/DropIndicator.tsx",
