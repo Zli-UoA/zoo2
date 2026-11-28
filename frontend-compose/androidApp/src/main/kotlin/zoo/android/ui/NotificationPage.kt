@@ -44,6 +44,7 @@ internal data class InboxItem(
     val kind: String = "", val unreadIds: List<String> = emptyList(), val destination: String? = null,
     val reactions: List<InboxReactionEmoji> = emptyList(),
     val reactionContext: InboxReactionContext? = null,
+    val followResponse: String? = null,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -164,7 +165,8 @@ internal fun NotificationPage(
                             Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
-                    if (item.followActor != null && item.followActivity != null) {
+                    item.followResponse?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
+                    if (item.followActor != null && item.followActivity != null && item.followResponse in listOf(null, "再試行できます")) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextAction("承認", colors, icon = UiIcon.Check) { respond(item.followActor, item.followActivity, true) }
                             TextAction("拒否", colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { respond(item.followActor, item.followActivity, false) }

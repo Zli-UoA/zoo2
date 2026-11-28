@@ -226,7 +226,9 @@ internal class ConnectedScreenState(
         private set
     private val followStates = mutableStateMapOf<String, String>()
     private val followRevisions = mutableMapOf<String, Int>()
-    private val pendingFollows = mutableSetOf<String>()
+    private val pendingFollows = mutableStateMapOf<String, Boolean>()
+    val followBusy get() = profile.text("id") in pendingFollows
+    val followResponses = mutableStateMapOf<String, String>()
     val followState: String? get() = followStates[profile.text("id")]
     var federatePost by mutableStateOf(false)
         private set
@@ -674,7 +676,8 @@ internal class ConnectedScreenState(
     private fun toggleProfileFollow() {
         val id = profile.text("id")
         val state = followStates[id] ?: return
-        if (!platform.env.online || !pendingFollows.add(id)) return
+        if (!platform.env.online || id in pendingFollows) return
+        pendingFollows[id] = true
         val actor = profile.text("actor_id").ifBlank { id }
         val revision = (followRevisions[id] ?: 0) + 1
         followRevisions[id] = revision
@@ -1088,10 +1091,16 @@ internal class ConnectedScreenState(
                 if (action.path.startsWith("post:")) openPost(action.path.removePrefix("post:"), notifyUnavailable = true)
                 else platform.navigate(action.path)
             }
-            is AndroidUiAction.RespondFollow -> request {
-                app.api.request("/api/activitypub/follows/respond", "POST",
-                    obj("actor" to action.actor, "activity_id" to action.activity, "accept" to action.accept))
-                app.activityPubNotifications.refresh()
+            is AndroidUiAction.RespondFollow -> if (followResponses[action.activity] in listOf(null, "再試行できます")) request {
+                if (followResponses[action.activity] !in listOf(null, "再試行できます")) return@request
+                followResponses[action.activity] = "処理中"
+                try {
+                    app.api.request("/api/activitypub/follows/respond", "POST",
+                        obj("actor" to action.actor, "activity_id" to action.activity, "accept" to action.accept))
+                    followResponses[action.activity] = if (action.accept) "承認済み" else "拒否済み"
+                    app.activityPubNotifications.refresh()
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { followResponses[action.activity] = "再試行できます" }
             }
             is AndroidUiAction.SelectInput -> when (screen) {
                 is AndroidScreen.EditEntry -> editSelection = action.range

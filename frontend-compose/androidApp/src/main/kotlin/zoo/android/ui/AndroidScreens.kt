@@ -194,7 +194,7 @@ internal sealed interface AndroidScreen {
         val originalAvailable: Boolean = false,
         val id: String = handle ?: name,
         val postsPending: Boolean = false, val postsLoadFailed: Boolean = false, val online: Boolean = true,
-        val accountLoadFailed: Boolean = false,
+        val accountLoadFailed: Boolean = false, val followBusy: Boolean = false,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen

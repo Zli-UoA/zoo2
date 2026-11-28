@@ -17,7 +17,7 @@ internal class NotificationInboxBinding(private val app: Session) {
     private val inbox = NotificationInbox(app)
 
     @Composable
-    fun screen(): AndroidScreen.Notifications {
+    fun screen(responses: Map<String, String> = emptyMap()): AndroidScreen.Notifications {
         val notifications by app.repo.notifications.rows.collectAsState()
         val users by app.repo.users.rows.collectAsState()
         return AndroidScreen.Notifications(
@@ -25,7 +25,7 @@ internal class NotificationInboxBinding(private val app: Session) {
                 it.summary, it.snippet, it.time, it.unread, it.target,
                 it.followActor, it.followActivity, it.kind, it.unreadIds, it.destination,
                 it.reactions.map { reaction -> InboxReactionEmoji(reaction.emoji, reaction.image) },
-                it.reactionContext?.let { context -> InboxReactionContext(context.id, context.actorIds) }) },
+                it.reactionContext?.let { context -> InboxReactionContext(context.id, context.actorIds) }, followResponse = responses[it.followActivity]) },
             nextCursor = inbox.nextCursor,
             loadFailed = inbox.loadFailed,
             appendFailed = app.activityPubNotifications.appendError,

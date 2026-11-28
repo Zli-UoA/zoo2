@@ -503,7 +503,7 @@ internal fun ConnectedScreens(
             },
             avatar = profileAvatar, originalAvailable = profileUrl != null, id = profile.text("id"),
             postsPending = state.profilePostsPending, postsLoadFailed = state.profilePostsLoadFailed, online = env.online,
-            accountLoadFailed = state.profileAccountLoadFailed,
+            accountLoadFailed = state.profileAccountLoadFailed, followBusy = state.followBusy,
         )
         state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })
@@ -560,7 +560,7 @@ internal fun ConnectedScreens(
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
             loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
-        route == "/notifications" -> state.inbox.screen()
+        route == "/notifications" -> state.inbox.screen(state.followResponses)
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
         channel != null && (threadRoot != null || deletedRoot) -> {

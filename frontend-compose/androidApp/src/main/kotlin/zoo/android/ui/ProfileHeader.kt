@@ -34,7 +34,7 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
                     fontWeight = AndroidWeights.emphasis)
             }
             profile.follow?.let { label ->
-                TextAction(label, colors, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp),
+                TextAction(if (profile.followBusy) "処理中" else label, colors, enabled = !profile.followBusy, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp),
                     icon = if (label == "フォロー") UiIcon.UserAdd else UiIcon.Close,
                     style = if (label == "フォロー") TextActionStyle.Primary else TextActionStyle.Neutral, click = follow)
             }
@@ -43,7 +43,7 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
             Text(profile.name, color = colors.foreground, fontSize = 25.sp, lineHeight = 30.sp,
                 fontWeight = AndroidWeights.emphasis, maxLines = 2, overflow = TextOverflow.Ellipsis)
             profile.handle?.let { handle ->
-                Text(handle, color = colors.secondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(handle, color = colors.secondary, fontSize = 14.sp)
             }
             if (profile.bio.isNotBlank()) {
                 Text(formatEntry(profile.bio), Modifier.padding(top = 10.dp), color = colors.foreground,
