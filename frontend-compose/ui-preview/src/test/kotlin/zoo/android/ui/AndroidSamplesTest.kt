@@ -287,7 +287,7 @@ class AndroidSamplesTest {
             "post-attachment-retry" to AndroidScreen.NewPost(InputState("展示の写真"), emptyList(), false,
                 attached = listOf(RecentPhoto("poster", "展示.png", true))),
             "chat-attachment-retry" to conversation.copy(input = InputState("写真を共有します",
-                files = listOf("poster" to "展示.png"), failedFiles = setOf("poster"))),
+                files = listOf("poster" to "展示.png"), thumbnails = mapOf("poster" to gallery), failedFiles = setOf("poster"))),
             "profile-follow-pending" to AndroidScreen.Profile("はる", "", emptyList(), "フォロー", followBusy = true),
 
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
@@ -988,9 +988,9 @@ class AndroidSamplesTest {
                 androidx.compose.foundation.Image(remember { galleryMap() }, item.label, modifier)
             }
         }
-        ui.onNodeWithContentDescription("センシティブに指定").performClick()
-        ui.onNodeWithContentDescription("センシティブ指定を解除").assertIsDisplayed()
-        ui.onNodeWithText("説明").performClick()
+        ui.onNodeWithContentDescription("map.pngをセンシティブに指定").performClick()
+        ui.onNodeWithContentDescription("map.pngのセンシティブ指定を解除").assertIsDisplayed()
+        ui.onNodeWithContentDescription("map.pngの説明を編集").performClick()
         ui.onAllNodes(hasSetTextAction()).onLast().performSemanticsAction(
             androidx.compose.ui.semantics.SemanticsActions.SetText
         ) { set -> check(set(androidx.compose.ui.text.AnnotatedString("北口から受付までの地図"))) }
@@ -1000,7 +1000,7 @@ class AndroidSamplesTest {
             capture("image-description-" + if (night) "dark" else "light")
         }
         ui.onNodeWithText("完了").performClick()
-        ui.onNodeWithText("説明").performClick()
+        ui.onNodeWithContentDescription("map.pngの説明を編集").performClick()
         ui.onNodeWithText("北口から受付までの地図").assertIsDisplayed()
     }
 

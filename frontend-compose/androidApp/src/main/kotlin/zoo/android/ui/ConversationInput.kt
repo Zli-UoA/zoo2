@@ -65,6 +65,7 @@ internal data class InputState(val text: String = "", val expanded: Boolean = fa
     /** 暗号化チャンネルの送信画面の表示（増えた配布先と、鍵を配れない相手。#565）。何もなければ空。 */
     val notices: List<String> = emptyList(),
     val lastSend: String? = null,
+    val thumbnails: Map<String, androidx.compose.ui.graphics.ImageBitmap> = emptyMap(),
     val failedFiles: Set<String> = emptySet(),
     val characterLimit: Int = 40_000,
 )
@@ -273,8 +274,16 @@ internal fun ConversationInput(
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 state.files.forEach { (id, name) ->
-                                    if (id in state.failedFiles) TextAction("再試行", colors, icon = UiIcon.Refresh) { onRetryFile(id) }
-                                    TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                                    DraftAttachment(name, id in state.failedFiles, colors, { onRetryFile(id) }, { onRemoveFile(id) }) { modifier ->
+                                        val bitmap = state.thumbnails[id]
+                                        if (bitmap != null) androidx.compose.foundation.Image(bitmap, name, modifier,
+                                            contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                        else Column(modifier.padding(6.dp), verticalArrangement = Arrangement.Bottom) {
+                                            UiGlyph(UiIcon.Document, colors.secondary, iconSize = 20.dp)
+                                            Text(name, color = colors.inputText, fontSize = 12.sp, maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                        }
+                                    }
                                 }
                             }
                         }

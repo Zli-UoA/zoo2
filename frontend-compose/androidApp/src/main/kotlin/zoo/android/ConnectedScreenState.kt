@@ -763,6 +763,7 @@ internal class ConnectedScreenState(
             mentions = zoo.completionOptions(mention, people, people.map { it.text("id") }.toSet()),
             canSend = canPost && !saving && (files == null || files.canSend(draft.text)),
             hasAttachments = files?.items?.isNotEmpty() == true,
+            thumbnails = files?.items.orEmpty().mapNotNull { item -> item.bitmap?.let { item.file.text("id") to it } }.toMap(),
             failedFiles = files?.items?.filter { it.failed }?.map { it.file.text("id") }?.toSet().orEmpty(),
             files = files?.items?.map { it.file.text("id") to it.name }.orEmpty(),
         )

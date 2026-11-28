@@ -51,6 +51,23 @@ internal data class SelectionItem(
     val selected: Boolean? = null,
     val unavailable: String? = null,
 )
+@Composable
+internal fun DraftAttachment(name: String, failed: Boolean, colors: AndroidColors,
+    retry: () -> Unit, remove: () -> Unit, preview: @Composable (Modifier) -> Unit) {
+    Box(Modifier.size(96.dp).clip(RoundedCornerShape(10.dp)).background(colors.inputSurface)) {
+        preview(Modifier.fillMaxSize())
+        if (failed) {
+            Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.38f)))
+            UiIconButton(UiIcon.Refresh, "${name}のアップロードを再試行", Color.White, retry,
+                fill = Color.Black.copy(alpha = 0.76f), iconSize = 22.dp,
+                modifier = Modifier.align(Alignment.Center).size(40.dp))
+        }
+        UiIconButton(UiIcon.Close, "${name}を添付から外す", Color.White, remove,
+            fill = Color.Black.copy(alpha = 0.76f), iconSize = 16.dp,
+            modifier = Modifier.align(Alignment.TopEnd).padding(3.dp).size(26.dp))
+    }
+}
+
 internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false, val description: String = "", val sensitive: Boolean = false)
 
 @Composable
@@ -163,18 +180,20 @@ internal fun NewPostPage(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(screen.attached, key = { it.id }) { item ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box {
-                        photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
-                        UiIconButton(if (item.sensitive) UiIcon.EyeOff else UiIcon.Eye,
-                            if (item.sensitive) "センシティブ指定を解除" else "センシティブに指定",
-                            colors.foreground, { dispatch(AndroidUiAction.SetPhotoSensitive(item.id, !item.sensitive)) },
-                            iconSize = 16.dp, modifier = Modifier.align(Alignment.TopEnd).size(32.dp)
-                                .background(colors.background, CircleShape))
+                Column {
+                    DraftAttachment(item.label, item.failed, colors,
+                        retry = { dispatch(AndroidUiAction.RetryFile(item.id)) },
+                        remove = { dispatch(AndroidUiAction.RemoveFile(item.id)) }) { modifier ->
+                        photo(item, modifier)
                     }
-                    TextAction("説明", colors, style = TextActionStyle.Plain) { describing = item.id }
-                    if (item.failed) TextAction("再試行", colors, icon = UiIcon.Refresh) { dispatch(AndroidUiAction.RetryFile(item.id)) }
-                    TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
+                    Row {
+                        UiIconButton(UiIcon.Create, "${item.label}の説明を編集", colors.secondary,
+                            { describing = item.id }, iconSize = 18.dp, modifier = Modifier.size(44.dp, 36.dp))
+                        UiIconButton(if (item.sensitive) UiIcon.EyeOff else UiIcon.Eye,
+                            item.label + if (item.sensitive) "のセンシティブ指定を解除" else "をセンシティブに指定",
+                            colors.secondary, { dispatch(AndroidUiAction.SetPhotoSensitive(item.id, !item.sensitive)) },
+                            iconSize = 18.dp, modifier = Modifier.size(44.dp, 36.dp))
+                    }
                 }
             }
         }
