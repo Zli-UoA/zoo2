@@ -2,6 +2,10 @@
 
 各組は左が変更前、右が変更後。新規の検証画像は変更後のみ。投稿と通知には検証用データを使用。
 
+チャンネルのメンション表示（左がライト、右がダーク）。上から個人宛て、here 宛て、メールアドレスを含む通常の投稿。
+
+![メンション表示](./mentions.png)
+
 article-preview-dark, article-preview-light, attachment-save-share, bubble-dark, bubble-light, channel-add-member-dark
 
 ![article-preview-dark, article-preview-light, attachment-save-share, bubble-dark, bubble-light, channel-add-member-dark](./screens-01.png)
@@ -145,7 +149,7 @@ API 35のエミュレーターで、同じホームのCompose画面をライト�
 
 ![投稿操作の変更前後](post-controls-before-after.png)
 
-[153状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
+[155状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
 
 ## 共通の検索欄と一覧行
 

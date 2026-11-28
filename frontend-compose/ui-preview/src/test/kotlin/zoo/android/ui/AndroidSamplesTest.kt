@@ -263,6 +263,11 @@ class AndroidSamplesTest {
             "quote-renote" to AndroidScreen.NewPost(InputState("当日が楽しみです。"), emptyList(), false, "unlisted",
                 quoting = illustratedPost),
             "sending-home" to AndroidScreen.Home(listOf(TimelineItem("pending", "", "次の展示も楽しみです。", "", delivery = "送信中…")) + homePosts),
+            "mention-channel" to conversation.copy(entries = listOf(
+                posts[0].copy(body = "@mizuki 明日の受付をお願いします。", mentionsCurrentUser = true),
+                posts[1].copy(body = "@here 会場は10時に開きます。"),
+                posts[2].copy(body = "連絡先は desk@example.test です。"),
+            ), input = InputState()),
             "typing-channel" to conversation.copy(input = InputState(notices = listOf("はるさんが入力中…"))),
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
             "edit-original" to AndroidScreen.EditEntry(InputState("受付は10時半です。", expanded = true), "受付は10時です。"),
@@ -386,7 +391,8 @@ class AndroidSamplesTest {
                 listOf(TimelineMedia("photo", "会場案内図", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f)))
         }
         ui.setContent {
-            CompositionLocalProvider(LocalPostPreviews provides sharedPost, LocalTimelineImage provides { when (it.key) { "fixture-emoji" -> reactionEmoji; "photo" -> gallery; else -> avatar } }) {
+            CompositionLocalProvider(LocalMentionProfiles provides mapOf("mizuki" to zoo.obj("display_name" to "みずき", "avatar_url" to "fixture-avatar")),
+                LocalPostPreviews provides sharedPost, LocalTimelineImage provides { when (it.key) { "fixture-emoji" -> reactionEmoji; "photo" -> gallery; else -> avatar } }) {
                 AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
                     actions.add(action)
                     if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
