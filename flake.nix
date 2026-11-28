@@ -315,6 +315,8 @@
               iosToolchain
               pkgs.gnumake
               pkgs.xcodegen
+              # Xcode Cloudでもrust-toolchain.tomlと同じ版を用意する。
+              pkgs.rustup
             ];
           };
         };

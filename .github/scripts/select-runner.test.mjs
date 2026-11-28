@@ -225,7 +225,7 @@ const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 // macOS・Windows でビルドを確かめるジョブ。GitHub ホストの実行先を使う (公開リポジトリなので無料)。
-const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
+const macJobs = {"ci-desktop-tauri.yaml": ["macos"], "ci-ios.yaml": ["check"]};
 const windowsJobs = {"ci-desktop-tauri.yaml": ["windows"]};
 // Keep timing comparisons on a fixed hosted OS, independent of shared runners.
 const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-phone-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-search-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-components-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};

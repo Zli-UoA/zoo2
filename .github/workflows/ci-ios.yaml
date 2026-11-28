@@ -1,0 +1,47 @@
+name: iOSビルド環境の検証
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "rust-toolchain.toml"
+      - "ios/Scripts/build-crypto-xcframework.sh"
+      - "ios/ci_scripts/**"
+      - ".github/workflows/ci-ios.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-tools-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: ソースコードを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Nixを準備
+        uses: cachix/install-nix-action@382a9ed9481c7c1f94f68b72ef105b3417c73877 # v32.1.0
+      - name: iOS開発シェルのツールとターゲットを確認
+        run: |
+          nix develop .#ios --command bash -euo pipefail <<'BASH'
+            rustup --version
+            rustc --version
+            cargo --version
+            xcodegen --version
+            make --version
+            rust_version="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+            [[ "$(rustc --version)" == "rustc $rust_version "* ]]
+            for target in aarch64-apple-ios aarch64-apple-ios-sim; do
+              test -d "$(rustc --print target-libdir --target "$target")"
+            done
+            bash -n ios/ci_scripts/ci_post_clone.sh
+          BASH
