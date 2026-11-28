@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -86,6 +86,13 @@ function deletedBody(id: string, content: string): DeletedChannelNote {
 
 function envelope<T>(data: T) {
   return HttpResponse.json({ data, txid: null });
+}
+
+/** 保留中の microtask と React の更新を流す。実時間は待たず、遅延応答の後始末に使う。 */
+async function flushUpdates() {
+  await act(async () => {
+    await Promise.resolve();
+  });
 }
 
 function renderNotes(
@@ -888,4 +895,497 @@ it("reloads the latest order after a reorder 409 without reapplying the old move
   expect(reorderRequests).toBe(1);
   await waitFor(() => expect(screen.getByText("1. Note 2")).toBeVisible());
   expect(screen.getByText("3. Note 0")).toBeVisible();
+});
+
+it("keeps reorder when the new-note discard is cancelled and closes it on confirmation", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0), summary(1)])),
+  );
+
+  renderNotes();
+  const reorderButton = await screen.findByRole("button", { name: "並べ替え" });
+  await waitFor(() => expect(reorderButton).not.toBeDisabled());
+  await userEvent.click(reorderButton);
+  await screen.findByText("1. Note 0");
+  await userEvent.click(screen.getByRole("button", { name: "下へ移動: Note 0" }));
+  expect(await screen.findByText("1. Note 1")).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "新規ノート" }));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("1. Note 1")).toBeVisible();
+  expect(screen.queryByRole("textbox", { name: "タイトル" })).toBeNull();
+
+  confirm.mockReturnValue(true);
+  await userEvent.click(screen.getByRole("button", { name: "新規ノート" }));
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText("1. Note 1")).toBeNull();
+  expect(screen.getByRole("textbox", { name: "タイトル" })).toHaveValue("");
+  expect(screen.getByRole("textbox", { name: "本文" })).toHaveValue("");
+});
+
+it("clears an in-flight reorder load on session reset and keeps controls usable", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let listRequests = 0;
+  let staleListSettled = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", async () => {
+      listRequests += 1;
+      // 2 回目は並べ替え準備の全ページ取得。セッションリセット後まで保留する。
+      if (listRequests === 2) {
+        await pending;
+        staleListSettled = true;
+      }
+      return envelope([summary(0), summary(1)]);
+    }),
+  );
+
+  const view = renderNotes();
+  const reorderButton = await screen.findByRole("button", { name: "並べ替え" });
+  await waitFor(() => expect(reorderButton).not.toBeDisabled());
+  await userEvent.click(reorderButton);
+  await waitFor(() => expect(listRequests).toBe(2));
+  expect(screen.getByRole("button", { name: "新規ノート" })).toBeDisabled();
+
+  updateProps(view, { canRead: false });
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "このチャンネルのノートを閲覧する権限がなくなりました。",
+  );
+
+  updateProps(view, { canRead: true });
+  const newNote = await screen.findByRole("button", { name: "新規ノート" });
+  await waitFor(() => expect(newNote).not.toBeDisabled());
+  expect(screen.getByRole("button", { name: "並べ替え" })).not.toBeDisabled();
+
+  release();
+  await waitFor(() => expect(staleListSettled).toBe(true));
+  await flushUpdates();
+  expect(screen.queryByText("1. Note 0")).toBeNull();
+
+  // 古い要求のロックが残っていないので、もう一度並べ替えを開始できる。
+  await userEvent.click(screen.getByRole("button", { name: "並べ替え" }));
+  expect(await screen.findByText("1. Note 0")).toBeVisible();
+});
+
+it("releases the delete lock on session reset so the note can be deleted again", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let deletes = 0;
+  let staleDeleteSettled = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0)])),
+    http.get("*/api/channels/:channelId/notes/:noteId", () =>
+      envelope(noteBody("note-0", "Base body", { title: "Note 0" })),
+    ),
+    http.delete("*/api/channels/:channelId/notes/:noteId", async () => {
+      deletes += 1;
+      if (deletes === 1) {
+        await pending;
+        staleDeleteSettled = true;
+      }
+      return envelope({ deleted: true });
+    }),
+  );
+
+  const view = renderNotes();
+  await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+  expect(await screen.findByText("Base body")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "削除" }));
+  let dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(within(dialog).getByRole("button", { name: "削除" }));
+  await waitFor(() => expect(deletes).toBe(1));
+
+  updateProps(view, { canRead: false });
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "このチャンネルのノートを閲覧する権限がなくなりました。",
+  );
+
+  updateProps(view, { canRead: true });
+  await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+  expect(await screen.findByText("Base body")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "削除" }));
+  dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(within(dialog).getByRole("button", { name: "削除" }));
+  await waitFor(() => expect(deletes).toBe(2));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+  release();
+  await waitFor(() => expect(staleDeleteSettled).toBe(true));
+  await flushUpdates();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.getByRole("button", { name: "Note 0" })).toBeVisible();
+});
+
+it("checks the list with a preserved draft after an unknown create on a narrow screen", async () => {
+  await page.viewport(390, 844);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let listRequests = 0;
+  let posts = 0;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", async () => {
+      listRequests += 1;
+      // 作成後の確認取得だけ保留し、一覧の完了前に再送できないことを確かめる。
+      if (listRequests === 2) await pending;
+      return envelope([]);
+    }),
+    http.post("*/api/channels/:channelId/notes", async ({ request }) => {
+      posts += 1;
+      const body = (await request.json()) as { title: string; content: string };
+      if (posts === 1) return new HttpResponse(null, { status: 503 });
+      return envelope(noteBody("created", body.content, { title: body.title }));
+    }),
+  );
+
+  renderNotes();
+  const newNote = await screen.findByRole("button", { name: "新規ノート" });
+  await waitFor(() => expect(newNote).not.toBeDisabled());
+  await userEvent.click(newNote);
+  await userEvent.type(screen.getByRole("textbox", { name: "タイトル" }), "Runbook");
+  await userEvent.type(screen.getByRole("textbox", { name: "本文" }), "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  const content = screen.getByRole("region", { name: "ノート本文" });
+  expect(
+    await within(content).findByText(
+      "作成結果を確認できませんでした。一覧でノートを確認しています…",
+    ),
+  ).toBeVisible();
+  await waitFor(() => expect(listRequests).toBe(2));
+  expect(screen.getByRole("button", { name: "重複を承知で再送" })).toBeDisabled();
+
+  await userEvent.click(screen.getByRole("button", { name: "下書きを残したまま一覧を確認" }));
+  expect(screen.queryByRole("textbox", { name: "タイトル" })).toBeNull();
+  expect(
+    screen.getByText("下書きはこの画面に残っています。一覧で作成結果を確認できます。"),
+  ).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "下書きに戻る" }));
+  expect(screen.getByRole("textbox", { name: "タイトル" })).toHaveValue("Runbook");
+  expect(screen.getByRole("textbox", { name: "本文" })).toHaveValue("Draft body");
+
+  release();
+  expect(
+    await screen.findByText(
+      "作成結果を確認できませんでした。自動では再送しません。一覧を再取得しました。",
+    ),
+  ).toBeVisible();
+  const resend = screen.getByRole("button", { name: "重複を承知で再送" });
+  await waitFor(() => expect(resend).not.toBeDisabled());
+  await userEvent.click(resend);
+  expect(await screen.findByText("Draft body")).toBeVisible();
+  expect(posts).toBe(2);
+});
+
+it("keeps resend disabled when the post-create list refresh fails and unlocks it on retry", async () => {
+  let listRequests = 0;
+  let posts = 0;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => {
+      listRequests += 1;
+      if (listRequests === 2) return new HttpResponse(null, { status: 503 });
+      return envelope([]);
+    }),
+    http.post("*/api/channels/:channelId/notes", async ({ request }) => {
+      posts += 1;
+      const body = (await request.json()) as { title: string; content: string };
+      if (posts === 1) return new HttpResponse(null, { status: 503 });
+      return envelope(noteBody("created", body.content, { title: body.title }));
+    }),
+  );
+
+  renderNotes();
+  const newNote = await screen.findByRole("button", { name: "新規ノート" });
+  await waitFor(() => expect(newNote).not.toBeDisabled());
+  await userEvent.click(newNote);
+  await userEvent.type(screen.getByRole("textbox", { name: "タイトル" }), "Runbook");
+  await userEvent.type(screen.getByRole("textbox", { name: "本文" }), "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  const failure =
+    "作成結果を確認できませんでした。一覧を再取得できなかったため、確認が終わるまで再送できません。";
+  expect((await screen.findAllByText(failure)).length).toBeGreaterThanOrEqual(1);
+  expect(
+    screen.queryByText(
+      "作成結果を確認できませんでした。自動では再送しません。一覧を再取得しました。",
+    ),
+  ).toBeNull();
+  expect(screen.getByRole("button", { name: "重複を承知で再送" })).toBeDisabled();
+
+  const content = screen.getByRole("region", { name: "ノート本文" });
+  await userEvent.click(within(content).getByRole("button", { name: "再試行" }));
+
+  expect(
+    await screen.findByText(
+      "作成結果を確認できませんでした。自動では再送しません。一覧を再取得しました。",
+    ),
+  ).toBeVisible();
+  const resend = screen.getByRole("button", { name: "重複を承知で再送" });
+  await waitFor(() => expect(resend).not.toBeDisabled());
+  await userEvent.click(resend);
+  expect(await screen.findByText("Draft body")).toBeVisible();
+  expect(posts).toBe(2);
+});
+
+it("falls back to an explicit retry when a superseding list refresh fails", async () => {
+  let releaseFirstCheck!: () => void;
+  const firstCheck = new Promise<void>((resolve) => {
+    releaseFirstCheck = resolve;
+  });
+  let listRequests = 0;
+  let posts = 0;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", async () => {
+      listRequests += 1;
+      const current = listRequests;
+      // 2 回目は作成直後の確認、3 回目はタブ復帰で追い越した再取得。
+      if (current === 2) await firstCheck;
+      if (current === 3) return new HttpResponse(null, { status: 503 });
+      return envelope([]);
+    }),
+    http.post("*/api/channels/:channelId/notes", async ({ request }) => {
+      posts += 1;
+      const body = (await request.json()) as { title: string; content: string };
+      if (posts === 1) return new HttpResponse(null, { status: 503 });
+      return envelope(noteBody("created", body.content, { title: body.title }));
+    }),
+  );
+
+  renderNotes();
+  const newNote = await screen.findByRole("button", { name: "新規ノート" });
+  await waitFor(() => expect(newNote).not.toBeDisabled());
+  await userEvent.click(newNote);
+  await userEvent.type(screen.getByRole("textbox", { name: "タイトル" }), "Runbook");
+  await userEvent.type(screen.getByRole("textbox", { name: "本文" }), "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  const content = screen.getByRole("region", { name: "ノート本文" });
+  expect(
+    await within(content).findByText(
+      "作成結果を確認できませんでした。一覧でノートを確認しています…",
+    ),
+  ).toBeVisible();
+  await waitFor(() => expect(listRequests).toBe(2));
+  // 一覧の確認中でも保存のロックは解放され、下書きから離れられる。
+  expect(screen.getByRole("button", { name: "キャンセル" })).not.toBeDisabled();
+
+  const visibilityDesc = Object.getOwnPropertyDescriptor(document, "visibilityState");
+  try {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await waitFor(() => expect(listRequests).toBe(3));
+    // 追い越した取得が失敗しても確認中で止まらず、再試行できる状態になる。
+    expect(
+      await within(content).findByText(
+        "作成結果を確認できませんでした。一覧を再取得できなかったため、確認が終わるまで再送できません。",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "重複を承知で再送" })).toBeDisabled();
+
+    await userEvent.click(within(content).getByRole("button", { name: "再試行" }));
+    await waitFor(() => expect(listRequests).toBe(4));
+    expect(
+      await screen.findByText(
+        "作成結果を確認できませんでした。自動では再送しません。一覧を再取得しました。",
+      ),
+    ).toBeVisible();
+    const resend = screen.getByRole("button", { name: "重複を承知で再送" });
+    await waitFor(() => expect(resend).not.toBeDisabled());
+    await userEvent.click(resend);
+    expect(await screen.findByText("Draft body")).toBeVisible();
+    expect(posts).toBe(2);
+  } finally {
+    releaseFirstCheck();
+    if (visibilityDesc) {
+      Object.defineProperty(document, "visibilityState", visibilityDesc);
+    } else {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    }
+  }
+});
+
+it("validates the draft before overwriting the latest version", async () => {
+  const patches: Array<{ title: string; content: string; version: number }> = [];
+  let conflicted = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0)])),
+    http.get("*/api/channels/:channelId/notes/:noteId", () =>
+      envelope(
+        noteBody("note-0", conflicted ? "Latest body" : "Base body", {
+          title: "Note 0",
+          version: conflicted ? 2 : 1,
+        }),
+      ),
+    ),
+    http.patch("*/api/channels/:channelId/notes/:noteId", async ({ request }) => {
+      const body = (await request.json()) as {
+        title: string;
+        content: string;
+        version: number;
+      };
+      patches.push(body);
+      if (patches.length === 1) {
+        conflicted = true;
+        return new HttpResponse(null, { status: 409 });
+      }
+      return envelope(noteBody("note-0", body.content, { title: body.title, version: 3 }));
+    }),
+  );
+
+  renderNotes();
+  await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+  await userEvent.click(await screen.findByRole("button", { name: "編集" }));
+  const textarea = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
+  await userEvent.clear(textarea);
+  await userEvent.type(textarea, "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  expect(
+    await screen.findByText("他の参加者が先に更新しました。最新の内容と下書きを確認してください。"),
+  ).toBeVisible();
+  expect(await screen.findByText("Latest body")).toBeVisible();
+
+  const title = screen.getByRole("textbox", { name: "タイトル" });
+  await userEvent.clear(title);
+  await userEvent.click(screen.getByRole("button", { name: "この下書きで上書き保存" }));
+
+  expect(await screen.findByText("タイトルを入力してください。")).toBeVisible();
+  expect(screen.getByRole("region", { name: "最新の内容" })).toBeVisible();
+  expect(patches).toHaveLength(1);
+
+  await userEvent.type(title, "Overwritten");
+  await userEvent.click(screen.getByRole("button", { name: "この下書きで上書き保存" }));
+  await waitFor(() => expect(patches).toHaveLength(2));
+  expect(patches[1]).toEqual({ title: "Overwritten", content: "Draft body", version: 2 });
+  expect(await screen.findByText("Draft body")).toBeVisible();
+});
+
+it("ignores a delayed deleted body after a successful restore", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let staleBodySettled = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0)])),
+    http.get("*/api/channels/:channelId/notes/deleted", () => envelope([deletedSummary("del-1")])),
+    http.get("*/api/channels/:channelId/notes/deleted/:noteId", async () => {
+      await pending;
+      staleBodySettled = true;
+      return envelope(deletedBody("del-1", "Deleted body"));
+    }),
+    http.post("*/api/channels/:channelId/notes/:noteId/restore", () =>
+      envelope(noteBody("del-1", "Restored body", { title: "Deleted del-1" })),
+    ),
+  );
+
+  renderNotes();
+  await userEvent.click(await screen.findByRole("button", { name: "削除済み" }));
+  await userEvent.click(await screen.findByRole("button", { name: /Deleted del-1/ }));
+  await userEvent.click(screen.getByRole("button", { name: "復元" }));
+
+  expect(await screen.findByText("Restored body")).toBeVisible();
+  release();
+  await waitFor(() => expect(staleBodySettled).toBe(true));
+  await flushUpdates();
+  expect(screen.getByText("Restored body")).toBeVisible();
+  expect(screen.queryByText("Deleted body")).toBeNull();
+});
+
+it("does not show a deleted body that arrives after a restore 404", async () => {
+  let releaseBody!: () => void;
+  const pendingBody = new Promise<void>((resolve) => {
+    releaseBody = resolve;
+  });
+  let staleBodySettled = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0)])),
+    http.get("*/api/channels/:channelId/notes/deleted", () => envelope([deletedSummary("del-1")])),
+    http.get("*/api/channels/:channelId/notes/deleted/:noteId", async () => {
+      await pendingBody;
+      staleBodySettled = true;
+      return envelope(deletedBody("del-1", "Deleted body"));
+    }),
+    http.post(
+      "*/api/channels/:channelId/notes/:noteId/restore",
+      () => new HttpResponse(null, { status: 404 }),
+    ),
+  );
+
+  renderNotes();
+  await userEvent.click(await screen.findByRole("button", { name: "削除済み" }));
+  await userEvent.click(await screen.findByRole("button", { name: /Deleted del-1/ }));
+  await userEvent.click(screen.getByRole("button", { name: "復元" }));
+
+  expect(
+    await screen.findByText(
+      "復元できませんでした。期限切れか、既に復元・削除された可能性があります。",
+    ),
+  ).toBeVisible();
+
+  releaseBody();
+  await waitFor(() => expect(staleBodySettled).toBe(true));
+  await flushUpdates();
+  expect(screen.queryByText("Deleted body")).toBeNull();
+});
+
+it("keeps a reorder 409 reload from reopening the screen after switching to deleted", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let listRequests = 0;
+  let staleReloadSettled = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", async () => {
+      listRequests += 1;
+      // 3 回目は保存 409 後の最新順の再取得。画面を閉じた後まで保留する。
+      if (listRequests === 3) {
+        await pending;
+        staleReloadSettled = true;
+      }
+      return envelope([summary(0), summary(1), summary(2)]);
+    }),
+    http.get("*/api/channels/:channelId/notes/deleted", () => envelope([deletedSummary("del-1")])),
+    http.patch(
+      "*/api/channels/:channelId/notes/order",
+      () => new HttpResponse(null, { status: 409 }),
+    ),
+  );
+
+  renderNotes();
+  const reorderButton = await screen.findByRole("button", { name: "並べ替え" });
+  await waitFor(() => expect(reorderButton).not.toBeDisabled());
+  await userEvent.click(reorderButton);
+  await screen.findByText("1. Note 0");
+  await userEvent.click(screen.getByRole("button", { name: "下へ移動: Note 0" }));
+  await userEvent.click(screen.getByRole("button", { name: "順序を保存" }));
+  await waitFor(() => expect(listRequests).toBe(3));
+
+  await userEvent.click(screen.getByRole("button", { name: "削除済み" }));
+  expect(confirm).toHaveBeenCalled();
+  expect(await screen.findByRole("button", { name: /Deleted del-1/ })).toBeVisible();
+  expect(screen.queryByText("1. Note 0")).toBeNull();
+
+  release();
+  await waitFor(() => expect(staleReloadSettled).toBe(true));
+  await flushUpdates();
+  expect(screen.queryByText(/1\. Note/)).toBeNull();
+  expect(
+    screen.queryByText(
+      "他の参加者が並び順を変更しました。最新の順序を表示しました。もう一度並べ替えて保存してください。",
+    ),
+  ).toBeNull();
+  expect(screen.getByRole("button", { name: /Deleted del-1/ })).toBeVisible();
 });

@@ -74,6 +74,8 @@ type NoteNoticeSuffix =
   | "saved"
   | "loadMoreConflict"
   | "createUnknown"
+  | "createUnknownChecking"
+  | "createUnknownRefreshFailed"
   | "deletedNotice"
   | "deleteConflict"
   | "notFoundUnconfirmed"
@@ -129,7 +131,11 @@ interface EditorState {
   saving: boolean;
   error: NoteErrorSuffix | null;
   validation: NoteValidationError | null;
-  unknownCreate: boolean;
+  /**
+   * 作成結果が不明なときの確認状態。`checking` は一覧を取得中、`ready` は確認済みで
+   * 明示的な再送ができる、`error` は一覧を取得できず再送を保留している。
+   */
+  unknownCreate: null | "checking" | "ready" | "error";
   conflictLatest: ChannelNote | null;
   /** 編集中に削除されたと確認できたノート。新規ノートとして保存できる。 */
   deletedSource: ChannelNote | null;
@@ -232,6 +238,7 @@ export function ChannelNotesScreen({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [reorder, setReorder] = useState<ReorderState | null>(null);
   const [reorderLoading, setReorderLoading] = useState(false);
+  const [checkingListWithDraft, setCheckingListWithDraft] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<NoteErrorSuffix | null>(null);
@@ -265,6 +272,7 @@ export function ChannelNotesScreen({
   const deletedController = useRef<AbortController | null>(null);
   const detailController = useRef<AbortController | null>(null);
   const reorderController = useRef<AbortController | null>(null);
+  const reorderRequest = useRef(0);
   const dragIndex = useRef<number | null>(null);
   const saveInFlight = useRef(false);
   const deleteInFlight = useRef(false);
@@ -284,18 +292,29 @@ export function ChannelNotesScreen({
     reorderController.current = null;
   }, []);
 
+  /**
+   * 並べ替え画面を閉じる。進行中の準備・保存・競合後の再取得は要求番号で無効にし、
+   * 閉じた後に遅れて届いた応答が画面を開き直さないようにする。
+   */
+  const closeReorder = useCallback(() => {
+    reorderRequest.current += 1;
+    reorderController.current?.abort();
+    reorderController.current = null;
+    setReorder(null);
+  }, []);
+
   const clearDrafts = useCallback(() => {
     setSelection(null);
     setDetail(null);
     setEditor(null);
-    setReorder(null);
+    setCheckingListWithDraft(false);
+    closeReorder();
     setDeleteOpen(false);
     setDeleteError(null);
     setRestoringId(null);
     detailRequest.current += 1;
     detailController.current?.abort();
-    reorderController.current?.abort();
-  }, []);
+  }, [closeReorder]);
 
   const resetSession = useCallback(
     (nextNotice: Notice | null = null) => {
@@ -304,10 +323,18 @@ export function ChannelNotesScreen({
       deletedRequest.current += 1;
       detailRequest.current += 1;
       navigationGuardRef.current = false;
+      saveInFlight.current = false;
+      deleteInFlight.current = false;
+      restoreInFlight.current = false;
+      reorderStartInFlight.current = false;
+      reorderSaveInFlight.current = false;
+      reorderRequest.current += 1;
       abortRequests();
       setActive(emptyList());
       setDeleted(emptyList());
       setDeletedOpen(false);
+      setReorderLoading(false);
+      setDeleting(false);
       clearDrafts();
       setNotice(nextNotice);
     },
@@ -393,6 +420,21 @@ export function ChannelNotesScreen({
           loadingMore: false,
           loadingMoreError: null,
         }));
+        // 作成結果不明の下書きを残したまま一覧を取り直したら、確認完了として再送を許す。
+        // 確認中の遷移はここに集約し、作成側は一覧の取得を待たない。
+        if (
+          mode === "reset" &&
+          editorRef.current?.unknownCreate &&
+          editorRef.current.unknownCreate !== "ready"
+        ) {
+          setEditor((previous) =>
+            previous?.unknownCreate && previous.unknownCreate !== "ready"
+              ? { ...previous, unknownCreate: "ready" }
+              : previous,
+          );
+          setNotice({ tone: "error", key: "createUnknown" });
+        }
+        return;
       } catch (error) {
         if (!isCurrent(epoch) || request !== activeRequest.current || controller.signal.aborted)
           return;
@@ -400,8 +442,7 @@ export function ChannelNotesScreen({
           // 前ページ取得後に並び・構成が変わった。位置カーソルでは続きを特定できないため、
           // 先頭から取り直す（有限回）。古い操作は自動で適用し直さない。
           setNotice({ tone: "info", key: "loadMoreConflict" });
-          await loadActive("reset", attempt + 1);
-          return;
+          return loadActive("reset", attempt + 1);
         }
         if (mode === "reset") {
           setActive((previous) => ({
@@ -410,6 +451,15 @@ export function ChannelNotesScreen({
             error: listErrorKey(error, false),
             loadingMore: false,
           }));
+          // 確認中の一覧取得にも失敗したら、確認中で止めず再試行できる状態にする。
+          if (editorRef.current?.unknownCreate === "checking") {
+            setEditor((previous) =>
+              previous?.unknownCreate === "checking"
+                ? { ...previous, unknownCreate: "error" }
+                : previous,
+            );
+            setNotice({ tone: "error", key: "createUnknownRefreshFailed" });
+          }
         } else {
           setActive((previous) => ({
             ...previous,
@@ -417,6 +467,7 @@ export function ChannelNotesScreen({
             loadingMoreError: listErrorKey(error, false),
           }));
         }
+        return;
       }
     },
     [api, channelId],
@@ -598,6 +649,11 @@ export function ChannelNotesScreen({
       setEditor((previous) =>
         previous && isDirty(previous) ? { ...previous, saving: false, writeLost: true } : previous,
       );
+      // 並べ替えの準備中や競合後の再取得中でも、古い応答が閉じた画面を開き直さない
+      // ように要求番号を進める。開いていた場合だけ案内を出す。
+      reorderRequest.current += 1;
+      reorderController.current?.abort();
+      reorderController.current = null;
       if (reorderRef.current) {
         setReorder(null);
         setNotice({ tone: "error", key: "writePermissionLost" });
@@ -617,6 +673,8 @@ export function ChannelNotesScreen({
 
   function selectActive(note: ChannelNoteSummary) {
     if (reorderStartInFlight.current || !confirmDiscard()) return;
+    closeReorder();
+    setCheckingListWithDraft(false);
     setSelection({ kind: "active", id: note.id });
     setEditor(null);
     setNotice(null);
@@ -625,6 +683,8 @@ export function ChannelNotesScreen({
 
   function selectDeleted(note: DeletedChannelNoteSummary) {
     if (!isMember || reorderStartInFlight.current || !confirmDiscard()) return;
+    closeReorder();
+    setCheckingListWithDraft(false);
     setSelection({ kind: "deleted", id: note.id });
     setEditor(null);
     setNotice(null);
@@ -632,7 +692,10 @@ export function ChannelNotesScreen({
   }
 
   function startNew() {
-    if (!canWrite || reorderStartInFlight.current || !confirmDiscard()) return;
+    if (!canWrite || reorderStartInFlight.current) return;
+    if (!confirmDiscard()) return;
+    closeReorder();
+    setCheckingListWithDraft(false);
     setSelection(null);
     setDetail(null);
     detailRequest.current += 1;
@@ -648,7 +711,7 @@ export function ChannelNotesScreen({
       saving: false,
       error: null,
       validation: null,
-      unknownCreate: false,
+      unknownCreate: null,
       conflictLatest: null,
       deletedSource: null,
       writeLost: false,
@@ -657,7 +720,10 @@ export function ChannelNotesScreen({
 
   function startEdit() {
     const note = detail?.note;
-    if (!canWrite || !note || reorderStartInFlight.current || !confirmDiscard()) return;
+    if (!canWrite || !note || reorderStartInFlight.current) return;
+    if (!confirmDiscard()) return;
+    closeReorder();
+    setCheckingListWithDraft(false);
     setEditor({
       mode: "edit",
       title: note.title,
@@ -668,7 +734,7 @@ export function ChannelNotesScreen({
       saving: false,
       error: null,
       validation: null,
-      unknownCreate: false,
+      unknownCreate: null,
       conflictLatest: null,
       deletedSource: null,
       writeLost: false,
@@ -677,18 +743,20 @@ export function ChannelNotesScreen({
 
   function cancelEditor() {
     if (!confirmDiscard()) return;
+    setCheckingListWithDraft(false);
     setEditor(null);
   }
 
   function toggleDeletedOpen() {
     if (!isMember || reorderStartInFlight.current) return;
     if (!confirmDiscard()) return;
+    closeReorder();
+    setCheckingListWithDraft(false);
     const next = !deletedOpen;
     setDeletedOpen(next);
     setSelection(null);
     setDetail(null);
     setEditor(null);
-    setReorder(null);
     detailRequest.current += 1;
     detailController.current?.abort();
     setNotice(null);
@@ -699,11 +767,12 @@ export function ChannelNotesScreen({
       setSelection({ kind: "active", id: saved.id });
       setDetail({ status: "ready", note: saved, deletedNote: null, error: null });
       setEditor(null);
-      setReorder(null);
+      setCheckingListWithDraft(false);
+      closeReorder();
       setNotice({ tone: "info", key });
       void loadActive("reset");
     },
-    [loadActive],
+    [closeReorder, loadActive],
   );
 
   async function submitCreate(editorState: EditorState) {
@@ -727,10 +796,14 @@ export function ChannelNotesScreen({
         return;
       }
       if (isUnknownCreateOutcome(error)) {
+        // 一覧の再取得が終わるまでは、同じ下書きの再送を許さない。状態遷移は
+        // loadActive("reset") に任せ、保存のロックはすぐ解放して操作を続けられるようにする。
         setEditor((previous) =>
-          previous ? { ...previous, saving: false, unknownCreate: true } : previous,
+          previous
+            ? { ...previous, saving: false, unknownCreate: "checking", error: null }
+            : previous,
         );
-        setNotice({ tone: "error", key: "createUnknown" });
+        setNotice({ tone: "error", key: "createUnknownChecking" });
         void loadActive("reset");
         return;
       }
@@ -738,6 +811,18 @@ export function ChannelNotesScreen({
         previous ? { ...previous, saving: false, error: "saveFailed" } : previous,
       );
     }
+  }
+
+  /** 作成結果不明のまま一覧の取得に失敗したとき、利用者の操作で確認をやり直す。 */
+  function retryUnknownCreateList() {
+    if (!editorRef.current?.unknownCreate) return;
+    setEditor((previous) =>
+      previous?.unknownCreate
+        ? { ...previous, saving: false, unknownCreate: "checking", error: null }
+        : previous,
+    );
+    setNotice({ tone: "error", key: "createUnknownChecking" });
+    void loadActive("reset");
   }
 
   async function submitUpdate(editorState: EditorState, version: number) {
@@ -859,36 +944,41 @@ export function ChannelNotesScreen({
   async function saveEditor() {
     const current = editorRef.current;
     if (!current || current.saving || !canWrite || saveInFlight.current) return;
+    // 一覧で作成結果を確認できるまでは、同じ下書きを再送しない。
+    if (current.unknownCreate === "checking" || current.unknownCreate === "error") return;
     const validation = validateNoteDraft({ title: current.title, content: current.content });
     if (validation) {
       setEditor((previous) => (previous ? { ...previous, validation } : previous));
       return;
     }
+    const epoch = sessionEpoch.current;
     saveInFlight.current = true;
     try {
-      if (current.mode === "new") {
+      if (current.mode === "new" || (current.deletedSource && current.unknownCreate === "ready")) {
         await submitCreate(current);
       } else if (current.baseVersion !== null) {
         await submitUpdate(current, current.baseVersion);
       }
     } finally {
-      saveInFlight.current = false;
+      if (isCurrent(epoch)) saveInFlight.current = false;
     }
   }
 
   async function saveAsNew() {
     const current = editorRef.current;
     if (!current || current.saving || !canWrite || saveInFlight.current) return;
+    if (current.unknownCreate === "checking" || current.unknownCreate === "error") return;
     const validation = validateNoteDraft({ title: current.title, content: current.content });
     if (validation) {
       setEditor((previous) => (previous ? { ...previous, validation } : previous));
       return;
     }
+    const epoch = sessionEpoch.current;
     saveInFlight.current = true;
     try {
       await submitCreate(current);
     } finally {
-      saveInFlight.current = false;
+      if (isCurrent(epoch)) saveInFlight.current = false;
     }
   }
 
@@ -896,6 +986,13 @@ export function ChannelNotesScreen({
     const current = editorRef.current;
     const latest = current?.conflictLatest;
     if (!current || !latest || current.saving || !canWrite || saveInFlight.current) return;
+    // 比較表示を閉じたり PATCH を送る前に、下書きそのものを検証する。
+    const validation = validateNoteDraft({ title: current.title, content: current.content });
+    if (validation) {
+      setEditor((previous) => (previous ? { ...previous, validation } : previous));
+      return;
+    }
+    const epoch = sessionEpoch.current;
     saveInFlight.current = true;
     try {
       setEditor((previous) =>
@@ -903,7 +1000,7 @@ export function ChannelNotesScreen({
       );
       await submitUpdate({ ...current, saving: true }, latest.version);
     } finally {
-      saveInFlight.current = false;
+      if (isCurrent(epoch)) saveInFlight.current = false;
     }
   }
 
@@ -922,7 +1019,7 @@ export function ChannelNotesScreen({
             conflictLatest: null,
             error: null,
             validation: null,
-            unknownCreate: false,
+            unknownCreate: null,
           }
         : previous,
     );
@@ -942,8 +1039,8 @@ export function ChannelNotesScreen({
   async function confirmDelete() {
     const note = detail?.note;
     if (!note || deleting || !canWrite || deleteInFlight.current) return;
-    deleteInFlight.current = true;
     const epoch = sessionEpoch.current;
+    deleteInFlight.current = true;
     setDeleting(true);
     setDeleteError(null);
     try {
@@ -973,15 +1070,17 @@ export function ChannelNotesScreen({
         setDeleteError("saveFailed");
       }
     } finally {
-      deleteInFlight.current = false;
-      if (isCurrent(epoch)) setDeleting(false);
+      if (isCurrent(epoch)) {
+        deleteInFlight.current = false;
+        setDeleting(false);
+      }
     }
   }
 
   async function restore(note: DeletedChannelNoteSummary) {
     if (!canWrite || restoringId || restoreInFlight.current) return;
-    restoreInFlight.current = true;
     const epoch = sessionEpoch.current;
+    restoreInFlight.current = true;
     const editorSnapshot = editorRef.current;
     const selectionSnapshot = selectionRef.current;
     const deletedOpenSnapshot = deletedOpenRef.current;
@@ -999,6 +1098,9 @@ export function ChannelNotesScreen({
       void loadActive("reset");
       void loadDeleted("reset");
       if (!stillOnSameView()) return;
+      // 選択が変わっていない復元では、遅れて届く削除済み本文の取得結果を捨てる。
+      detailRequest.current += 1;
+      detailController.current?.abort();
       setDeletedOpen(false);
       setSelection({ kind: "active", id: saved.id });
       setDetail({ status: "ready", note: saved, deletedNote: null, error: null });
@@ -1011,6 +1113,9 @@ export function ChannelNotesScreen({
         void loadActive("reset");
         void loadDeleted("reset");
         if (!stillOnSameView()) return;
+        // 選択を閉じた後に遅れて届く削除済み本文の取得結果を捨てる。
+        detailRequest.current += 1;
+        detailController.current?.abort();
         setSelection(null);
         setDetail(null);
         setNotice({ tone: "error", key: "restoreUnavailable" });
@@ -1021,8 +1126,10 @@ export function ChannelNotesScreen({
         setNotice({ tone: "error", key: "restoreFailed" });
       }
     } finally {
-      restoreInFlight.current = false;
-      if (isCurrent(epoch)) setRestoringId(null);
+      if (isCurrent(epoch)) {
+        restoreInFlight.current = false;
+        setRestoringId(null);
+      }
     }
   }
 
@@ -1058,9 +1165,11 @@ export function ChannelNotesScreen({
   );
 
   async function beginReorder() {
-    if (!canWrite || reorderLoading || !confirmDiscard() || reorderStartInFlight.current) return;
-    reorderStartInFlight.current = true;
+    if (!canWrite || reorderLoading || reorderStartInFlight.current) return;
+    if (!confirmDiscard()) return;
     const epoch = sessionEpoch.current;
+    const op = ++reorderRequest.current;
+    reorderStartInFlight.current = true;
     const editorSnapshot = editorRef.current;
     const selectionSnapshot = selectionRef.current;
     setReorderLoading(true);
@@ -1069,6 +1178,7 @@ export function ChannelNotesScreen({
       const items = await loadAllActivePages();
       if (
         !isCurrent(epoch) ||
+        op !== reorderRequest.current ||
         !canWriteRef.current ||
         editorRef.current !== editorSnapshot ||
         selectionRef.current !== selectionSnapshot
@@ -1085,21 +1195,24 @@ export function ChannelNotesScreen({
         saving: false,
         error: null,
       });
+      setCheckingListWithDraft(false);
       setSelection(null);
       setDetail(null);
       setEditor(null);
       detailRequest.current += 1;
       detailController.current?.abort();
     } catch (error) {
-      if (!isCurrent(epoch) || !canWriteRef.current) return;
+      if (!isCurrent(epoch) || op !== reorderRequest.current || !canWriteRef.current) return;
       if (apiStatus(error) === 409) {
         setNotice({ tone: "error", key: "reorderConflict" });
       } else {
         setNotice({ tone: "error", key: "reorderLoadError" });
       }
     } finally {
-      reorderStartInFlight.current = false;
-      if (isCurrent(epoch)) setReorderLoading(false);
+      if (isCurrent(epoch)) {
+        reorderStartInFlight.current = false;
+        setReorderLoading(false);
+      }
     }
   }
 
@@ -1128,8 +1241,9 @@ export function ChannelNotesScreen({
   async function saveReorder() {
     const current = reorderRef.current;
     if (!current || current.saving || !canWrite || reorderSaveInFlight.current) return;
-    reorderSaveInFlight.current = true;
     const epoch = sessionEpoch.current;
+    const op = reorderRequest.current;
+    reorderSaveInFlight.current = true;
     setReorder((previous) => (previous ? { ...previous, saving: true, error: null } : previous));
     try {
       await api.reorder(channelId, {
@@ -1137,15 +1251,17 @@ export function ChannelNotesScreen({
         noteIds: current.items.map((note) => note.id),
       });
       if (!isCurrent(epoch)) return;
-      setReorder(null);
-      setNotice({ tone: "info", key: "reorderSaved" });
       void loadActive("reset");
+      if (op !== reorderRequest.current) return;
+      closeReorder();
+      setNotice({ tone: "info", key: "reorderSaved" });
     } catch (error) {
       if (!isCurrent(epoch)) return;
       if (apiStatus(error) === 409) {
+        // 競合後の再取得中に画面が閉じたり権限を失った場合は、結果を反映しない。
         try {
           const latest = await loadAllActivePages();
-          if (!isCurrent(epoch)) return;
+          if (!canApplyReorderReload(epoch, op)) return;
           setReorder({
             items: latest,
             expectedIds: latest.map((note) => note.id),
@@ -1153,27 +1269,39 @@ export function ChannelNotesScreen({
             error: "reorderConflict",
           });
         } catch {
+          if (!canApplyReorderReload(epoch, op)) return;
           setReorder((previous) =>
             previous ? { ...previous, saving: false, error: "reorderLoadError" } : previous,
           );
         }
       } else if (apiStatus(error) === 403 || apiStatus(error) === 400) {
-        setReorder(null);
+        if (!canApplyReorderReload(epoch, op)) return;
+        closeReorder();
         setNotice({ tone: "error", key: "writePermissionLost" });
         void loadActive("reset");
       } else {
+        if (!canApplyReorderReload(epoch, op)) return;
         setReorder((previous) =>
           previous ? { ...previous, saving: false, error: "saveFailed" } : previous,
         );
       }
     } finally {
-      reorderSaveInFlight.current = false;
+      if (isCurrent(epoch)) reorderSaveInFlight.current = false;
     }
+  }
+
+  function canApplyReorderReload(epoch: number, op: number): boolean {
+    return (
+      isCurrent(epoch) &&
+      op === reorderRequest.current &&
+      canWriteRef.current &&
+      reorderRef.current !== null
+    );
   }
 
   function cancelReorder() {
     if (!confirmDiscard()) return;
-    setReorder(null);
+    closeReorder();
   }
 
   const reorderDirty = reorderHasChanges(reorder);
@@ -1189,6 +1317,14 @@ export function ChannelNotesScreen({
       aria-label={t("notes.title")}
       className="flex min-h-0 w-full flex-col border-r bg-background sm:w-80 sm:shrink-0"
     >
+      {!wide && checkingListWithDraft && editor ? (
+        <div className="flex shrink-0 flex-col items-start gap-2 border-b bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <p>{t("notes.draftPreserved")}</p>
+          <Button variant="outline" size="sm" onClick={() => setCheckingListWithDraft(false)}>
+            {t("notes.returnToDraft")}
+          </Button>
+        </div>
+      ) : null}
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-b px-2 py-1.5">
         <h2 className="mr-auto px-1 text-sm font-semibold">
           {deletedVisible ? t("notes.deletedTitle") : t("notes.title")}
@@ -1287,7 +1423,8 @@ export function ChannelNotesScreen({
     </section>
   );
 
-  const showContent = wide || Boolean(visibleSelection) || Boolean(editor);
+  const showContent =
+    wide || (!checkingListWithDraft && (Boolean(visibleSelection) || Boolean(editor)));
   const contentPane = (
     <section aria-label={t("notes.contentTitle")} className="flex min-h-0 min-w-0 flex-1 flex-col">
       {!wide ? (
@@ -1297,10 +1434,11 @@ export function ChannelNotesScreen({
             size="sm"
             onClick={() => {
               if (!confirmDiscard()) return;
+              closeReorder();
+              setCheckingListWithDraft(false);
               setSelection(null);
               setDetail(null);
               setEditor(null);
-              setReorder(null);
               detailRequest.current += 1;
               detailController.current?.abort();
             }}
@@ -1315,6 +1453,7 @@ export function ChannelNotesScreen({
           <NoteEditor
             editor={editor}
             canWrite={canWrite && !editor.writeLost}
+            wide={wide}
             onChange={(patch) =>
               setEditor((previous) => (previous ? { ...previous, ...patch } : previous))
             }
@@ -1324,6 +1463,8 @@ export function ChannelNotesScreen({
             onOverwriteLatest={() => void overwriteLatest()}
             onUseLatest={useLatest}
             onCopy={() => void copyDraft()}
+            onRetryUnknownCreateList={retryUnknownCreateList}
+            onCheckListWithDraft={() => setCheckingListWithDraft(true)}
           />
         ) : visibleDetail ? (
           <NoteDetailView
@@ -1668,6 +1809,7 @@ function NoteDetailView({
 function NoteEditor({
   editor,
   canWrite,
+  wide,
   onChange,
   onSave,
   onCancel,
@@ -1675,9 +1817,12 @@ function NoteEditor({
   onOverwriteLatest,
   onUseLatest,
   onCopy,
+  onRetryUnknownCreateList,
+  onCheckListWithDraft,
 }: {
   editor: EditorState;
   canWrite: boolean;
+  wide: boolean;
   onChange: (patch: Partial<EditorState>) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -1685,9 +1830,12 @@ function NoteEditor({
   onOverwriteLatest: () => void;
   onUseLatest: () => void;
   onCopy: () => void;
+  onRetryUnknownCreateList: () => void;
+  onCheckListWithDraft: () => void;
 }) {
   const { t } = useTranslation();
   const readOnly = !canWrite || editor.writeLost || editor.saving;
+  const sendBlocked = editor.unknownCreate === "checking" || editor.unknownCreate === "error";
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-3">
       <h2 className="text-base font-semibold">
@@ -1706,9 +1854,39 @@ function NoteEditor({
         </div>
       ) : null}
       {editor.unknownCreate ? (
-        <p role="alert" className="rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-          {t("notes.duplicateWarning")}
-        </p>
+        <div
+          role="alert"
+          className="flex flex-col gap-2 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+        >
+          <p>
+            {editor.unknownCreate === "checking"
+              ? t("notes.createUnknownChecking")
+              : editor.unknownCreate === "error"
+                ? t("notes.createUnknownRefreshFailed")
+                : t("notes.duplicateWarning")}
+          </p>
+          {editor.unknownCreate === "error" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="self-start"
+              onClick={onRetryUnknownCreateList}
+            >
+              <RefreshCwIcon />
+              {t("notes.retry")}
+            </Button>
+          ) : null}
+          {!wide ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="self-start"
+              onClick={onCheckListWithDraft}
+            >
+              {t("notes.checkListWithDraft")}
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       <Input
         aria-label={t("notes.titleLabel")}
@@ -1749,7 +1927,7 @@ function NoteEditor({
             size="sm"
             className="self-start"
             onClick={onSaveAsNew}
-            disabled={editor.saving}
+            disabled={editor.saving || sendBlocked}
           >
             <SaveIcon />
             {t("notes.saveAsNew")}
@@ -1779,7 +1957,7 @@ function NoteEditor({
       ) : null}
       <div className="flex flex-wrap gap-2">
         {canWrite ? (
-          <Button onClick={onSave} disabled={editor.saving}>
+          <Button onClick={onSave} disabled={editor.saving || sendBlocked}>
             <SaveIcon />
             {editor.saving
               ? t("notes.saving")
