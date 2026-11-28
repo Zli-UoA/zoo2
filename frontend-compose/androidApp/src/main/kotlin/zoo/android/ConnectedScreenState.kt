@@ -938,7 +938,9 @@ internal class ConnectedScreenState(
                 SearchFilterOption(it.text("id"), it.text("channel_name"),
                     mark = if (it.flag("is_private")) SearchFilterMark.PrivateChannel else SearchFilterMark.Channel)
             }
-        return SearchFilterState(people, reachable, filters.from, filters.channels, filters.mine, filters.noBots)
+        val today = searchToday()
+        return SearchFilterState(people, reachable, filters.from, filters.channels, filters.mine, filters.noBots,
+            searchPeriodOf(filters, today), filters.after, filters.before?.let { shiftSearchDay(it, -1) }, today)
     }
 
     private fun isDm(row: Row, channel: Row?) = row.flag("is_dm") || channel?.flag("is_dm") == true
@@ -1175,8 +1177,14 @@ internal class ConnectedScreenState(
                 search.search(searchText, filter = when (action.field) {
                     SearchFilterField.From -> search.filters.copy(from = action.ids)
                     SearchFilterField.In -> search.filters.copy(channels = action.ids)
+                    SearchFilterField.Period -> search.filters
                 })
             }
+            is AndroidUiAction.SelectSearchPeriod -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = search.filters.copy(after = action.after, before = action.before))
+            }
+            AndroidUiAction.ResetSearchFilters -> app.globalSearch.search(searchText, filter = GlobalSearchFilters())
             is AndroidUiAction.ToggleSearchFilter -> {
                 val search = app.globalSearch
                 search.search(searchText, filter = when (action.flag) {

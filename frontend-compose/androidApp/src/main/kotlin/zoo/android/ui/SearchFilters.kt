@@ -43,6 +43,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import zoo.GlobalSearchType
+import zoo.SearchPeriod
+import zoo.searchPeriodAfter
+import zoo.shiftSearchDay
 import zoo.MAX_SEARCH_FILTER_IDS
 
 /** A sender or channel to filter by (Web's `SearchFilterOption`). */
@@ -65,9 +68,18 @@ internal data class SearchFilterState(
     val inChannels: List<String> = emptyList(),
     val mine: Boolean = false,
     val noBots: Boolean = false,
-)
+    val period: SearchPeriod = SearchPeriod.Anytime,
+    /** The first day (`YYYY-MM-DD`, included). */
+    val after: String? = null,
+    /** The last day shown (`YYYY-MM-DD`, included; the API's `before` is the next day). */
+    val endDay: String? = null,
+    /** Today on the device's calendar, for the "last N days" choices. */
+    val today: String = "",
+) {
+    val active: Boolean get() = from.isNotEmpty() || inChannels.isNotEmpty() || mine || noBots || period != SearchPeriod.Anytime
+}
 
-internal enum class SearchFilterField { From, In }
+internal enum class SearchFilterField { From, In, Period }
 
 internal enum class SearchFilterFlag { Mine, NoBots }
 
@@ -101,8 +113,17 @@ internal fun SearchFilterRow(
         FilterToggle(androidLabel("globalSearch.filters.mine", "自分が参加中"), state.mine, colors) {
             dispatch(AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.Mine))
         }
+        FilterChip(periodSummary(state), state.period != SearchPeriod.Anytime, UiIcon.Calendar, colors,
+            Modifier.testTag("search-filter-period")) { open = SearchFilterField.Period }
         FilterToggle(androidLabel("globalSearch.filters.noBots", "ボットを除く"), state.noBots, colors) {
             dispatch(AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.NoBots))
+        }
+        if (state.active) {
+            Box(Modifier.heightIn(min = AndroidControlSize.target).clickable(role = Role.Button) {
+                dispatch(AndroidUiAction.ResetSearchFilters)
+            }.testTag("search-filter-reset"), contentAlignment = Alignment.Center) {
+                ChipFace(androidLabel("globalSearch.filters.reset", "条件をリセット"), false, UiIcon.Close, colors, Modifier)
+            }
         }
     }
     when (open) {
@@ -114,6 +135,9 @@ internal fun SearchFilterRow(
             inLabel, androidLabel("globalSearch.filters.searchChannels", "チャンネル名で探す"), state.channels, state.inChannels,
             colors, dismiss = { open = null },
         ) { dispatch(AndroidUiAction.SelectSearchFilter(SearchFilterField.In, it)) }
+        SearchFilterField.Period -> SearchPeriodSheet(state, colors, dismiss = { open = null }) { after, before ->
+            dispatch(AndroidUiAction.SelectSearchPeriod(after, before))
+        }
         null -> {}
     }
 }
@@ -305,4 +329,137 @@ private fun SearchFilterSheet(
             Spacer(Modifier.height(16.dp))
         }
     }
+}
+
+private val SearchPeriod.fallback: String
+    get() = when (this) {
+        SearchPeriod.Anytime -> "指定なし"
+        SearchPeriod.Last7 -> "過去 7 日間"
+        SearchPeriod.Last30 -> "過去 30 日間"
+        SearchPeriod.Last365 -> "過去 1 年間"
+        SearchPeriod.Custom -> "日付を指定"
+    }
+
+@Composable
+private fun periodLabel(period: SearchPeriod) = androidLabel("globalSearch.filters.${period.key}", period.fallback)
+
+/** "期間", "期間: 過去 7 日間" or "期間: 2026-11-01〜2026-11-20". */
+@Composable
+private fun periodSummary(state: SearchFilterState): String {
+    val label = androidLabel("globalSearch.filters.period", "期間")
+    return when (state.period) {
+        SearchPeriod.Anytime -> label
+        SearchPeriod.Custom -> "$label: ${state.after.orEmpty()}〜${state.endDay.orEmpty()}"
+        else -> "$label: ${periodLabel(state.period)}"
+    }
+}
+
+/**
+ * The period (Web's period menu): "anytime", the last 7 / 30 / 365 days counting today, or the first and the last
+ * day picked from a calendar. The last day is included; the API gets the next day as `before`.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchPeriodSheet(
+    state: SearchFilterState, colors: AndroidColors, dismiss: () -> Unit, change: (after: String?, before: String?) -> Unit,
+) {
+    var custom by remember { mutableStateOf(state.period == SearchPeriod.Custom) }
+    var after by remember { mutableStateOf(state.after) }
+    var end by remember { mutableStateOf(state.endDay) }
+    var picking by remember { mutableStateOf<Boolean?>(null) }
+    val title = androidLabel("globalSearch.filters.period", "期間")
+    val reversed = after != null && end != null && after!! > end!!
+    fun applyCustom() {
+        if (!reversed && (after != null || end != null)) change(after, end?.let { shiftSearchDay(it, 1) })
+    }
+    ModalBottomSheet(
+        onDismissRequest = dismiss,
+        modifier = Modifier.semantics { paneTitle = title },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetMaxWidth = Dp.Unspecified,
+        containerColor = colors.background,
+        contentColor = colors.foreground,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).selectableGroup()) {
+            Text(title, color = colors.foreground, fontSize = 17.sp, fontWeight = AndroidWeights.emphasis)
+            SearchPeriod.entries.forEach { period ->
+                val chosen = if (custom) period == SearchPeriod.Custom else period == state.period
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
+                        .clickable(role = Role.RadioButton) {
+                            when (period) {
+                                SearchPeriod.Custom -> custom = true
+                                SearchPeriod.Anytime -> { custom = false; change(null, null); dismiss() }
+                                else -> { custom = false; change(searchPeriodAfter(period, state.today), null); dismiss() }
+                            }
+                        }
+                        .semantics { selected = chosen }
+                        .testTag("search-period-${period.key}"),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(AndroidControlSize.inlineIcon)) {
+                        if (chosen) UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon)
+                    }
+                    Text(periodLabel(period), color = colors.foreground,
+                        fontWeight = if (chosen) AndroidWeights.emphasis else AndroidWeights.label)
+                }
+            }
+            if (custom) {
+                DayField(androidLabel("globalSearch.filters.after", "開始日"), after, colors, "search-period-after") { picking = true }
+                DayField(androidLabel("globalSearch.filters.before", "終了日"), end, colors, "search-period-before") { picking = false }
+                if (reversed) Text(androidLabel("globalSearch.filters.reversed", "開始日は終了日と同じか、それより前にしてください。"),
+                    color = colors.secondary, fontSize = 13.sp)
+                TextAction(androidLabel("common.apply", "適用"), colors, enabled = !reversed && (after != null || end != null),
+                    icon = UiIcon.Check, modifier = Modifier.padding(top = 8.dp).testTag("search-period-apply")) {
+                    applyCustom(); dismiss()
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+    picking?.let { first ->
+        SearchDayPicker(if (first) after else end, colors, dismiss = { picking = null }) { day ->
+            if (first) after = day else end = day
+            picking = null
+        }
+    }
+}
+
+@Composable
+private fun DayField(label: String, day: String?, colors: AndroidColors, tag: String, click: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(role = Role.Button, onClick = click)
+            .testTag(tag),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        UiGlyph(UiIcon.Calendar, colors.secondary, AndroidControlSize.inlineIcon)
+        Text(label, Modifier.weight(1f), color = colors.foreground)
+        Text(day ?: "—", color = if (day == null) colors.secondary else colors.foreground)
+    }
+}
+
+/** Material's date picker over the sheet; days are the device's calendar days. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchDayPicker(day: String?, colors: AndroidColors, dismiss: () -> Unit, pick: (String?) -> Unit) {
+    val picker = androidx.compose.material3.rememberDatePickerState(
+        initialSelectedDateMillis = day?.let { java.time.LocalDate.parse(it).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() },
+    )
+    androidx.compose.material3.DatePickerDialog(
+        onDismissRequest = dismiss,
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                pick(picker.selectedDateMillis?.let {
+                    java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate().toString()
+                })
+            }) { Text(androidLabel("common.ok", "OK"), color = colors.foreground) }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = dismiss) {
+                Text(androidLabel("common.cancel", "キャンセル"), color = colors.foreground)
+            }
+        },
+    ) { androidx.compose.material3.DatePicker(picker) }
 }

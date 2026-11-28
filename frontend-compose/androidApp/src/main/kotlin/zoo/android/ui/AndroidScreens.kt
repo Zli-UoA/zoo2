@@ -215,6 +215,9 @@ internal sealed interface AndroidUiAction {
     data class ToggleFileSensitive(val id: String) : AndroidUiAction
     data class OpenChannelThread(val channelId: String, val threadId: String) : AndroidUiAction
     data object LoadMoreThreads : AndroidUiAction
+    /** The period of the search, as days (`YYYY-MM-DD`): [after] included, [before] not. */
+    data class SelectSearchPeriod(val after: String?, val before: String?) : AndroidUiAction
+    data object ResetSearchFilters : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
     data class Mention(val name: String) : AndroidUiAction
     data class ViewedNotification(val id: String) : AndroidUiAction

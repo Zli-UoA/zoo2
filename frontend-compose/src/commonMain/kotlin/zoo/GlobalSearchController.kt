@@ -3,6 +3,10 @@ package zoo
 import androidx.compose.runtime.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
+import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.offsetAt
+import kotlinx.datetime.plus
+import kotlinx.datetime.toLocalDateTime
 
 /**
  * Server-side search (`GET /api/search`, docs/search.md) for the `/search` screen.
@@ -217,20 +221,74 @@ enum class GlobalSearchType(val value: String, val labelKey: String) {
 const val MAX_SEARCH_FILTER_IDS = 20
 
 /**
- * Web's `SearchFilters` without the period: results from any of [from] (user ids) and any of [channels],
+ * Web's `SearchFilters`: results from any of [from] (user ids) and any of [channels],
  * [noBots] leaves out bot (app) posts, [mine] keeps the conversations the user takes part in (their
- * channels and DMs, the threads they joined or were mentioned in).
+ * channels and DMs, the threads they joined or were mentioned in). [after] and [before] are days of the
+ * device's calendar (`YYYY-MM-DD`); [after] is included and [before] is not (the API's `after`/`before`).
  */
 data class GlobalSearchFilters(
     val from: List<String> = emptyList(),
     val channels: List<String> = emptyList(),
     val mine: Boolean = false,
     val noBots: Boolean = false,
+    val after: String? = null,
+    val before: String? = null,
 ) {
-    val active: Boolean get() = from.isNotEmpty() || channels.isNotEmpty() || mine || noBots
+    val active: Boolean get() = from.isNotEmpty() || channels.isNotEmpty() || mine || noBots || after != null || before != null
 
-    /** Without blanks and repeats, at most [MAX_SEARCH_FILTER_IDS] each (Web's `splitIds`). */
-    fun normalized(): GlobalSearchFilters = copy(from = from.cleanIds(), channels = channels.cleanIds())
+    /** Without blanks and repeats, at most [MAX_SEARCH_FILTER_IDS] each (Web's `splitIds`); real days only. */
+    fun normalized(): GlobalSearchFilters = copy(
+        from = from.cleanIds(), channels = channels.cleanIds(),
+        after = after?.takeIf(::isSearchDay), before = before?.takeIf(::isSearchDay),
+    )
+}
+
+/** The choices of the period (Web's `SEARCH_PERIODS`); [Custom] picks the first and the last day. */
+enum class SearchPeriod(val key: String, val days: Int?) {
+    Anytime("anytime", null), Last7("last7", 7), Last30("last30", 30), Last365("last365", 365), Custom("custom", null),
+}
+
+/** A real day of the calendar (`YYYY-MM-DD`), not `2026-02-30` (Web's `isSearchDay`). */
+fun isSearchDay(value: String): Boolean =
+    Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(value) &&
+        runCatching { kotlinx.datetime.LocalDate.parse(value).toString() == value }.getOrDefault(false)
+
+/** [day] moved by [days] days on the calendar. */
+fun shiftSearchDay(day: String, days: Int): String =
+    kotlinx.datetime.LocalDate.parse(day).plus(days, kotlinx.datetime.DateTimeUnit.DAY).toString()
+
+/** The first day of "the last N days", counting [today] (Web's `periodAfter`). */
+fun searchPeriodAfter(period: SearchPeriod, today: String): String? =
+    period.days?.let { shiftSearchDay(today, -(it - 1)) }
+
+/** Which choice the filters are (Web's `periodOf`). */
+fun searchPeriodOf(filters: GlobalSearchFilters, today: String): SearchPeriod {
+    if (filters.after == null && filters.before == null) return SearchPeriod.Anytime
+    if (filters.before == null) {
+        SearchPeriod.entries.firstOrNull { it.days != null && filters.after == searchPeriodAfter(it, today) }?.let { return it }
+    }
+    return SearchPeriod.Custom
+}
+
+/** Today on the device's calendar (`YYYY-MM-DD`). */
+fun searchToday(zone: kotlinx.datetime.TimeZone = kotlinx.datetime.TimeZone.currentSystemDefault()): String =
+    kotlinx.datetime.Clock.System.now().toLocalDateTime(zone).date.toString()
+
+/**
+ * The start of [day] in [zone] with its offset (`2026-11-22T00:00:00+09:00`, Web's `localMidnight`): the API cuts
+ * at that instant, so posts from 0–9 o'clock JST do not fall on the previous day. A day without midnight (daylight
+ * saving) starts at its first time.
+ */
+fun searchLocalMidnight(day: String, zone: kotlinx.datetime.TimeZone = kotlinx.datetime.TimeZone.currentSystemDefault()): String {
+    if (day.length != 10) return day
+    val date = kotlinx.datetime.LocalDate.parse(day)
+    val start = date.atStartOfDayIn(zone)
+    val local = start.toLocalDateTime(zone)
+    val offset = zone.offsetAt(start).totalSeconds / 60
+    val sign = if (offset < 0) "-" else "+"
+    val abs = kotlin.math.abs(offset)
+    fun two(value: Int) = value.toString().padStart(2, '0')
+    return "${local.date}T${two(local.hour)}:${two(local.minute)}:00$sign${two(abs / 60)}:${two(abs % 60)}"
 }
 
 private fun List<String>.cleanIds(): List<String> =
@@ -244,6 +302,8 @@ fun globalSearchRequestPath(query: String, type: GlobalSearchType, filters: Glob
         if (filters.channels.isNotEmpty()) append("&channel_id=${filters.channels.joinToString(",").encodeURLParameter()}")
         if (filters.noBots) append("&exclude_bots=true")
         if (filters.mine) append("&involving_me=true")
+        filters.after?.let { append("&after=${searchLocalMidnight(it).encodeURLParameter()}") }
+        filters.before?.let { append("&before=${searchLocalMidnight(it).encodeURLParameter()}") }
         if (cursor != null) append("&cursor=${cursor.encodeURLParameter()}")
     }
 
@@ -260,6 +320,8 @@ fun globalSearchPath(query: String, type: GlobalSearchType, filters: GlobalSearc
         if (filters.channels.isNotEmpty()) append("&in=${filters.channels.joinToString(",").encodeURLParameter()}")
         if (filters.mine) append("&mine=1")
         if (filters.noBots) append("&nobots=1")
+        filters.after?.let { append("&after=$it") }
+        filters.before?.let { append("&before=$it") }
     }
 
 data class GlobalSearchRoute(val query: String, val type: GlobalSearchType, val filters: GlobalSearchFilters = GlobalSearchFilters())
@@ -279,7 +341,7 @@ fun globalSearchRoute(path: String): GlobalSearchRoute? {
     return GlobalSearchRoute(
         parameters["q"].orEmpty(),
         GlobalSearchType.from(parameters["type"]),
-        GlobalSearchFilters(ids("from"), ids("in"), flag("mine"), flag("nobots")).normalized(),
+        GlobalSearchFilters(ids("from"), ids("in"), flag("mine"), flag("nobots"), parameters["after"], parameters["before"]).normalized(),
     )
 }
 
