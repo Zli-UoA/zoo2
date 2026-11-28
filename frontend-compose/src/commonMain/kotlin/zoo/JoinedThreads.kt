@@ -33,6 +33,8 @@ class JoinedThreads(private val request: suspend (String) -> JsonElement) {
     private val lock = Mutex()
     private var cursor: String? = null
     private var expanded = false
+    /** 失敗した取得（追加ページなら true）。[retry] で同じ取得をやり直す。 */
+    private var failedAppend: Boolean? = null
 
     fun byChannel(): Map<String, List<JoinedThread>> = threads.groupBy { it.channelId }
 
@@ -43,12 +45,16 @@ class JoinedThreads(private val request: suspend (String) -> JsonElement) {
         fetch(append = true)
     }
 
+    /** 失敗した取得をやり直す（直前の一覧は残したまま）。 */
+    suspend fun retry() = fetch(append = failedAppend ?: false)
+
     fun clear() {
         threads = emptyList()
         cursor = null
         expanded = false
         hasMore = false
         error = false
+        failedAppend = null
     }
 
     private suspend fun fetch(append: Boolean) = lock.withLock {
@@ -85,10 +91,12 @@ class JoinedThreads(private val request: suspend (String) -> JsonElement) {
             expanded = append || rebuild
             hasMore = cursor != null
             error = false
+            failedAppend = null
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             error = true
+            failedAppend = append
         } finally {
             loading = false
         }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -380,7 +381,8 @@ private fun SearchPeriodSheet(
         containerColor = colors.background,
         contentColor = colors.foreground,
     ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).selectableGroup()) {
+        // 横向きや分割画面の低い画面でも「適用」まで届くよう、内容を縦にスクロールできるようにする。
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).selectableGroup()) {
             Text(title, color = colors.foreground, fontSize = 17.sp, fontWeight = AndroidWeights.emphasis)
             SearchPeriod.entries.forEach { period ->
                 val chosen = if (custom) period == SearchPeriod.Custom else period == state.period
@@ -410,7 +412,7 @@ private fun SearchPeriodSheet(
                 DayField(androidLabel("globalSearch.filters.before", "終了日"), end, colors, "search-period-before") { picking = false }
                 if (reversed) Text(androidLabel("globalSearch.filters.reversed", "開始日は終了日と同じか、それより前にしてください。"),
                     color = colors.secondary, fontSize = 13.sp)
-                TextAction(androidLabel("common.apply", "適用"), colors, enabled = !reversed && (after != null || end != null),
+                TextAction(androidLabel("globalSearch.filters.apply", "適用"), colors, enabled = !reversed && (after != null || end != null),
                     icon = UiIcon.Check, modifier = Modifier.padding(top = 8.dp).testTag("search-period-apply")) {
                     applyCustom(); dismiss()
                 }
@@ -444,8 +446,14 @@ private fun DayField(label: String, day: String?, colors: AndroidColors, tag: St
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchDayPicker(day: String?, colors: AndroidColors, dismiss: () -> Unit, pick: (String?) -> Unit) {
+    // 既定の年の範囲の外の日付（経路から戻した古い日付など）で始めると例外になるので、その年を含むよう広げる。
+    val year = day?.take(4)?.toIntOrNull()
+    val defaultYears = androidx.compose.material3.DatePickerDefaults.YearRange
+    val years = if (year == null || year in defaultYears) defaultYears
+        else minOf(year, defaultYears.first)..maxOf(year, defaultYears.last)
     val picker = androidx.compose.material3.rememberDatePickerState(
         initialSelectedDateMillis = day?.let { java.time.LocalDate.parse(it).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() },
+        yearRange = years,
     )
     androidx.compose.material3.DatePickerDialog(
         onDismissRequest = dismiss,

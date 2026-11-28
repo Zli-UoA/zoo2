@@ -55,8 +55,16 @@ class TypingPresence(
             announced = value
         }
 
+        // 開始の通知は、送信待ちを 1 件にまとめる。応答が遅くても待ちが増えず、送る直前に間隔を確かめる。
+        var startQueued = false
+
         suspend fun send(value: Boolean) = writes.withLock {
-            if (value && !active) return@withLock
+            if (value) {
+                startQueued = false
+                if (!active) return@withLock
+                if (lastSent.let { it != null && it.elapsedNow().inWholeMilliseconds < SEND_INTERVAL_MS }) return@withLock
+                lastSent = time.markNow()
+            }
             try {
                 withTimeout(WRITE_TIMEOUT_MS) { write(value) }
             } catch (failure: CancellationException) {
@@ -80,8 +88,8 @@ class TypingPresence(
                 val started = !active
                 active = true
                 if (started) wake.trySend(Unit)
-                if (lastSent.let { it == null || it.elapsedNow().inWholeMilliseconds >= SEND_INTERVAL_MS }) {
-                    lastSent = time.markNow()
+                if (!startQueued && lastSent.let { it == null || it.elapsedNow().inWholeMilliseconds >= SEND_INTERVAL_MS }) {
+                    startQueued = true
                     launch { send(true) }
                 }
                 stopTimer?.cancel()

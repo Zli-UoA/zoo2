@@ -132,7 +132,11 @@ internal sealed interface AndroidScreen {
         val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
         val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
     ) : AndroidScreen
-    data class Channels(val sections: List<ChannelSection>, val moreThreads: Boolean = false) : AndroidScreen
+    data class Channels(
+        val sections: List<ChannelSection>, val moreThreads: Boolean = false,
+        /** 参加中のスレッドの取得に失敗した（直前の一覧は残す）。 */
+        val threadsFailed: Boolean = false,
+    ) : AndroidScreen
     data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
@@ -215,6 +219,7 @@ internal sealed interface AndroidUiAction {
     data class ToggleFileSensitive(val id: String) : AndroidUiAction
     data class OpenChannelThread(val channelId: String, val threadId: String) : AndroidUiAction
     data object LoadMoreThreads : AndroidUiAction
+    data object RetryThreads : AndroidUiAction
     /** The period of the search, as days (`YYYY-MM-DD`): [after] included, [before] not. */
     data class SelectSearchPeriod(val after: String?, val before: String?) : AndroidUiAction
     data object ResetSearchFilters : AndroidUiAction
@@ -647,7 +652,16 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
             }
             }
         }
-        if (screen.moreThreads) item(key = "threads:more") {
+        if (screen.threadsFailed) item(key = "threads:error") {
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp).testTag("threads-error"),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(androidLabel("threads.indexError", "スレッド一覧を取得できませんでした。"), Modifier.weight(1f),
+                    color = colors.secondary, fontSize = 13.sp)
+                TextAction(androidLabel("threads.retry", "再試行"), colors, style = TextActionStyle.Plain,
+                    icon = UiIcon.Refresh) { dispatch(AndroidUiAction.RetryThreads) }
+            }
+        }
+        if (screen.moreThreads && !screen.threadsFailed) item(key = "threads:more") {
             Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.CenterStart) {
                 TextAction(androidLabel("threads.more", "さらに表示"), colors, style = TextActionStyle.Plain,
                     icon = UiIcon.Refresh) { dispatch(AndroidUiAction.LoadMoreThreads) }

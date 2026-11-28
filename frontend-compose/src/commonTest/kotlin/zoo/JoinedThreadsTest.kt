@@ -31,7 +31,7 @@ class JoinedThreadsTest {
             requests += path
             when (path) {
                 "/api/threads" -> page(thread("t1"), next = "a")
-                "/api/threads?before=a" -> page(thread("t1"), thread("t2"), next = "b")
+                "/api/threads?before=a" -> page(thread("t1", replies = 2), thread("t2"), next = "b")
                 "/api/threads?through=b" -> page(thread("t3"), thread("t1"), next = "a")
                 "/api/threads?before=a&through=b" -> page(thread("t2"))
                 else -> error(path)
@@ -41,10 +41,30 @@ class JoinedThreadsTest {
         assertTrue(threads.hasMore)
         threads.loadMore()
         assertEquals(listOf("t1", "t2"), threads.threads.map { it.id }, "the newer copy of t1 replaces the old one")
+        assertEquals(2, threads.threads.first { it.id == "t1" }.replies)
         threads.refresh()
         assertEquals(listOf("t3", "t1", "t2"), threads.threads.map { it.id })
         assertEquals(listOf("/api/threads", "/api/threads?before=a", "/api/threads?through=b", "/api/threads?before=a&through=b"), requests)
         assertTrue(threads.hasMore)
+    }
+
+    @Test fun retryRepeatsTheFailedLoadMore() = runTest {
+        val requests = mutableListOf<String>()
+        var fail = false
+        val threads = JoinedThreads { path ->
+            requests += path
+            if (fail && path.contains("before")) throw IllegalStateException("offline")
+            if (path.contains("before")) page(thread("t2")) else page(thread("t1"), next = "a")
+        }
+        threads.refresh()
+        fail = true
+        threads.loadMore()
+        assertTrue(threads.error)
+        fail = false
+        threads.retry()
+        assertFalse(threads.error)
+        assertEquals(listOf("t1", "t2"), threads.threads.map { it.id })
+        assertEquals(listOf("/api/threads", "/api/threads?before=a", "/api/threads?before=a"), requests)
     }
 
     @Test fun aFailedRefreshKeepsTheList() = runTest {

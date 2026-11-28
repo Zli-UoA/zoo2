@@ -41,6 +41,33 @@ class TypingPresenceTest {
         assertEquals(listOf(true, true, false), server.writes, "nothing more to stop")
     }
 
+    @Test fun slowResponsesDoNotQueueStartsOrBreakTheInterval() = runTest {
+        val writes = mutableListOf<Long>()
+        var inFlight = 0
+        var maxWaiting = 0
+        val presence = TypingPresence({ _, method, _ ->
+            if (method == "POST") {
+                inFlight++
+                maxWaiting = maxOf(maxWaiting, inFlight)
+                writes += currentTime
+                delay(4_500)
+                inFlight--
+                buildJsonObject { put("ok", true) }
+            } else JsonArray(emptyList())
+        }, "session", testTimeSource)
+        val typed = MutableSharedFlow<Boolean>()
+        backgroundScope.launch { presence.run("channel", null, typed) }
+        runCurrent()
+        val start = currentTime
+        for (at in listOf(0L, 2_000L, 4_000L, 6_000L)) {
+            advanceTimeBy(start + at - currentTime); typed.emit(true); runCurrent()
+        }
+        advanceTimeBy(1_000); runCurrent()
+        assertTrue(writes.zipWithNext().all { (a, b) -> b - a >= TypingPresence.SEND_INTERVAL_MS }, "writes: $writes")
+        assertEquals(1, maxWaiting, "only one write runs at a time")
+        assertTrue(writes.size <= 3, "waiting starts are combined: $writes")
+    }
+
     @Test fun clearingTheDraftStopsAtOnce() = runTest {
         val server = Server()
         val presence = TypingPresence(server::request, "session", testTimeSource)
