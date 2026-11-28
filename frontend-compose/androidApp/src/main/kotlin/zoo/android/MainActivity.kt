@@ -452,6 +452,9 @@ class MainActivity : ComponentActivity() {
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
             session.setNavigationCacheLimit(platform.navigationCacheLimit)
+            lifetime.launch {
+                if (!platform.enforceAttachmentCacheSize()) session.toast = session.t("offline.deleteFailed")
+            }
             platform.onNavigation = { session.update(it) }
             // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
             val shapeReconnects = MutableStateFlow(0L)

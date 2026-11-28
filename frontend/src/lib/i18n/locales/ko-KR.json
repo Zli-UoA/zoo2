@@ -1835,6 +1835,10 @@
   "androidUpdate": {
     "title": "앱 업데이트"
   },
+  "androidAttachmentCache": {
+    "title": "첨부 이미지 캐시",
+    "description": "이 계정의 서명된 첨부 이미지를 기기에 저장합니다. 한도를 낮추면 가장 오래 사용하지 않은 이미지부터 삭제합니다. 끄면 저장된 이미지가 삭제됩니다. 공개 이미지는 별도의 캐시를 사용합니다."
+  },
   "androidNavigationCache": {
     "title": "화면 전환 캐시",
     "description": "홈, 게시물 상세 및 프로필과 채널에 각각 적용되는 메모리 보관 항목 수입니다.",

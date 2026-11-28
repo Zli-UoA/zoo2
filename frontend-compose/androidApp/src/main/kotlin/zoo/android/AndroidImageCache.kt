@@ -24,9 +24,10 @@ internal class AndroidImageCache(
     maxBytes: Long = 512L * 1024 * 1024,
     private val timeoutMillis: Long = 120_000,
     private val now: () -> Long = System::currentTimeMillis,
+    attachmentCacheBytes: Long = 512L * 1024 * 1024,
     configure: OkHttpClient.Builder.() -> Unit = {},
 ) : java.io.Closeable {
-    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("${directory.name}-attachment-bodies-v3"))
+    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("${directory.name}-attachment-bodies-v3"), attachmentCacheBytes)
     private val disk = Cache(directory, maxBytes)
     private val client = OkHttpClient.Builder()
         .apply(configure)
@@ -55,8 +56,12 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
-    suspend fun freshAttachmentImage(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
-        attachments.read(cacheKey, freshAt = now())?.bytes
+    suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        attachments.read(cacheKey, previewAt = now())?.bytes
+    }
+
+    suspend fun resizeAttachmentCache(bytes: Long) = withContext(Dispatchers.IO) {
+        attachments.resize(bytes)
     }
 
     suspend fun removeAttachmentImages(id: String) = withContext(Dispatchers.IO) {
@@ -85,15 +90,17 @@ internal class AndroidImageCache(
                 val resourceHash = AttachmentImageDiskCache.digest(resource.toString())
                 val stored = if (retry) null else attachments.read(cacheKey)
                 val matching = stored?.takeIf { it.urlHash.startsWith("$resourceHash:") }
-                if (matching != null && now() < matching.expiresAt &&
+                if (matching != null && now() < matching.revalidateAt &&
                     (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
                 ) {
                     if (!attachments.isCurrent(cacheKey, token)) throw ImageHttpFailure(403)
                     return@withContext matching.bytes
                 }
                 if (retry) attachments.remove(cacheKey, token)
+                // Legacy entries require a full response once to learn whether stale previews are permitted.
+                val conditional = matching?.takeIf { it.freshness.stalePreviewMillis != null }
                 val image = try {
-                    loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes, redirects ->
+                    loadPublicImage(http, url, noStore = true, conditional = conditional) { response, bytes, redirects ->
                         val receivedAt = now()
                         val validated = response.status == HttpStatusCode.NotModified
                         val freshness = attachmentFreshness(response, matching?.freshness?.takeIf { validated })
@@ -107,14 +114,15 @@ internal class AndroidImageCache(
                             attachments.remove(cacheKey, token)
                             return@loadPublicImage
                         }
-                        val expiresAt = attachmentFreshUntil(response, freshness, receivedAt, defaultLifetime = 300_000L)
+                        val responseDeadline = attachmentFreshUntil(response, freshness, receivedAt, defaultLifetime = 300_000L)
+                        val expiresAt = minOf(responseDeadline, redirectDeadlines.filterNotNull().minOrNull() ?: responseDeadline)
                         val etag = if (redirects.isEmpty()) {
                             response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
                                 ?: matching?.etag?.takeIf { validated }
                         } else null
                         attachments.write(cacheKey, token, AttachmentImageDiskCache.Entry(
-                            "$resourceHash:$urlHash", minOf(expiresAt, redirectDeadlines.filterNotNull().minOrNull() ?: expiresAt),
-                            etag, freshness, bytes,
+                            "$resourceHash:$urlHash", expiresAt, minOf(expiresAt, receivedAt + 300_000L),
+                            etag, if (redirects.isEmpty()) freshness else freshness.copy(stalePreviewMillis = 0L), bytes,
                         ))
                     }
                 } catch (failure: ImageHttpFailure) {
@@ -146,8 +154,21 @@ internal class AndroidImageCache(
         val expiresAt = if (expiresHeader == null) previous?.httpExpiresAt else httpDate(expiresHeader)
         if (expiresHeader != null && expiresAt == null && maxAge == null) return null
         val freshness = maxAge ?: 0L.takeIf { policy.mustRevalidate && expiresAt == null }
-        return Freshness(freshness, expiresAt)
+        val staleMillis = when {
+            policy.mustRevalidate -> 0L
+            headers[HttpHeaders.CacheControl] == null && previous != null -> previous.stalePreviewMillis
+            else -> stalePreviewMillis(headers.getAll(HttpHeaders.CacheControl).orEmpty())
+        }
+        return Freshness(freshness, expiresAt, staleMillis)
     }
+
+    private fun stalePreviewMillis(headers: List<String>): Long =
+        headers.flatMap { it.split(',') }.map(String::trim)
+            .filter { it.substringBefore('=').trim().equals("stale-while-revalidate", ignoreCase = true) }
+            .minOfOrNull { directive ->
+                directive.substringAfter('=', "").trim().trim('"').toLongOrNull()
+                    ?.coerceIn(0L, Int.MAX_VALUE.toLong())?.times(1000L) ?: 0L
+            } ?: Long.MAX_VALUE
 
     private fun httpDate(value: String): Long? =
         runCatching { value.fromHttpToGmtDate().timestamp }.getOrNull()
@@ -162,7 +183,7 @@ internal class AndroidImageCache(
             (receivedAt - serverDate).coerceAtLeast(0),
             (headers[HttpHeaders.Age]?.toLongOrNull() ?: 0L).coerceIn(0, Int.MAX_VALUE.toLong()) * 1000L,
         )
-        return receivedAt + (lifetime - age).coerceIn(0, 300_000L)
+        return receivedAt + lifetime - age
     }
 
     suspend fun imageIfCached(request: ImageRequest, limit: Int): ByteArray? =
