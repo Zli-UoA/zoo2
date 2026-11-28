@@ -48,10 +48,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var notificationSettingsVersion by mutableIntStateOf(0)
     private var shared by mutableStateOf<IncomingShare?>(null)
     private var notificationIntent by mutableStateOf<Intent?>(null)
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationSettingsVersion++
             AndroidPushRegistration.tokenChanged()
         }
 
@@ -331,7 +333,7 @@ class MainActivity : ComponentActivity() {
                     val returning = event == Lifecycle.Event.ON_START && !platform.env.visible
                     platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     updateNetworkStatus(returning)
-                    if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
+                    if (event == Lifecycle.Event.ON_RESUME) { notificationSettingsVersion++; current.push.refresh() }
                 }
                 lifecycle.addObserver(observer)
                 val callback = DefaultNetworkCallback {
@@ -354,6 +356,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             ConnectedScreens(current.session, platform, current.phone.controller,
+                settingsVersion = notificationSettingsVersion,
                 incoming = shared,
                 finishShare = {
                     shared = null

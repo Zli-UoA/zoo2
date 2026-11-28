@@ -1016,7 +1016,7 @@ internal class ConnectedScreenState(
         return groups
     }
 
-    fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
+    fun settings(env: Environment, fullScreenAllowed: Boolean?): List<SettingsGroup> = listOf(
         SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", env.theme),
             SettingsEntry.Destination("language", "言語", env.locale))),
         SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", env.swipeReply),
@@ -1031,8 +1031,8 @@ internal class ConnectedScreenState(
             add(SettingsEntry.Destination("sip", app.t("sip.title")))
             add(SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", phone.dmWaiting))
             if (phone.dmWaitingError) add(SettingsEntry.Information("dm-call-error", app.t("androidPhone.callError")))
-            if (incomingSettingsAvailable) {
-                add(SettingsEntry.Destination("incoming-screen", app.t("androidPhone.incomingScreenSettings")))
+            if (fullScreenAllowed != null) {
+                add(SettingsEntry.Destination("incoming-screen", app.t("androidPhone.incomingScreenSettings"), if (fullScreenAllowed) "許可" else "許可が必要"))
             }
         }),
     )
@@ -1040,7 +1040,7 @@ internal class ConnectedScreenState(
     private fun cacheLimitLabel(limit: Int) = if (limit == 0) app.t("androidNavigationCache.off")
         else app.t("androidNavigationCache.entries", "count" to limit.toString())
 
-    fun settingsDetail(env: Environment): AndroidScreen {
+    fun settingsDetail(env: Environment, notificationOptions: List<SettingsEntry>): AndroidScreen {
         val (title, entries) = when (overlay) {
             "theme" -> "テーマ" to listOf("system" to "端末に従う", "light" to "ライト", "dark" to "ダーク")
                 .map { SettingsEntry.Destination("theme:${it.first}", it.second, if (env.theme == it.first) "選択中" else null) }
@@ -1049,7 +1049,7 @@ internal class ConnectedScreenState(
                 SettingsEntry.Destination("locale:${it.first}", it.second, if (env.locale == it.first) "選択中" else null)
             }
             "navigation-cache" -> app.t("androidNavigationCache.title") to buildList<SettingsEntry> {
-                add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description")))
+                add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description") + " 件数を減らすと、古い画面に戻った際に再読み込みします。"))
                 navigationCacheLimits.forEach { limit ->
                     add(SettingsEntry.Choice("navigation-cache:$limit", cacheLimitLabel(limit),
                         platform.navigationCacheLimit == limit))
@@ -1058,7 +1058,7 @@ internal class ConnectedScreenState(
             "search-engine" -> "検索エンジン" to searchEngines.map {
                 SettingsEntry.Destination("engine:${it.key}", it.value, if (app.searchEngine == it.key) "選択中" else null)
             }
-            else -> "通知" to listOf(SettingsEntry.Destination("os-notifications", "Androidの通知設定を開く"))
+            else -> "通知" to notificationOptions
         }
         val groupTitle = if (overlay == "navigation-cache") "" else title
         return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(groupTitle, entries)))

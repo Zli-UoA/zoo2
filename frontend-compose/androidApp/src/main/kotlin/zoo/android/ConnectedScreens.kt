@@ -53,12 +53,25 @@ internal fun ConnectedScreens(
     phone: PhoneController,
     enableNotifications: () -> Unit,
     background: () -> Unit,
+    settingsVersion: Int = 0,
     incoming: IncomingShare? = null,
     finishShare: () -> Unit = {},
     callPresentation: Int = 0,
     openIncomingSettings: (() -> Unit)? = null,
     openPictureInPicture: ((String) -> Unit)? = null,
 ) {
+    val activityContext = androidx.compose.ui.platform.LocalContext.current
+    val manager = remember(activityContext) { activityContext.getSystemService(android.app.NotificationManager::class.java) }
+    val notificationOptions = remember(settingsVersion, manager) {
+        listOf(SettingsEntry.Destination("os-notifications", "アプリの通知", if (manager.areNotificationsEnabled()) "許可" else "停止中")) +
+            manager.notificationChannels.filterNot { it.id == "sample" }.map { channel ->
+                SettingsEntry.Destination("os-channel/" + channel.id, channel.name.toString(),
+                    if (channel.importance == android.app.NotificationManager.IMPORTANCE_NONE) "停止中" else "有効")
+            }
+    }
+    val fullScreenAllowed = remember(settingsVersion, manager) {
+        if (android.os.Build.VERSION.SDK_INT >= 34) manager.canUseFullScreenIntent() else null
+    }
     val state = remember(session) { ConnectedScreenState(session, platform, phone) }
     val pageState = key(session.config.apiBaseUrl, session.config.userId) { rememberSaveableStateHolder() }
     DisposableEffect(state) { onDispose { state.close() } }
@@ -556,13 +569,13 @@ internal fun ConnectedScreens(
                 loadFailed = state.postLoadFailed, online = env.online, loading = state.postPending)
         }
         state.overlay == "post" -> AndroidScreen.PostLoading(env.online, state.postLoadFailed)
-        state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache") -> state.settingsDetail(env)
+        state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache") -> state.settingsDetail(env, notificationOptions)
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
             loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
         route == "/notifications" -> state.inbox.screen(state.followResponses)
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
-        route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
+        route == "/settings" -> AndroidScreen.Settings(state.settings(env, fullScreenAllowed))
         channel != null && (threadRoot != null || deletedRoot) -> {
           // 暗号化の境目は、スレッドの画面に出す親と返信の中で決める。
           val thread = withEncryptionBoundary(
@@ -741,6 +754,13 @@ internal fun ConnectedScreens(
                                 action == AndroidUiAction.Back -> back()
                                 action == AndroidUiAction.MinimizeCall -> minimized = true
                                 action == AndroidUiAction.FloatCall -> call?.let { openPictureInPicture?.invoke(it.id) }
+                                action is AndroidUiAction.OpenSetting && action.id.startsWith("os-channel/") -> {
+                                    val settings = Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                        .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, action.id.substringAfter('/'))
+                                    try { activityContext.startActivity(settings) }
+                                    catch (_: android.content.ActivityNotFoundException) { enableNotifications() }
+                                }
                                 action == AndroidUiAction.OpenSetting("incoming-screen") -> openIncomingSettings?.invoke()
                                 action is AndroidUiAction.SelectResult && state.overlay == "members" && channel != null &&
                                     state.canEditMembers(channel) && action.id != session.config.userId -> {
