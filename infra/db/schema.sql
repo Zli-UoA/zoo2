@@ -4840,3 +4840,5 @@ CREATE TABLE apub_quote_grants (
 CREATE INDEX apub_quote_grants_user ON apub_quote_grants(user_id);
 CREATE TRIGGER apub_quote_grants_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_quote_grants
   FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+
+ALTER TABLE home_posts ADD COLUMN quote_uri text;

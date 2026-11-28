@@ -168,7 +168,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         tags.extend(emojis.iter().map(emoji::as_tag));
         note["@context"] = json!([CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash","sensitive":"as:sensitive"}]);
     }
-    if let Some(uri) = quotes::local_quote_uri(string(post, "content")?) {
+    if let Some(uri) = post["quote_uri"].as_str() {
         note["quoteUrl"] = json!(uri);
         note["_misskey_quote"] = json!(uri);
         note["@context"][1]["quoteUrl"] = json!("as:quoteUrl");

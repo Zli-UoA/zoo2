@@ -2449,8 +2449,7 @@ async fn quote_renote_roundtrips_home_and_federated_note() -> anyhow::Result<()>
         .bind(user.as_str())
         .exec(&mut db)
         .await?;
-    let publish =
-        |content, visibility| json!({"content":content,"apub":true,"visibility":visibility});
+    let publish = |content: &str, visibility: &str| json!({"content":content,"apub":true,"visibility":visibility});
     let (status, original) = request(
         &app,
         "POST",
@@ -2483,6 +2482,117 @@ async fn quote_renote_roundtrips_home_and_federated_note() -> anyhow::Result<()>
     .await?;
     assert_eq!(note["quoteUrl"], post["quote"]["uri"]);
     assert_eq!(note["_misskey_quote"], note["quoteUrl"]);
+    let quoted_id = quoted["id"].as_str().unwrap();
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        Some(&user),
+        &format!("/api/home/{quoted_id}"),
+        Some(json!({"content":"編集したコメント"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, edited) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{quoted_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(edited["quote"]["post"]["id"], original["id"]);
+    assert_eq!(edited["content"], "編集したコメント");
+    let (_, literal) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish(
+            &format!("RE: <{}>", note["quoteUrl"].as_str().unwrap()),
+            "public",
+        )),
+    )
+    .await?;
+    let (_, literal_note) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{}", literal["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert!(literal_note.get("quoteUrl").is_none());
+    let (_, unlisted) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish("未収載", "unlisted")),
+    )
+    .await?;
+    let other = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(other.as_str())
+        .exec(&mut db)
+        .await?;
+    let (status, linked) = request(
+        &app,
+        "POST",
+        Some(&other),
+        "/api/home/entries",
+        Some(json!({"entries":[unlisted["id"]],"timeline":"social","linked_posts":true})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(linked[0]["id"], unlisted["id"]);
+    let quote = |visibility| json!({"content":"引用","quote_post_id":unlisted["id"],"visibility":visibility,"apub":visibility!="local"});
+    for visibility in ["local", "public"] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                Some(&other),
+                "/api/home",
+                Some(quote(visibility))
+            )
+            .await?
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&other),
+            "/api/home",
+            Some(quote("unlisted"))
+        )
+        .await?
+        .0,
+        StatusCode::CREATED
+    );
+    // Guests cannot read this author's original by ID, even inside an otherwise visible card.
+    toasty::sql::statement("UPDATE users SET is_guest=true WHERE id=$1")
+        .bind(other.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("UPDATE home_posts SET reply_user_id=$1 WHERE id=$2")
+        .bind(other.as_str())
+        .bind(quoted_id)
+        .exec(&mut db)
+        .await?;
+    let (status, card) = request(
+        &app,
+        "GET",
+        Some(&other),
+        &format!("/api/home/{quoted_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(card["quote"]["uri"], note["quoteUrl"]);
+    assert!(card["quote"]["post"].is_null());
     let (_, private) = request(
         &app,
         "POST",

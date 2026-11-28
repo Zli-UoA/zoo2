@@ -19,6 +19,8 @@ struct Page {
     /// Entry IDs for refreshing a bounded viewport, including repost entries.
     #[serde(skip)]
     entries: Option<Vec<String>>,
+    #[serde(skip)]
+    linked_posts: bool,
     before: Option<String>,
     timeline: Option<String>,
     limit: Option<usize>,
@@ -29,6 +31,8 @@ struct Page {
 }
 #[derive(Deserialize)]
 struct EntryWindow {
+    #[serde(default)]
+    linked_posts: bool,
     entries: Vec<String>,
     timeline: Option<String>,
     author: Option<String>,
@@ -43,6 +47,7 @@ async fn refresh_entries(
         user,
         Query(Page {
             entries: Some(window.entries),
+            linked_posts: window.linked_posts,
             timeline: window.timeline,
             author: window.author,
             ..Page::default()
@@ -127,11 +132,12 @@ async fn create(
             "Invalid ActivityPub audience or channel association".into(),
         ));
     }
-    if let Some(id) = &body.quote_post_id {
-        let original = activitypub::interactions::target(&state, &user, id).await?;
+    let quote_uri = if let Some(id) = &body.quote_post_id {
+        let Json(original) = detail(State(state.clone()), user.clone(), Path(id.clone())).await?;
         if original["apub"] != true
             || !matches!(original["visibility"].as_str(), Some("public" | "unlisted"))
-            || (original["visibility"] == "unlisted" && body.visibility == "public")
+            || (original["visibility"] == "unlisted"
+                && matches!(body.visibility.as_str(), "public" | "local"))
         {
             return Err(AppError::Forbidden("Quote audience unavailable".into()));
         }
@@ -140,12 +146,13 @@ async fn create(
         } else {
             format!("{}/api/activitypub/notes/{id}", activitypub::base_url()?)
         };
-        let fallback = format!("RE: <{uri}>");
-        if activitypub::quotes::local_quote_uri(&fallback).is_none() {
+        if !activitypub::quotes::valid_quote_uri(&uri) {
             return Err(AppError::BadRequest("Unsupported quote URI".into()));
         }
-        body.content = format!("{}\n\n{fallback}", body.content.trim_end());
-    }
+        Some(uri)
+    } else {
+        None
+    };
     let parent = if let Some(id) = &body.in_reply_to {
         Some(activitypub::interactions::target(&state, &user, id).await?)
     } else {
@@ -282,8 +289,8 @@ async fn create(
         }
     }
     let id = uuid::Uuid::new_v4().to_string();
-    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,channel_id,parent_id,parent_uri,reply_actor,reply_user_id,media) VALUES($1,$2,$3,$4::boolean,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),$11::jsonb)")
-        .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).bind(media.to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,channel_id,parent_id,parent_uri,reply_actor,reply_user_id,media,quote_uri) VALUES($1,$2,$3,$4::boolean,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),$11::jsonb,NULLIF($12,''))")
+        .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).bind(media.to_string()).bind(quote_uri.as_deref().unwrap_or("")).exec(&mut tx).await?;
     if let Some(channel) = &body.channel_id {
         // The Home trigger has already created the channel message in this transaction.
         toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,width,height,blurhash,is_sensitive) SELECT gen_random_uuid()::text,$1,$2,$3,h.name,h.file_size,h.content_type,'home-images/' || h.id,date_trunc('milliseconds',statement_timestamp()) + (selected.ordinality-1)*interval '1 millisecond',h.width,h.height,h.blurhash,($5::boolean OR selected.id IN (SELECT jsonb_array_elements_text($6::jsonb))) FROM jsonb_array_elements_text($4::jsonb) WITH ORDINALITY AS selected(id,ordinality) JOIN home_images h ON h.id=selected.id WHERE h.uploader_id=$2 ORDER BY selected.ordinality")
@@ -479,6 +486,20 @@ async fn list(
         page.author.as_deref().is_some_and(|a| !a.is_empty()),
         !seek_page && page.before.as_deref().is_some_and(|b| !b.is_empty()),
     );
+    // Bounded link previews use the same direct-ID audience as detail(), for
+    // exactly the requested originals. Ordinary viewport refreshes retain timeline scope.
+    let sql = if page.linked_posts {
+        sql.replace(
+            "p.id=$6 AND p.apub",
+            "p.id IN (SELECT entry_id FROM request_entries) AND p.apub",
+        )
+        .replace(
+            "b.original_visible OR false",
+            "b.original_visible OR b.id IN (SELECT entry_id FROM request_entries)",
+        )
+    } else {
+        sql
+    };
     let mut rows = query(
         &mut tx,
         &sql,

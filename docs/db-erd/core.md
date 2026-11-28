@@ -294,6 +294,7 @@ erDiagram
       text reply_user_id FK
       jsonb media
       text reply_target_id
+      text quote_uri
     }
     home_posts }o--o| channels : home_posts_channel_id_fkey
     home_posts }o--o| users : home_posts_reply_user_id_fkey

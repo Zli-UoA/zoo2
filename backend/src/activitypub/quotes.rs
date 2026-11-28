@@ -135,14 +135,8 @@ async fn resolve(state: &AppState, user: &str, uri: &str) -> Result<(), AppError
     reposts::store_quoted_note(state, user, uri, &note).await
 }
 
-// The final RE line is the portable text fallback used by local quote posts.
-pub(crate) fn local_quote_uri(content: &str) -> Option<&str> {
-    let value = content
-        .lines()
-        .last()?
-        .strip_prefix("RE: <")?
-        .strip_suffix('>')?;
-    emoji::note_quote_uri(&json!({"quoteUrl": value})).map(|_| value)
+pub(crate) fn valid_quote_uri(uri: &str) -> bool {
+    emoji::note_quote_uri(&json!({"quoteUrl": uri})).is_some()
 }
 
 pub(crate) async fn decorate(
@@ -159,19 +153,13 @@ pub(crate) async fn decorate(
         return Ok(());
     }
     let base = base_url().unwrap_or_default();
-    let local: std::collections::BTreeMap<_, _> = posts
-        .iter()
-        .flat_map(|p| [p, &p["parent"]])
-        .filter(|p| p["remote"] != true)
-        .filter_map(|p| Some((p["id"].as_str()?, local_quote_uri(p["content"].as_str()?)?)))
-        .collect();
     let sql = r#"WITH refs AS (
       SELECT p.id,p.quote_uri
       FROM (SELECT DISTINCT jsonb_array_elements_text($1::jsonb) AS id) ids
       CROSS JOIN LATERAL (
-        SELECT id,quote_uri FROM apub_remote_posts WHERE id=ids.id AND quote_uri IS NOT NULL OFFSET 0
+        SELECT id,quote_uri FROM apub_remote_posts WHERE id=ids.id AND quote_uri IS NOT NULL
+        UNION ALL SELECT id,quote_uri FROM home_posts WHERE id=ids.id AND quote_uri IS NOT NULL OFFSET 0
       ) p
-      UNION ALL SELECT key,value FROM jsonb_each_text($4::jsonb)
     ) SELECT json_build_object('id',r.id,'uri',r.quote_uri,'local',starts_with(r.quote_uri,$2 || '/api/activitypub/notes/'),'post',COALESCE(remote.post,local.post))::text FROM refs r
     LEFT JOIN LATERAL (
       SELECT json_build_object('id',p.id,'content',p.content,'user_name',p.user_name || '@' || split_part(p.actor_id,'/',3),'display_name',p.display_name,'created_at',p.published,'emojis',p.emojis,'actor_emojis',p.actor_emojis,'avatar',p.avatar,'media',p.media,'remote',true,'user_id',p.actor_id) AS post
@@ -182,9 +170,12 @@ pub(crate) async fn decorate(
     LEFT JOIN LATERAL (
       SELECT json_build_object('id',p.id,'content',p.content,'user_name',u.user_name,'display_name',COALESCE(profile.display_name,u.display_name),'created_at',p.created_at,'emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'local',true)) FROM jsonb_each(message_content_emojis(p.content)) e),'[]'::jsonb),'avatar_url',u.avatar_url,'media',p.media,'channel_id',p.channel_id,'remote',false,'user_id',p.user_id) AS post
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id
-      WHERE p.id=CASE WHEN starts_with(r.quote_uri,$2 || '/api/activitypub/notes/') THEN substr(r.quote_uri,length($2 || '/api/activitypub/notes/')+1) END AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
+      WHERE p.id=CASE WHEN starts_with(r.quote_uri,$2 || '/api/activitypub/notes/') THEN substr(r.quote_uri,length($2 || '/api/activitypub/notes/')+1) END AND p.apub AND p.visibility IN ('public','unlisted') AND (/* local_detail_audience */)
       OFFSET 0
-    ) local ON true"#.replace("/* remote_quote */", REMOTE_QUOTE);
+    ) local ON true"#.replace("/* remote_quote */", REMOTE_QUOTE)
+       .replace("/* local_detail_audience */", &include_str!("../routes/home_local_audience.sql")
+           .replace("$1", "$3").replace("p.id=$6", "true"));
+    let guest = crate::apps::events::guest(tx, user).await?;
     let quotes = query(
         tx,
         &sql,
@@ -192,7 +183,7 @@ pub(crate) async fn decorate(
             &json!(ids).to_string(),
             &base,
             user,
-            &json!(local).to_string(),
+            if guest { "true" } else { "false" },
         ],
     )
     .await?;
