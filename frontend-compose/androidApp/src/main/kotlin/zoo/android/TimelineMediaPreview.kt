@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -42,11 +44,10 @@ internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageB
     if (publicUrl != null) return session.cachedImageBitmap(publicUrl)
     val id = media.attachmentId ?: return null
     if (session.attachmentLinks.isDenied(id)) return null
-    val links = session.attachmentLinks.cachedLinks(id) ?: return null
-    val signedThumbnail = links.thumbnail.takeIf { media.useThumbnail }
-    signedThumbnail?.let { session.cachedImageBitmap(it, signedAttachment = true, cacheKey = "$id:thumbnail") }
-        ?.let { return it }
-    return session.cachedImageBitmap(links.original, signedAttachment = true, cacheKey = "$id:original")
+    if (media.useThumbnail) {
+        session.cachedImageBitmap("", signedAttachment = true, cacheKey = "$id:thumbnail")?.let { return it }
+    }
+    return session.cachedImageBitmap("", signedAttachment = true, cacheKey = "$id:original")
 }
 
 internal suspend fun timelineImage(
@@ -69,62 +70,62 @@ internal suspend fun timelineImage(
         return load(publicUrl)
     }
     val id = media.attachmentId ?: return null
-    val platform = session.platform
-    val access = session.attachmentLinks
-    val previouslyDenied = access.isDenied(id)
-    val previewVersion = access.accessVersion(id)
-    fun canUseCached(): Boolean = !access.isDenied(id) && access.accessVersion(id) == previewVersion
-    val cached = if (onCached != null && !retry && !previouslyDenied) {
-        suspend fun decode(key: String): ImageBitmap? = try {
-            platform.cachedAttachmentPreview(key)?.let { platform.imageFrames(it).first() }
+    return coroutineScope {
+        val access = session.attachmentLinks
+        val previewVersion = access.accessVersion(id)
+        fun canUseCached(): Boolean = !access.isDenied(id) && access.accessVersion(id) == previewVersion
+        fun canConfirm(): Boolean = session.env.online && session.env.visible
+
+        suspend fun verify(): Result<AttachmentImageLinks> {
+            snapshotFlow { canConfirm() }.first { it }
+            return try {
+                Result.success(access.getLinks(id, force = true))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Result.failure(failure)
+            }
+        }
+        val verification = async { verify() }
+
+        val cached = if (onCached != null && !retry && canUseCached()) {
+            suspend fun decode(key: String): ImageBitmap? = try {
+                session.cachedAttachmentBitmap(key)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            val memory = cachedTimelineImage(session, media)
+            val thumbnail = if (memory == null && media.useThumbnail) decode("$id:thumbnail") else null
+            (memory ?: thumbnail ?: decode("$id:original"))
+                ?.takeIf { canUseCached() }?.also(onCached)
+        } else null
+
+        var result = verification.await()
+        var retryDelay = 5_000L
+        while (cached != null && canUseCached() &&
+            (result.exceptionOrNull() as? Exception)?.isTemporaryImageFailure() == true
+        ) {
+            withTimeoutOrNull(retryDelay) { snapshotFlow { canConfirm() }.first { !it } }
+            result = verify()
+            retryDelay = (retryDelay * 2).coerceAtMost(60_000L)
+        }
+        val links = result.getOrNull()
+            ?: access.cachedLinks(id)?.takeIf { !access.isDenied(id) && access.accessVersion(id) != previewVersion }
+            ?: return@coroutineScope cached?.takeIf { canUseCached() }
+        if (cached != null && canUseCached()) return@coroutineScope cached
+
+        suspend fun loadAttachment(url: String, variant: String): ImageBitmap? = try {
+            session.imageBitmap(url, signedAttachment = true, retry = retry, cacheKey = "$id:$variant")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             null
         }
-        val thumbnail = if (media.useThumbnail) decode("$id:thumbnail") else null
-        (thumbnail ?: decode("$id:original"))?.takeIf { canUseCached() }?.also(onCached)
-    } else null
-    fun canConfirm(): Boolean = session.env.online && session.env.visible
-    if (cached != null) snapshotFlow { canConfirm() }.first { it }
-    var retryDelay = 5_000L
-    var links: AttachmentImageLinks? = null
-    while (links == null) {
-        try {
-            links = session.attachmentLinks.getLinks(id, force = retry || previouslyDenied || cached != null)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            if (cached == null || !canUseCached() || !failure.isTemporaryImageFailure()) return null
-            withTimeoutOrNull(retryDelay) { snapshotFlow { canConfirm() }.first { !it } }
-            snapshotFlow { canConfirm() }.first { it }
-            retryDelay = (retryDelay * 2).coerceAtMost(60_000L)
-        }
-    }
 
-    suspend fun loadAttachment(url: String, variant: String): ImageBitmap =
-        session.imageBitmap(url, signedAttachment = true, retry = retry, cacheKey = "$id:$variant")
-
-    val thumbnail = links.thumbnail.takeIf { media.useThumbnail }
-    var thumbnailFailure: Exception? = null
-    if (thumbnail != null) {
-        try {
-            return loadAttachment(thumbnail, "thumbnail")
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            thumbnailFailure = failure
-        }
-    }
-    return try {
-        loadAttachment(links.original, "original")
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (failure: Exception) {
-        cached.takeIf {
-            canUseCached() && (failure.isTemporaryImageFailure() ||
-                (failure !is ImageHttpFailure && thumbnailFailure?.isTemporaryImageFailure() == true))
-        }
+        val thumbnail = links.thumbnail.takeIf { media.useThumbnail }
+        thumbnail?.let { loadAttachment(it, "thumbnail") } ?: loadAttachment(links.original, "original")
     }
 }
 

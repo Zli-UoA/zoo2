@@ -108,7 +108,7 @@ internal fun TimelineImagePages(
                             state = ViewerImage(null, failed = true)
                             return@collectLatest
                         }
-                        if (opening && initial != null) return@collectLatest
+                        if (opening && initial != null && image.attachmentId == null) return@collectLatest
 
                         val loaded = when {
                             opening && attempt > 0 -> retry(image)

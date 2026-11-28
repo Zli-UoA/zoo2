@@ -1837,8 +1837,8 @@
     "title": "应用更新"
   },
   "androidAttachmentCache": {
-    "title": "附件图片缓存",
-    "description": "将此账号使用签名链接的附件图片保存在设备上。降低上限时，优先删除最久未使用的图片。关闭后会清除已保存的图片。公开图片使用单独的缓存。"
+    "title": "图片缓存",
+    "description": "将此账号的图片保存在设备上。降低上限时，优先删除最久未使用的图片。关闭后会清除已保存的图片。"
   },
   "androidNavigationCache": {
     "title": "页面切换缓存",

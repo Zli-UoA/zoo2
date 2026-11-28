@@ -335,14 +335,44 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     fun cachedImageBitmap(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): androidx.compose.ui.graphics.ImageBitmap? {
         if (signedAttachment && cacheKey != null && attachmentLinks.isDenied(cacheKey.substringBeforeLast(':'))) return null
-        return bitmapCache.getIfPresent(imageCacheKey(url, signedAttachment, cacheKey))
+        val key = imageCacheKey(url, signedAttachment, cacheKey)
+        return bitmapCache.getIfPresent(key)
+            ?: cacheKey?.takeIf { signedAttachment }?.let { bitmapCache.getIfPresent("preview:$key") }
     }
+
+    private class AttachmentPreviewMiss : Exception()
+
+    suspend fun cachedAttachmentBitmap(cacheKey: String): androidx.compose.ui.graphics.ImageBitmap? {
+        cachedImageBitmap("", signedAttachment = true, cacheKey = cacheKey)?.let { return it }
+        val key = imageCacheKey("", true, cacheKey)
+        return try {
+            val bitmap = bitmapCache.get("preview:$key") {
+                requireCurrentImageAccess("", true, cacheKey, key)
+                val bytes = platform.cachedAttachmentPreview(cacheKey) ?: throw AttachmentPreviewMiss()
+                decodeImage("", cacheKey, bytes)
+            }
+            requireCurrentImageAccess("", true, cacheKey, key)
+            bitmap
+        } catch (_: AttachmentPreviewMiss) {
+            null
+        }
+    }
+
+    private suspend fun decodeImage(url: String, attachmentKey: String?, bytes: ByteArray): androidx.compose.ui.graphics.ImageBitmap =
+        try {
+            platform.imageFrames(bytes).first()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            platform.discardUndecodableImage(url, attachmentKey, bytes)
+            throw failure
+        }
 
     private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
         if (!signedAttachment) return resolved
         val version = cacheKey?.let { attachmentLinks.accessVersion(it.substringBeforeLast(':')) } ?: 0L
-        return "attachment:${cacheKey.orEmpty()}:$version:$resolved"
+        return if (cacheKey == null) "attachment:$resolved" else "attachment:$version:$cacheKey"
     }
 
     private fun requireCurrentImageAccess(url: String, signedAttachment: Boolean, cacheKey: String?, key: String) {
@@ -366,7 +396,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 (if (signedAttachment) platform.attachmentImage(resolved, cacheKey, retry = true) else platform.refreshImage(resolved))
                     ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
             }
-            val decoded = platform.imageFrames(bytes).first()
+            val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+            val decoded = decodeImage(resolved, cacheKey.takeIf { signedAttachment }, bytes)
             requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
             decoded
         }

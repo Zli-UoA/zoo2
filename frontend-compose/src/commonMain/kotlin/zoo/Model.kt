@@ -83,6 +83,7 @@ interface Platform {
         if (retry) refreshImage(url) else image(url)
 
     suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? = null
+    suspend fun discardUndecodableImage(url: String, attachmentKey: String?, bytes: ByteArray) {}
 
     suspend fun removeAttachmentImages(id: String) {}
 

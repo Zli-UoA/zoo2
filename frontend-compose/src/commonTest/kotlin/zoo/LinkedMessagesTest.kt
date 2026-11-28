@@ -230,6 +230,7 @@ class LinkedMessagesTest {
         sources.last().state.update { it.copy(failure = IllegalStateException("403")) }
         runCurrent()
         assertEquals(LinkedRow.Failed, again.last.row)
+        assertTrue(again.last.accessRejected)
         // 購読が残る間は、画面に戻っても読み込み中に戻さない。閉じたあとも、捨てた結果は出さない。
         assertEquals(LinkedRow.Failed, loader.peek("c1", "m1").row)
         again.job.cancel()
@@ -250,6 +251,7 @@ class LinkedMessagesTest {
         val third = observe(loader, channel = "c3")
         assertEquals(2, sources.size)
         assertEquals(LinkedRow.Failed, third.last.row)
+        assertFalse(third.last.accessRejected)
         assertEquals(LinkedRow.Failed, loader.peek("c3", "m1").row)
         // 使う行がなくなった購読があれば、閉じて空ける。
         first.job.cancel()

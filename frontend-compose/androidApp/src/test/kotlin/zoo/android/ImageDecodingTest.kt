@@ -26,6 +26,7 @@ import zoo.*
 import zoo.android.ui.LocalAttachmentImageDenied
 import zoo.android.ui.LocalCachedTimelineImage
 import zoo.android.ui.LocalTimelineImage
+import zoo.android.ui.LocalTimelineImageWithPreview
 import zoo.android.ui.rememberTimelineImage
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
@@ -52,6 +53,7 @@ class ImageDecodingTest {
         val media = TimelineMedia("photo", "Photo", TimelineMediaKind.Image, attachmentId = "photo")
         var observed: androidx.compose.ui.graphics.ImageBitmap? = null
         var requests = 0
+        var verifications = 0
         val controller = Robolectric.buildActivity(ComponentActivity::class.java)
         controller.get().setTheme(android.R.style.Theme_Material_Light_NoActionBar)
         val activity = controller.setup().get()
@@ -63,6 +65,11 @@ class ImageDecodingTest {
                     LocalAttachmentImageDenied provides { denied.value },
                     LocalCachedTimelineImage provides { original },
                     LocalTimelineImage provides { requests++; restored },
+                    LocalTimelineImageWithPreview provides { _, showCached ->
+                        showCached(original)
+                        verifications++
+                        original
+                    },
                 ) {
                     val bitmap = rememberTimelineImage(media)
                     SideEffect { observed = bitmap }
@@ -70,6 +77,7 @@ class ImageDecodingTest {
             }
             render()
             assertSame(original, observed)
+            assertEquals(1, verifications)
             denied.value = true
             Snapshot.sendApplyNotifications()
             render()
@@ -162,13 +170,19 @@ class ImageDecodingTest {
         val newBitmap = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888).asImageBitmap()
         val decoding = CompletableDeferred<Unit>()
         val previewDecoding = CompletableDeferred<Unit>()
+        val permissionStarted = CompletableDeferred<Unit>()
+        val deny = CompletableDeferred<Unit>()
         val finishDecoding = CompletableDeferred<Unit>()
         val url = "https://storage.test/photo"
         var requests = 0
         var downloads = 0
         val http = HttpClient(MockEngine {
             when (++requests) {
-                2 -> respond("{}", HttpStatusCode.NotFound)
+                2 -> {
+                    permissionStarted.complete(Unit)
+                    deny.await()
+                    respond("{}", HttpStatusCode.NotFound)
+                }
                 else -> respond("""{"download_url":"$url"}""")
             }
         })
@@ -214,7 +228,12 @@ class ImageDecodingTest {
             }
             decoding.await()
             previewDecoding.await()
-            assertEquals(404, assertFailsWith<ApiException> { app.attachmentLinks.getLinks("photo", force = true) }.status)
+            permissionStarted.await()
+            val invalidated = async(start = CoroutineStart.UNDISPATCHED) {
+                assertFailsWith<ApiException> { app.attachmentLinks.getLinks("photo", force = true) }
+            }
+            deny.complete(Unit)
+            assertEquals(404, invalidated.await().status)
             app.attachmentLinks.getLinks("photo", force = true)
             finishDecoding.complete(Unit)
             assertEquals(403, pending.await().status)

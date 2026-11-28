@@ -118,7 +118,7 @@ internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = tr
                     bitmap = null
                     return@collectLatest
                 }
-                if (opening && initial != null) return@collectLatest
+                if (opening && initial != null && media.attachmentId == null) return@collectLatest
 
                 val prefetching = !isRevealed.value
                 bitmap = if (opening && loadWithPreview != null) {

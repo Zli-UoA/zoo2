@@ -4,52 +4,71 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.header
 import io.ktor.http.*
-import io.ktor.client.statement.HttpResponse
 import okhttp3.HttpUrl.Companion.toHttpUrl
+
+private val signatureParameters = setOf(
+    "x-amz-algorithm", "x-amz-credential", "x-amz-date", "x-amz-expires",
+    "x-amz-signedheaders", "x-amz-signature", "x-amz-security-token",
+)
+
+private fun imageResponseHash(url: String, signed: Boolean): String {
+    val parsed = url.toHttpUrl()
+    val resource = parsed.newBuilder().fragment(null)
+    if (signed) {
+        parsed.queryParameterNames.filter { it.lowercase() in signatureParameters }
+            .forEach(resource::removeAllQueryParameters)
+    }
+    return AttachmentImageDiskCache.digest(resource.build().toString())
+}
 
 /** The API client disables redirects; public images may legitimately use a CDN redirect. */
 internal class ImageHttpFailure(val status: Int) : IllegalStateException("Image request failed: $status")
 
-internal class ImageCacheMiss : IllegalStateException("Image is not in the disk cache")
-
 internal suspend fun loadPublicImage(
     http: HttpClient, url: String, limit: Int = 20 * 1024 * 1024,
-    cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false, revalidate: Boolean = false, bypassCache: Boolean = false,
+    restrictOrigin: Boolean = false, noStore: Boolean = false,
     conditional: AttachmentImageDiskCache.Entry? = null,
-    onSignedResponse: ((HttpResponse, ByteArray, List<HttpResponse>) -> Unit)? = null,
+    onResponse: ((AttachmentImageDiskCache.Entry) -> Unit)? = null,
 ): ByteArray {
-    val redirects = onSignedResponse?.let { mutableListOf<HttpResponse>() }
     var current = url
-    repeat(6) { hop ->
+    repeat(6) {
         val destination = Url(current)
         require(destination.protocol == URLProtocol.HTTPS)
         require(!restrictOrigin || sameImageOrigin(Url(url), destination)) { "Image proxy redirected outside its origin" }
+        val urlHash = imageResponseHash(current, signed = noStore)
+        val validator = conditional?.takeIf {
+            it.responseUrlHash == urlHash || it.responseUrlHash == AttachmentImageDiskCache.digest(current)
+        }
         var bytes: ByteArray? = null
         http.prepareGet(current) {
-            if (hop == 0) conditional?.etag?.let { header(HttpHeaders.IfNoneMatch, it) }
-            when {
-                noStore -> header(HttpHeaders.CacheControl, "no-store, no-cache")
-                bypassCache -> header(HttpHeaders.CacheControl, "no-cache")
-                revalidate -> header(HttpHeaders.CacheControl, "max-age=0")
-                cacheOnly -> header(HttpHeaders.CacheControl, "only-if-cached, max-stale=86400")
-            }
+            validator?.etag?.let { header(HttpHeaders.IfNoneMatch, it) }
+            if (validator?.etag == null) validator?.lastModified?.let { header(HttpHeaders.IfModifiedSince, it) }
+            if (noStore) header(HttpHeaders.CacheControl, "no-store, no-cache")
+            else if (conditional != null) header(HttpHeaders.CacheControl, "no-cache")
         }.execute { response ->
             if (response.status.value in setOf(301, 302, 303, 307, 308)) {
-                redirects?.add(response)
                 val location = response.headers[HttpHeaders.Location] ?: error("Missing image redirect")
                 current = current.toHttpUrl().resolve(location)?.toString() ?: error("Invalid image redirect")
             } else {
-                val image = if (hop == 0 && response.status == HttpStatusCode.NotModified && conditional?.etag != null) {
-                    conditional.bytes
+                val unchanged = response.status == HttpStatusCode.NotModified
+                val image = if (unchanged && validator != null &&
+                    (validator.etag != null || validator.lastModified != null)
+                ) {
+                    validator.bytes
                 } else {
-                    if (response.status.value !in 200..299) {
-                        if (cacheOnly) throw ImageCacheMiss()
-                        throw ImageHttpFailure(response.status.value)
-                    }
+                    if (response.status.value !in 200..299) throw ImageHttpFailure(response.status.value)
                     readImageResponse(response, limit)
                 }
                 bytes = image
-                onSignedResponse?.invoke(response, image, redirects.orEmpty())
+                val entry = AttachmentImageDiskCache.Entry(
+                    urlHash,
+                    response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
+                        ?: validator?.etag?.takeIf { unchanged },
+                    response.headers[HttpHeaders.LastModified]?.takeIf { it.length <= 128 }
+                        ?: validator?.lastModified?.takeIf { unchanged },
+                    image,
+                )
+                if (!unchanged || entry != validator) onResponse?.invoke(entry)
             }
         }
         bytes?.let { return it }

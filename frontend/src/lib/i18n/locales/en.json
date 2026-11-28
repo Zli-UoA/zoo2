@@ -1837,8 +1837,8 @@
     "title": "App updates"
   },
   "androidAttachmentCache": {
-    "title": "Attachment image cache",
-    "description": "Stores this account’s signed attachment images on this device. Lowering the limit removes the least recently used images first. Turning it off clears saved images. Public images use a separate cache."
+    "title": "Image cache",
+    "description": "Stores images for this account on this device. Lowering the limit removes the least recently used images first. Turning it off clears saved images."
   },
   "androidNavigationCache": {
     "title": "Navigation cache",
