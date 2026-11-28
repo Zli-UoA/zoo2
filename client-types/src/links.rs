@@ -1,6 +1,8 @@
 //! 本文に書いた、このアプリのチャンネル・メッセージへのリンク。仕様は docs/mfm.md の
 //! 「チャンネル・メッセージのリンクの表示」。TUI とデスクトップ版の画面で共有する。
 
+use std::borrow::Cow;
+
 use jiff::civil::DateTime;
 use percent_encoding::percent_decode_str;
 use serde_json::Value;
@@ -140,21 +142,9 @@ fn inline_segments(content: &str) -> Vec<(bool, &str)> {
     result
 }
 
-/// 本文を分けたもの。地の文か、`[文字](URL)`・`?[文字](URL)` のリンク。
-enum Piece<'a> {
-    Text(&'a str),
-    Link {
-        label: &'a str,
-        url: &'a str,
-        silent: bool,
-    },
-}
-
-/// `text` を、地の文と `[文字](URL)` のリンクに分ける。
-fn markdown_pieces(text: &str) -> Vec<Piece<'_>> {
-    let mut result = Vec::new();
-    // 地の文の先頭。
-    let mut plain = 0;
+/// `[文字](URL)` と `?[文字](URL)` を、文字だけにする。
+fn strip_markdown_links(text: &str) -> String {
+    let mut result = String::new();
     let mut at = 0;
     // 次の `)` か空白の位置。閉じない `[](URL` が並ぶ本文で、同じ部分を繰り返し調べないように覚える。
     let mut next_stop: Option<Option<usize>> = None;
@@ -180,29 +170,22 @@ fn markdown_pieces(text: &str) -> Vec<Piece<'_>> {
                         stop
                     }
                 }?;
-                text[stop..].starts_with(')').then(|| {
-                    (
-                        &rest[open..label_end],
-                        &text[url_start..stop],
-                        stop + 1 - at,
-                    )
-                })
+                text[stop..]
+                    .starts_with(')')
+                    .then(|| (&rest[open..label_end], stop + 1 - at))
             })
             .flatten();
         match link {
-            Some((label, url, length)) => {
-                if plain < at {
-                    result.push(Piece::Text(&text[plain..at]));
-                }
-                result.push(Piece::Link { label, url, silent });
+            Some((label, length)) => {
+                result.push_str(label);
                 at += length;
-                plain = at;
             }
-            None => at += rest.chars().next().map_or(1, char::len_utf8),
+            None => {
+                let ch = rest.chars().next().expect("at は文字境界");
+                result.push(ch);
+                at += ch.len_utf8();
+            }
         }
-    }
-    if plain < text.len() {
-        result.push(Piece::Text(&text[plain..]));
     }
     result
 }
@@ -220,42 +203,42 @@ fn label_length(text: &str) -> Option<usize> {
     None
 }
 
-/// 本文に出てくる順の URL（重複を除く）。コードと `<plain>` の中は除く。`[文字](URL)` は、本文の
-/// 表示と同じ行き先をそのまま使う（文字に書いた URL は行き先ではない）。
+/// 本文の表示（[`crate::mfm`]）でリンクになる部分を、出てくる順に返す。埋め込みと移動は、表示で
+/// 決まった行き先をそのまま使う（装飾の記号などを行き先に含めないため）。
+fn link_spans(content: &str) -> impl Iterator<Item = crate::mfm::Span> {
+    // 表示の解析は行ごとなので、行をまたぐ `<plain>` の中は先に伏せる（Web と同じく、リンクにしない）。
+    let source: String = segments(content)
+        .into_iter()
+        .map(|(literal, part)| {
+            if literal && part.starts_with("<plain>") && part.contains('\n') {
+                part.chars()
+                    .map(|c| if c == '\n' { c } else { '。' })
+                    .collect()
+            } else {
+                Cow::Borrowed(part)
+            }
+        })
+        .collect();
+    crate::mfm::parse(&source, None)
+        .into_iter()
+        .flat_map(|line| line.spans)
+        .filter(|span| span.href.is_some())
+}
+
+/// 本文に出てくる順の URL（重複を除く）。コードや `<plain>` の中など、表示でリンクにならないものは
+/// 含まない。
 fn urls(content: &str, include_silent: bool) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
-    let mut add = |url: &str| {
+    for span in link_spans(content).filter(|span| include_silent || !span.silent) {
+        // `[文字](URL )` の行き先の後ろの空白は除く。
+        let Some(url) = span.href.as_deref().map(str::trim_end) else {
+            continue;
+        };
         if Url::parse(url).is_ok_and(|url| {
             url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
         }) && !result.iter().any(|seen| seen == url)
         {
             result.push(url.to_owned());
-        }
-    };
-    for (literal, part) in segments(content) {
-        if literal {
-            continue;
-        }
-        for piece in markdown_pieces(part) {
-            match piece {
-                Piece::Link { url, silent, .. } => {
-                    if include_silent || !silent {
-                        add(url);
-                    }
-                }
-                Piece::Text(text) => {
-                    let mut rest = text;
-                    while let Some(index) = rest.find("http") {
-                        let candidate = &rest[index..];
-                        let Some(url) = crate::mfm::leading_url(candidate) else {
-                            rest = &candidate["http".len()..];
-                            continue;
-                        };
-                        add(url);
-                        rest = &candidate[url.len()..];
-                    }
-                }
-            }
         }
     }
     result
@@ -318,9 +301,7 @@ pub fn fetch_targets(
 
 /// URL の文字そのものを書いたアプリ内リンク（短い表示にするもの）。
 pub fn bare_links(content: &str, app_base_url: &str) -> Vec<(String, LinkTarget)> {
-    crate::mfm::parse(content, None)
-        .into_iter()
-        .flat_map(|line| line.spans)
+    link_spans(content)
         .filter_map(|span| {
             let url = span.href.filter(|_| span.bare)?;
             let target = parse_channel_link(&url, app_base_url)?;
@@ -339,13 +320,7 @@ pub fn excerpt(content: &str) -> String {
             if literal {
                 part.to_owned()
             } else {
-                markdown_pieces(part)
-                    .into_iter()
-                    .map(|piece| match piece {
-                        Piece::Text(text) => text,
-                        Piece::Link { label, .. } => label,
-                    })
-                    .collect()
+                strip_markdown_links(part)
             }
         })
         .collect();
@@ -716,6 +691,40 @@ mod tests {
             let shown = crate::mfm::parse(content, None).remove(0).spans.remove(0);
             assert_eq!(shown.href.as_deref(), Some(links[0].0.as_str()));
         }
+    }
+
+    #[test]
+    fn destinations_follow_the_decorations_of_the_body() {
+        let url = "https://zli.chat/channels/c1?message=m1";
+        // 装飾の閉じ記号は、行き先に含めない。
+        for content in [
+            format!("~~{url}~~"),
+            format!("<s>{url}</s>"),
+            format!("**~~{url}~~**"),
+            format!("$[x2 {url}]"),
+        ] {
+            for links in [
+                app_links(&content, APP),
+                embedded_links(&content, APP),
+                bare_links(&content, APP),
+            ] {
+                assert_eq!(links.len(), 1, "{content}: {links:?}");
+                assert_eq!(links[0].0, url, "{content}");
+                assert_eq!(links[0].1.message_id.as_deref(), Some("m1"));
+            }
+        }
+        // 表示でリンクにならないものは、行き先にもしない。
+        for content in [
+            format!("\\({url}\\)"),
+            format!("<plain>\n{url}\n</plain>"),
+            format!("本文<plain>\n{url}</plain>"),
+        ] {
+            assert!(app_links(&content, APP).is_empty(), "{content}");
+            assert!(bare_links(&content, APP).is_empty(), "{content}");
+        }
+        // 行をまたぐ `<plain>` の前後のリンクは残る。
+        let content = format!("{url}<plain>\n```\n</plain>");
+        assert_eq!(app_links(&content, APP)[0].0, url);
     }
 
     #[test]

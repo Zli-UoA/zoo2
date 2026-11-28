@@ -214,6 +214,8 @@ pub struct Span {
     pub href: Option<String>,
     /// URL の文字そのものを書いたリンクか（`[label](url)` は、ラベルが URL でも違う）。
     pub bare: bool,
+    /// サイレントリンク `?[label](url)` か。
+    pub silent: bool,
     pub avatar_url: Option<String>,
     pub avatar_fallback: Option<String>,
 }
@@ -225,6 +227,7 @@ impl Span {
             style,
             href: None,
             bare: false,
+            silent: false,
             avatar_url: None,
             avatar_fallback: None,
         }
@@ -236,6 +239,7 @@ impl Span {
             style,
             href: Some(href.to_string()),
             bare: false,
+            silent: false,
             avatar_url: None,
             avatar_fallback: None,
         }
@@ -671,7 +675,10 @@ fn link(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>)> {
         return None;
     }
     let consumed = offset + label.len() + 2 + url.len() + 2;
-    let mut spans = vec![Span::link(label.to_string(), url, base.patch(LINK))];
+    let mut spans = vec![Span {
+        silent: offset == 1,
+        ..Span::link(label.to_string(), url, base.patch(LINK))
+    }];
     if label != url {
         spans.push(Span::styled(format!(" <{url}>"), base.dim()));
     }

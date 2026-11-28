@@ -19,7 +19,7 @@ use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
 use super::global_search::{self, GlobalSearch};
-use super::links::{BodyLinks, DrawCache, LinkView};
+use super::links::{BodyLinks, DrawCache, LOAD_TIMEOUT, LinkView};
 use crate::{
     api::{ApiClient, Me, NotificationLevel, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -55,6 +55,15 @@ struct PendingLink {
     parent_unknown: bool,
     /// 行き先が分かったら表示を切り替える。利用者が自分で移動したら偽にする。
     follow: bool,
+}
+
+/// チャンネルの本同期の行を待っている状態。開いているチャンネルのリンク先は、本同期の行だけを使う。
+#[derive(Clone, Copy)]
+enum SyncWait {
+    /// この時刻から待っている。
+    Since(Instant),
+    /// 同期が停止した。
+    Stopped,
 }
 
 /// 非同期の API 呼び出しから画面に返す結果。
@@ -347,6 +356,8 @@ pub struct App {
     pending_link: Option<PendingLink>,
     /// 暗号文の行が届いたことのあるチャンネル。行を捨てたあとも、起動中は暗号化として扱う。
     ciphertext_channels: HashSet<String>,
+    /// チャンネルごとの、本同期の待ち始めと停止。行がそろっている間は使わない。
+    sync_waits: HashMap<String, SyncWait>,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
     /// 端末と検証の画面と、その裏の処理（#362、#368）。
@@ -463,6 +474,7 @@ impl App {
             parsed_links: Default::default(),
             pending_link: None,
             ciphertext_channels: HashSet::new(),
+            sync_waits: HashMap::new(),
         };
         for id in [
             ShapeId::Channels,
@@ -504,6 +516,10 @@ impl App {
                     ..Default::default()
                 },
             );
+        }
+        if let ShapeId::Messages(channel_id) = &id {
+            self.sync_waits
+                .insert(channel_id.clone(), SyncWait::Since(Instant::now()));
         }
         let task = electric::spawn(
             self.http.clone(),
@@ -582,7 +598,13 @@ impl App {
                 }) {
                     self.ciphertext_channels.insert(channel_id.clone());
                 }
-                (!self.store.is_synced(id)).then(|| channel_id.clone())
+                let synced = self.store.is_synced(id);
+                // そろっていた行を取り直すときは、ここから待ち直す。
+                if synced && batch.reset {
+                    self.sync_waits
+                        .insert(channel_id.clone(), SyncWait::Since(Instant::now()));
+                }
+                (!synced).then(|| channel_id.clone())
             }
             _ => None,
         };
@@ -637,6 +659,8 @@ impl App {
             ShapeEvent::Failed(id, err) => {
                 let mut notice = format!("同期を停止しました ({id:?}): {err}");
                 if let ShapeId::Messages(channel_id) = &id {
+                    self.sync_waits
+                        .insert(channel_id.clone(), SyncWait::Stopped);
                     // 権限を失ったかもしれないので、リンク先として覚えた内容も出さない。
                     self.links.reject(channel_id);
                     if self.abandon_pending_link(channel_id) {
@@ -2079,8 +2103,21 @@ impl App {
         if self.synced_channel(channel_id) {
             return LinkedFetch::Missing;
         }
-        self.links
-            .fetch(&(channel_id.to_owned(), message_id.to_owned()), now)
+        let fetch = self
+            .links
+            .fetch(&(channel_id.to_owned(), message_id.to_owned()), now);
+        if self.current.as_deref() != Some(channel_id) {
+            return fetch;
+        }
+        // 開いているチャンネルは本同期の行を待つ。前に取得できた結果があれば、そろうまで使う。
+        match (fetch, self.sync_waits.get(channel_id)) {
+            (fetch @ (LinkedFetch::Found(_) | LinkedFetch::Missing), _) => fetch,
+            (_, Some(SyncWait::Stopped)) => LinkedFetch::Failed,
+            (_, Some(SyncWait::Since(since))) => LinkedFetch::Loading {
+                stalled: now.saturating_duration_since(*since) >= LOAD_TIMEOUT,
+            },
+            (fetch, None) => fetch,
+        }
     }
 
     /// 取得が要るリンク先。見られるチャンネルのメッセージで、開いているチャンネル以外のもの。
@@ -2249,7 +2286,8 @@ impl App {
         }
         let same_channel = self.current.as_deref() == Some(target.channel_id.as_str());
         let Some(message_id) = target.linked_message_id().map(str::to_owned) else {
-            if !same_channel && self.reply_draft().is_some() {
+            // タイムラインへ移ると、同じチャンネルでも書きかけの返信の送り先がチャンネルになる。
+            if self.reply_draft().is_some() {
                 self.notify(REPLY_DRAFT_KEEPS_PLACE);
                 return;
             }
@@ -2335,7 +2373,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|thread| thread.root_id == root_id)
             && !self.is_thread_root(channel_id, &root_id)
-            && !self.replying_to(&root_id)
+            && !self.writing_reply()
         {
             self.close_thread();
             if !pending.follow {
@@ -2426,7 +2464,7 @@ impl App {
             return true;
         }
         match provisional {
-            Some(root_id) if !self.replying_to(&root_id) => self.close_thread(),
+            Some(_) if !self.writing_reply() => self.close_thread(),
             _ => {
                 let selected = match self.thread.as_mut() {
                     Some(thread) => &mut thread.selected,
@@ -2448,9 +2486,9 @@ impl App {
         }
     }
 
-    /// `root_id` への返信を入力中か、書きかけているか。そのスレッドを閉じると送り先が変わる。
-    fn replying_to(&self, root_id: &str) -> bool {
-        matches!(&self.target, Target::Reply(id) if id == root_id)
+    /// 返信を入力中か、書きかけているか。スレッドを閉じると送り先がチャンネルになる。
+    fn writing_reply(&self) -> bool {
+        matches!(self.target, Target::Reply(_))
             && (self.mode == Mode::Insert || !self.composer.is_empty())
     }
 

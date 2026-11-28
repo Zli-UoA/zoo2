@@ -1361,6 +1361,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::*;
+    use crate::ui::links::LOAD_TIMEOUT;
     use crate::{
         api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
         electric::{Batch, Change, LinkedEvent, ShapeEvent},
@@ -1370,6 +1371,7 @@ mod tests {
             encryption::EncryptionEvent,
         },
     };
+    use zoo2_client_core::links::LinkState;
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {
         Batch {
@@ -2017,6 +2019,7 @@ mod tests {
         let links = [
             "http://127.0.0.1:9/channels/c1?message=m1",
             "http://127.0.0.1:9/channels/c1?thread=l1",
+            "http://127.0.0.1:9/channels/c1",
             "http://127.0.0.1:9/channels/c2",
             SECRET_LINK,
         ];
@@ -2035,6 +2038,7 @@ mod tests {
             assert_eq!(app.thread.as_ref().unwrap().root_id, "m1", "{link}");
             assert_eq!(app.target, Target::Reply("m1".into()), "{link}");
             assert_eq!(notice(&app), Some(REPLY_DRAFT_KEEPS_PLACE), "{link}");
+            assert_eq!(app.focus, Focus::Messages, "{link}");
         }
         // 同じスレッドの返信へは移れる。
         let mut app = app_with_link("http://127.0.0.1:9/channels/c1?thread=m1&message=r1");
@@ -2078,6 +2082,68 @@ mod tests {
         assert!(app.thread.is_none());
         assert_eq!(app.mode, Mode::Insert);
         assert_eq!(app.target, Target::Channel);
+    }
+
+    #[tokio::test]
+    async fn closing_a_bogus_thread_does_not_move_another_reply() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=nothing&message=s1");
+        press(&mut app, KeyCode::Char('o'));
+        // 別のスレッドへの返信の書きかけがあれば、閉じて送り先を変えない。
+        app.target = Target::Reply("other".into());
+        app.composer.insert_str("書きかけ");
+        arrive_in_c2(&mut app);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "nothing");
+        assert_eq!(app.target, Target::Reply("other".into()));
+    }
+
+    #[tokio::test]
+    async fn links_waiting_for_the_main_sync_time_out_and_stop() {
+        let mut app = app();
+        app.open_channel("c2".into());
+        let shape = ShapeId::Messages("c2".into());
+        let rows = |up_to_date: bool, reset: bool| {
+            let mut rows = batch(vec![(
+                "m2",
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c2",
+                        "content": "http://127.0.0.1:9/channels/c2?message=later",
+                        "created_at": "2026-11-01 01:00:00" }),
+            )]);
+            rows.up_to_date = up_to_date;
+            rows.reset = reset;
+            rows
+        };
+        let target = LinkTarget {
+            channel_id: "c2".into(),
+            message_id: Some("later".into()),
+            thread_id: None,
+        };
+        let state = |app: &App, after: std::time::Duration| match app.link_state(
+            &target,
+            std::time::Instant::now() + after,
+            &DrawCache::default(),
+        ) {
+            LinkState::Loading => "loading",
+            LinkState::Failed => "failed",
+            LinkState::Unavailable { .. } => "unavailable",
+            _ => "shown",
+        };
+        let now = std::time::Duration::ZERO;
+        // リンク元の投稿だけが届いて、同期がそろわない。
+        app.on_shape(ShapeEvent::Batch(shape.clone(), rows(false, false)));
+        assert_eq!(state(&app, now), "loading");
+        assert_eq!(state(&app, LOAD_TIMEOUT), "failed");
+        assert!(app.links.visible.is_empty(), "追加の取得はしない");
+        // そろったあとの取り直しは、そこから待ち直す。
+        app.on_shape(ShapeEvent::Batch(shape.clone(), rows(true, false)));
+        assert_eq!(state(&app, now), "unavailable");
+        let gap = std::time::Duration::from_millis(200);
+        std::thread::sleep(gap);
+        app.on_shape(ShapeEvent::Batch(shape.clone(), rows(false, true)));
+        assert_eq!(state(&app, LOAD_TIMEOUT - gap / 2), "loading");
+        assert_eq!(state(&app, LOAD_TIMEOUT), "failed");
+        // 同期が停止したら、すぐに読み込めなかったものとする。
+        app.on_shape(ShapeEvent::Failed(shape, "403".into()));
+        assert_eq!(state(&app, now), "failed");
     }
 
     #[tokio::test]
