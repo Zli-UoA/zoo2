@@ -134,6 +134,7 @@ internal data class ChannelItem(
     val unread: Boolean = false,
     val isUserName: Boolean = false,
     val direct: Boolean = false,
+    val handle: String? = null,
 )
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 

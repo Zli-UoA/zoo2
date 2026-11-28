@@ -816,12 +816,13 @@ internal class ConnectedScreenState(
         }.sortedWith { left, right ->
             compareLocaleText(left.text("channel_name"), right.text("channel_name"), app.env.locale)
         }
+        val peersByChannel = members.filter { it.text("user_id") != app.config.userId }.groupBy { it.text("channel_id") }
         fun item(row: Row): ChannelItem {
             val id = row.text("id")
-            val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
-            val userName = peers.singleOrNull()?.let { users[it.text("user_id")] }?.let(::author)
-                ?.takeIf { row.flag("is_dm") && it.isNotBlank() }
-            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null, direct = row.flag("is_dm"))
+            val peer = if (row.flag("is_dm")) peersByChannel[id]?.singleOrNull()?.let { users[it.text("user_id")] } else null
+            val userName = peer?.let(::author)?.takeIf { it.isNotBlank() }
+            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null, direct = row.flag("is_dm"),
+                handle = peer?.text("user_name")?.takeIf { it.isNotBlank() }?.let { "@" + it.removePrefix("@") })
         }
         val activeById = active.associateBy { it.text("id") }
         val unpinned = active.filterNot { it.text("id") in pins }
