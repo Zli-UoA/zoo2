@@ -70,7 +70,7 @@ internal data class TimelineMedia(
     val key: String, val name: String, val kind: TimelineMediaKind, val sensitive: Boolean = false,
     val url: String? = null, val attachmentId: String? = null, val previewUrl: String? = null,
     val imageAspectRatio: Float? = null, val blurhash: String? = null,
-    val thumbnailUrl: String? = null, val useThumbnail: Boolean = true,
+    val thumbnailUrl: String? = null, val useThumbnail: Boolean = true, val description: String? = null,
 )
 
 internal data class TimelineQuote(
@@ -375,8 +375,8 @@ private fun MediaFrame(
             onClick = { if (hidden) revealed = true else open() },
         ), contentAlignment = Alignment.Center) {
             when {
-                bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), alignment = imageAlignment, contentScale = contentScale)
-                placeholder != null -> Image(placeholder, media.name.takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
+                bitmap != null -> Image(bitmap, media.description ?: media.name, Modifier.matchParentSize(), alignment = imageAlignment, contentScale = contentScale)
+                placeholder != null -> Image(placeholder, (media.description ?: media.name).takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
                     contentScale = ContentScale.FillBounds)
                 hidden && !showSensitiveToggle -> Text(showLabel, color = colors.foreground, fontSize = 14.sp)
                 !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
