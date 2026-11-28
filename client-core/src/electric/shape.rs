@@ -6,12 +6,17 @@
 //!
 //! update は既定 (`replica=default`) で変更列と主キーだけが届くため、ここで行を保持して
 //! マージし、呼び出し側には常に完全な行を渡す。
+//!
+//! `log=changes_only` の subset snapshot のあとの live は、取得前の位置から読む。snapshot に
+//! 入っている変更が届いても、取得した行には重ねない（Electric のクライアントの `SnapshotTracker`
+//! と同じ判定）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::http::{Credentials, error_for_status};
 
@@ -26,13 +31,79 @@ struct Message {
 
 #[derive(Debug, Deserialize)]
 struct Subset {
+    #[serde(default)]
+    metadata: SubsetMetadata,
     data: Vec<Message>,
+}
+
+/// snapshot を取った時点の Postgres の状態。数値は文字列で届く。
+#[derive(Debug, Default, Deserialize)]
+struct SubsetMetadata {
+    xmin: Option<Value>,
+    xmax: Option<Value>,
+    xip_list: Option<Vec<Value>>,
+    database_lsn: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct MessageHeaders {
     operation: Option<String>,
     control: Option<String>,
+    /// 変更を行ったトランザクション。
+    txids: Option<Vec<Value>>,
+    /// 変更の WAL の位置。
+    lsn: Option<Value>,
+    /// `up-to-date` までに読み終えた WAL の位置。
+    global_last_seen_lsn: Option<Value>,
+}
+
+fn number(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+
+/// 取得した subset snapshot のうち、live がまだ追いついていないもの。
+struct Snapshot {
+    xmin: u64,
+    xmax: u64,
+    /// 取った時点で終わっていないトランザクション。
+    in_progress: Vec<u64>,
+    database_lsn: Option<u64>,
+    /// snapshot に入っていた行のキー。
+    keys: HashSet<String>,
+}
+
+impl Snapshot {
+    fn new(metadata: &SubsetMetadata, keys: HashSet<String>) -> Option<Self> {
+        Some(Self {
+            xmin: number(metadata.xmin.as_ref()?)?,
+            xmax: number(metadata.xmax.as_ref()?)?,
+            in_progress: metadata
+                .xip_list
+                .iter()
+                .flatten()
+                .filter_map(number)
+                .collect(),
+            database_lsn: metadata.database_lsn.as_ref().and_then(number),
+            keys,
+        })
+    }
+
+    /// `txids` のうちいちばん後のもの。live の txid は 32 bit なので、`xmax` に近い epoch の値にする。
+    fn latest(&self, txids: &[Value]) -> Option<u64> {
+        txids
+            .iter()
+            .filter_map(number)
+            .map(|txid| {
+                let offset = (txid as u32).wrapping_sub(self.xmax as u32) as i32;
+                self.xmax.saturating_add_signed(offset.into())
+            })
+            .max()
+    }
+
+    /// `xid` のトランザクションの変更が、この snapshot に入っているか。
+    fn contains(&self, xid: u64) -> bool {
+        xid < self.xmin || (xid < self.xmax && !self.in_progress.contains(&xid))
+    }
 }
 
 pub struct ShapeStream {
@@ -48,6 +119,7 @@ pub struct ShapeStream {
     rows: HashMap<String, Row>,
     /// `log=changes_only` の購読の開始位置は `now`、通常は `-1`。
     initial_offset: &'static str,
+    snapshots: Vec<Snapshot>,
 }
 
 impl ShapeStream {
@@ -70,6 +142,7 @@ impl ShapeStream {
             cache_buster: None,
             rows: HashMap::new(),
             initial_offset: "-1",
+            snapshots: Vec::new(),
         }
     }
 
@@ -140,13 +213,17 @@ impl ShapeStream {
         let snapshot: Subset =
             serde_json::from_str(&body).context("シェイプの応答を解釈できません")?;
         let mut rows = Vec::new();
+        let mut keys = HashSet::new();
         for message in snapshot.data {
-            if let Some(Change::Upsert { row, .. }) =
+            if let Some(Change::Upsert { key, row }) =
                 self.apply("insert", message.key, message.value)
             {
+                keys.insert(key);
                 rows.push(row);
             }
         }
+        self.snapshots
+            .extend(Snapshot::new(&snapshot.metadata, keys));
         Ok(Some(rows))
     }
 
@@ -218,9 +295,16 @@ impl ShapeStream {
                         ..Default::default()
                     });
                 }
-                (Some("up-to-date"), _) => batch.up_to_date = true,
+                (Some("up-to-date"), _) => {
+                    self.pass(message.headers.global_last_seen_lsn.as_ref());
+                    batch.up_to_date = true;
+                }
                 (Some(_), _) => {}
                 (None, Some(operation)) => {
+                    self.pass(message.headers.lsn.as_ref());
+                    if self.in_snapshot(message.key.as_deref(), message.headers.txids.as_deref()) {
+                        continue;
+                    }
                     if let Some(change) = self.apply(operation, message.key, message.value) {
                         batch.changes.push(change);
                     }
@@ -264,7 +348,32 @@ impl ShapeStream {
         self.cursor = None;
         self.live = false;
         self.rows.clear();
+        self.snapshots.clear();
         self.cache_buster = Some(uuid::Uuid::new_v4().simple().to_string());
+    }
+
+    /// WAL の `lsn` まで届いたら、それより前に取った snapshot の変更はもう届かない。
+    fn pass(&mut self, lsn: Option<&Value>) {
+        if let Some(lsn) = lsn.and_then(number) {
+            self.snapshots
+                .retain(|snapshot| snapshot.database_lsn.is_none_or(|taken| taken > lsn));
+        }
+    }
+
+    /// `key` の `txids` の変更が、取得した snapshot に入っているか。
+    fn in_snapshot(&mut self, key: Option<&str>, txids: Option<&[Value]>) -> bool {
+        let (Some(key), Some(txids)) = (key, txids) else {
+            return false;
+        };
+        // snapshot より後のトランザクションが届いたら、その snapshot の変更はもう届かない。
+        self.snapshots
+            .retain(|snapshot| snapshot.latest(txids).is_none_or(|xid| xid < snapshot.xmax));
+        self.snapshots.iter().any(|snapshot| {
+            snapshot.keys.contains(key)
+                && snapshot
+                    .latest(txids)
+                    .is_some_and(|xid| snapshot.contains(xid))
+        })
     }
 
     fn apply(
@@ -425,6 +534,106 @@ mod tests {
         assert_eq!(stream.offset, "-1");
         assert_eq!(stream.handle, None);
         assert_eq!(stream.cursor, None);
+    }
+
+    /// `changes_only` の購読を始め、`m1` を `metadata` の snapshot で取る。
+    async fn after_subset(server: &MockServer, metadata: Value, live: Value) -> ShapeStream {
+        let headers = |response: ResponseTemplate| {
+            response
+                .insert_header("electric-handle", "h1")
+                .insert_header("electric-offset", "0_0")
+                .insert_header("electric-cursor", "1")
+        };
+        Mock::given(method("GET"))
+            .and(query_param("offset", "now"))
+            .respond_with(headers(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{ "headers": { "control": "up-to-date" } }])),
+            ))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("subset__where", "id = $1"))
+            .respond_with(headers(ResponseTemplate::new(200).set_body_json(json!({
+                "metadata": metadata,
+                "data": [{ "key": "k1", "value": { "id": "m1", "content": "最新" },
+                           "headers": { "operation": "insert" } }],
+            }))))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("live", "true"))
+            .respond_with(headers(ResponseTemplate::new(200).set_body_json(live)))
+            .mount(server)
+            .await;
+        let mut stream = ShapeStream::changes_only(
+            reqwest::Client::new(),
+            format!("{}/api/shapes/messages", server.uri()),
+            Vec::new(),
+            Credentials::Dev("u1".into()),
+        );
+        stream.next_batch().await.unwrap();
+        stream
+            .subset("id = $1", &["m1"], "id", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        stream
+    }
+
+    fn update(key: &str, content: &str, headers: Value) -> Value {
+        let mut all = json!({ "operation": "update" });
+        all.as_object_mut()
+            .unwrap()
+            .extend(headers.as_object().unwrap().clone());
+        json!({ "key": key, "value": { "content": content }, "headers": all })
+    }
+
+    fn contents(batch: &Batch) -> Vec<&str> {
+        batch
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Upsert { row, .. } => row.get("content").and_then(Value::as_str),
+                Change::Delete { .. } => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn changes_included_in_a_snapshot_are_not_applied_again() {
+        let server = MockServer::start().await;
+        let metadata = json!({ "xmin": "10", "xmax": "20", "xip_list": ["15"],
+                               "database_lsn": "100", "snapshot_mark": 1 });
+        // 12 は snapshot に入っている。15 は取った時点で終わっていない。ほかの行は対象にしない。
+        let live = json!([
+            update("k1", "古い", json!({ "txids": [12], "lsn": "50" })),
+            update("k2", "ほかの行", json!({ "txids": [12], "lsn": "50" })),
+            update("k1", "あとで確定", json!({ "txids": [15], "lsn": "60" })),
+            update("k1", "後の編集", json!({ "txids": [25], "lsn": "70" })),
+        ]);
+        let mut stream = after_subset(&server, metadata, live).await;
+        let batch = stream.next_batch().await.unwrap();
+        assert_eq!(contents(&batch), ["ほかの行", "あとで確定", "後の編集"]);
+        assert!(stream.snapshots.is_empty(), "追いついた snapshot は捨てる");
+    }
+
+    #[tokio::test]
+    async fn snapshots_are_dropped_once_the_log_passes_them() {
+        let server = MockServer::start().await;
+        // live の txid は 32 bit。epoch をまたいだ値でも、snapshot の前後を判定する。
+        let epoch = 1_u64 << 32;
+        let metadata = json!({ "xmin": (epoch + 10).to_string(), "xmax": (epoch + 20).to_string(),
+                               "xip_list": [], "database_lsn": "100" });
+        let live = json!([
+            update("k1", "古い", json!({ "txids": [12], "lsn": "50" })),
+            update("k1", "前の epoch", json!({ "txids": [u32::MAX], "lsn": "50" })),
+            { "headers": { "control": "up-to-date", "global_last_seen_lsn": "100" } },
+        ]);
+        let mut stream = after_subset(&server, metadata, live).await;
+        let batch = stream.next_batch().await.unwrap();
+        assert!(contents(&batch).is_empty(), "{batch:?}");
+        assert!(stream.snapshots.is_empty());
     }
 
     #[test]

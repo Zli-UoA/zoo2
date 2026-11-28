@@ -140,9 +140,21 @@ fn inline_segments(content: &str) -> Vec<(bool, &str)> {
     result
 }
 
-/// `[文字](URL)` と `?[文字](URL)` を、`replace(文字, URL, silent)` の結果に置き換える。
-fn replace_markdown_links(text: &str, replace: impl Fn(&str, &str, bool) -> String) -> String {
-    let mut result = String::new();
+/// 本文を分けたもの。地の文か、`[文字](URL)`・`?[文字](URL)` のリンク。
+enum Piece<'a> {
+    Text(&'a str),
+    Link {
+        label: &'a str,
+        url: &'a str,
+        silent: bool,
+    },
+}
+
+/// `text` を、地の文と `[文字](URL)` のリンクに分ける。
+fn markdown_pieces(text: &str) -> Vec<Piece<'_>> {
+    let mut result = Vec::new();
+    // 地の文の先頭。
+    let mut plain = 0;
     let mut at = 0;
     // 次の `)` か空白の位置。閉じない `[](URL` が並ぶ本文で、同じ部分を繰り返し調べないように覚える。
     let mut next_stop: Option<Option<usize>> = None;
@@ -179,15 +191,18 @@ fn replace_markdown_links(text: &str, replace: impl Fn(&str, &str, bool) -> Stri
             .flatten();
         match link {
             Some((label, url, length)) => {
-                result.push_str(&replace(label, url, silent));
+                if plain < at {
+                    result.push(Piece::Text(&text[plain..at]));
+                }
+                result.push(Piece::Link { label, url, silent });
                 at += length;
+                plain = at;
             }
-            None => {
-                let ch = rest.chars().next().expect("at は文字境界");
-                result.push(ch);
-                at += ch.len_utf8();
-            }
+            None => at += rest.chars().next().map_or(1, char::len_utf8),
         }
+    }
+    if plain < text.len() {
+        result.push(Piece::Text(&text[plain..]));
     }
     result
 }
@@ -205,35 +220,42 @@ fn label_length(text: &str) -> Option<usize> {
     None
 }
 
-/// 本文に出てくる順の URL（重複を除く）。コードと `<plain>` の中は除く。
+/// 本文に出てくる順の URL（重複を除く）。コードと `<plain>` の中は除く。`[文字](URL)` は、本文の
+/// 表示と同じ行き先をそのまま使う（文字に書いた URL は行き先ではない）。
 fn urls(content: &str, include_silent: bool) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
+    let mut add = |url: &str| {
+        if Url::parse(url).is_ok_and(|url| {
+            url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
+        }) && !result.iter().any(|seen| seen == url)
+        {
+            result.push(url.to_owned());
+        }
+    };
     for (literal, part) in segments(content) {
         if literal {
             continue;
         }
-        // `[文字](URL)` は行き先だけを残す（文字に書いた URL は行き先ではない）。
-        let visible = replace_markdown_links(part, |_, url, silent| {
-            if silent && !include_silent {
-                " ".to_owned()
-            } else {
-                format!(" {url} ")
+        for piece in markdown_pieces(part) {
+            match piece {
+                Piece::Link { url, silent, .. } => {
+                    if include_silent || !silent {
+                        add(url);
+                    }
+                }
+                Piece::Text(text) => {
+                    let mut rest = text;
+                    while let Some(index) = rest.find("http") {
+                        let candidate = &rest[index..];
+                        let Some(url) = crate::mfm::leading_url(candidate) else {
+                            rest = &candidate["http".len()..];
+                            continue;
+                        };
+                        add(url);
+                        rest = &candidate[url.len()..];
+                    }
+                }
             }
-        });
-        let mut rest = visible.as_str();
-        while let Some(index) = rest.find("http") {
-            let candidate = &rest[index..];
-            let Some(url) = crate::mfm::leading_url(candidate) else {
-                rest = &candidate["http".len()..];
-                continue;
-            };
-            if Url::parse(url).is_ok_and(|url| {
-                url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
-            }) && !result.iter().any(|seen| seen == url)
-            {
-                result.push(url.to_owned());
-            }
-            rest = &candidate[url.len()..];
         }
     }
     result
@@ -317,7 +339,13 @@ pub fn excerpt(content: &str) -> String {
             if literal {
                 part.to_owned()
             } else {
-                replace_markdown_links(part, |label, _, _| label.to_owned())
+                markdown_pieces(part)
+                    .into_iter()
+                    .map(|piece| match piece {
+                        Piece::Text(text) => text,
+                        Piece::Link { label, .. } => label,
+                    })
+                    .collect()
             }
         })
         .collect();
@@ -671,6 +699,23 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn markdown_links_open_the_destination_shown_in_the_body() {
+        // 本文の表示と同じ行き先にする。URL の文字だけを書いたときの切り方（日本語で終わる）は使わない。
+        let content = "[資料](https://zli.chat/channels/c1?label=資料&message=m1)";
+        let target = LinkTarget {
+            channel_id: "c1".into(),
+            message_id: Some("m1".into()),
+            thread_id: None,
+        };
+        for links in [app_links(content, APP), embedded_links(content, APP)] {
+            assert_eq!(links.len(), 1, "{links:?}");
+            assert_eq!(links[0].1, target);
+            let shown = crate::mfm::parse(content, None).remove(0).spans.remove(0);
+            assert_eq!(shown.href.as_deref(), Some(links[0].0.as_str()));
+        }
     }
 
     #[test]

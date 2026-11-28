@@ -3,6 +3,7 @@
 
 use std::{
     cell::RefCell,
+    cmp::Reverse,
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
@@ -17,6 +18,7 @@ use zoo2_client_core::{
     electric::LinkedEvent,
     links::{self, LinkState, LinkTarget, LinkedFetch, MessagePreview, PreviewBody},
     store::Store,
+    text::sanitize_display,
 };
 
 use super::timeline::{DIM, local};
@@ -24,7 +26,7 @@ use crate::electric::rows::{Channel, FromRow, Message};
 
 /// 取得を始めてから、これだけたっても終わらないときは、読み込めなかったものとする。
 pub const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
-/// 画面の近くからリンクがなくなって、これだけたったら購読を閉じる。
+/// 画面の近くからリンクがなくなって、これだけたったら取得と購読をやめる。
 pub const RELEASE_DELAY: Duration = Duration::from_secs(30);
 /// 取得できた結果を覚える件数。
 const CACHE_SIZE: usize = 256;
@@ -36,10 +38,15 @@ pub const MAX_CHANNELS: usize = 8;
 pub type Key = (String, String);
 
 struct Fetching {
-    ids: mpsc::UnboundedSender<String>,
+    requests: mpsc::UnboundedSender<Vec<String>>,
     task: JoinHandle<()>,
-    sent: HashSet<String>,
+    /// この購読で追うメッセージの ID と、最後に画面の近くにあった時刻。
+    wanted: HashMap<String, Instant>,
+    /// タスクに最後に伝えた並び。
+    sent: Vec<String>,
     last_wanted: Instant,
+    /// 購読ごとの番号。閉じた購読から遅れて届いたものを捨てる。
+    generation: u64,
 }
 
 /// リンク先のメッセージの取得。チャンネルごとに 1 本の購読を、画面の近くのリンクで共有する。
@@ -53,6 +60,8 @@ pub struct Links {
     started: HashMap<Key, Instant>,
     /// 購読するチャンネルの上限を超えて、取得していないリンク先。
     over_limit: HashSet<Key>,
+    /// 直近に始めた購読の番号。
+    generation: u64,
     /// 直近の描画で画面の近くに出ていた、取得が要るリンク先。
     pub visible: Vec<Key>,
 }
@@ -82,19 +91,20 @@ impl Links {
         }
     }
 
-    /// このチャンネルで取得した行に、暗号文の行があるか。
-    pub fn has_ciphertext(&self, channel_id: &str) -> bool {
-        self.results.iter().any(|((channel, _), message)| {
-            channel == channel_id && message.as_ref().is_some_and(|m| m.ciphertext.is_some())
-        })
+    /// いまの購読の番号。
+    #[cfg(test)]
+    pub fn generation(&self, channel_id: &str) -> Option<u64> {
+        self.channels
+            .get(channel_id)
+            .map(|fetching| fetching.generation)
     }
 
-    /// [`Self::visible`] のリンク先を取得し、しばらく使っていない購読を閉じる。`spawn` はチャンネルの
-    /// 取得のタスクを起動する。
+    /// [`Self::visible`] のリンク先を取得し、しばらく使っていない取得と購読をやめる。`spawn` は
+    /// チャンネルの取得のタスクを、購読の番号を付けて起動する。
     pub fn sync(
         &mut self,
         now: Instant,
-        mut spawn: impl FnMut(String, mpsc::UnboundedReceiver<String>) -> JoinHandle<()>,
+        mut spawn: impl FnMut(String, u64, mpsc::UnboundedReceiver<Vec<String>>) -> JoinHandle<()>,
     ) {
         self.over_limit.clear();
         for (channel_id, _) in &self.visible {
@@ -111,24 +121,24 @@ impl Links {
                 self.over_limit.insert(key.clone());
                 continue;
             }
+            let generation = &mut self.generation;
             let fetching = self.channels.entry(channel_id.clone()).or_insert_with(|| {
-                let (ids, receiver) = mpsc::unbounded_channel();
+                *generation += 1;
+                let (requests, receiver) = mpsc::unbounded_channel();
                 Fetching {
-                    task: spawn(channel_id.clone(), receiver),
-                    ids,
-                    sent: HashSet::new(),
+                    task: spawn(channel_id.clone(), *generation, receiver),
+                    requests,
+                    wanted: HashMap::new(),
+                    sent: Vec::new(),
                     last_wanted: now,
+                    generation: *generation,
                 }
             });
             fetching.last_wanted = now;
-            if fetching.sent.insert(message_id.clone()) {
-                if !self.results.contains_key(&key) {
-                    self.started.entry(key.clone()).or_insert(now);
-                }
-                // 権限の失敗などで止まった購読は、閉じるまで作り直さない。
-                if fetching.ids.send(message_id.clone()).is_err() {
-                    self.failed.insert(key.clone());
-                }
+            if fetching.wanted.insert(message_id.clone(), now).is_none()
+                && !self.results.contains_key(&key)
+            {
+                self.started.entry(key.clone()).or_insert(now);
             }
         }
         let expired: Vec<String> = self
@@ -140,23 +150,100 @@ impl Links {
         for channel_id in expired {
             self.release(&channel_id);
         }
+        self.request(now);
         self.evict();
     }
 
-    fn release(&mut self, channel_id: &str) {
+    /// 画面の近くから外れて [`RELEASE_DELAY`] たったリンク先は追うのをやめ、追う ID が変わった購読に
+    /// 伝える。取り直しで画面の近くのものが先になるように並べる。
+    fn request(&mut self, now: Instant) {
+        let Self {
+            channels,
+            visible,
+            results,
+            failed,
+            started,
+            ..
+        } = self;
+        for (channel_id, fetching) in channels {
+            let mut seen = HashSet::new();
+            let mut order: Vec<String> = visible
+                .iter()
+                .filter(|(channel, id)| channel == channel_id && seen.insert(id))
+                .map(|(_, id)| id.clone())
+                .collect();
+            fetching.wanted.retain(|id, at| {
+                let keep = now.duration_since(*at) < RELEASE_DELAY;
+                if !keep {
+                    let key = (channel_id.clone(), id.clone());
+                    started.remove(&key);
+                    failed.remove(&key);
+                }
+                keep
+            });
+            // 画面の近くにないものは、見ていた時刻が新しい順に後ろに置く。
+            let mut away: Vec<(&String, &Instant)> = fetching
+                .wanted
+                .iter()
+                .filter(|(id, _)| !seen.contains(id))
+                .collect();
+            away.sort_by_key(|(id, at)| (Reverse(**at), *id));
+            order.extend(away.into_iter().map(|(id, _)| id.clone()));
+            if order != fetching.sent {
+                // 止まった購読には届かない。下で失敗にする。
+                let _ = fetching.requests.send(order.clone());
+                fetching.sent = order;
+            }
+            // 権限の失敗などで止まった購読は、閉じるまで作り直さない。
+            if fetching.requests.is_closed() {
+                for id in fetching.wanted.keys() {
+                    let key = (channel_id.clone(), id.clone());
+                    if !results.contains_key(&key) {
+                        failed.insert(key);
+                    }
+                }
+            }
+        }
+    }
+
+    /// チャンネルの購読を閉じる。取得できた結果は残し、戻ったときに先に出す。
+    pub fn release(&mut self, channel_id: &str) {
         if let Some(fetching) = self.channels.remove(channel_id) {
             fetching.task.abort();
         }
-        // 失敗は覚えず、次に表示したときに取り直す。取得できた結果は残し、戻ったときに先に出す。
+        // 失敗は覚えず、次に表示したときに取り直す。
         self.failed.retain(|(channel, _)| channel != channel_id);
         self.started.retain(|(channel, _), _| channel != channel_id);
+    }
+
+    /// このチャンネルで取得できた結果を捨てる。捨てたリンク先を返す。
+    pub fn forget(&mut self, channel_id: &str) -> Vec<Key> {
+        let keys: Vec<Key> = self
+            .results
+            .keys()
+            .filter(|(channel, _)| channel == channel_id)
+            .cloned()
+            .collect();
+        for key in &keys {
+            self.results.remove(key);
+        }
+        self.order.retain(|(channel, _)| channel != channel_id);
+        keys
+    }
+
+    /// このチャンネルの取得を拒否された。権限を失ったかもしれないので、前に取得できた内容も出さず、
+    /// 取り直せるまで読み込めなかったものにする。
+    pub fn reject(&mut self, channel_id: &str) {
+        for key in self.forget(channel_id) {
+            self.failed.insert(key);
+        }
     }
 
     /// 動いている購読の数。権限の失敗などで止まった購読は、取り直さないよう残すが、数えない。
     fn running(&self) -> usize {
         self.channels
             .values()
-            .filter(|fetching| !fetching.ids.is_closed())
+            .filter(|fetching| !fetching.requests.is_closed())
             .count()
     }
 
@@ -166,7 +253,8 @@ impl Links {
             .channels
             .iter()
             .filter(|(id, fetching)| {
-                !fetching.ids.is_closed() && !self.visible.iter().any(|(channel, _)| channel == *id)
+                !fetching.requests.is_closed()
+                    && !self.visible.iter().any(|(channel, _)| channel == *id)
             })
             .min_by_key(|(_, fetching)| fetching.last_wanted)
             .map(|(id, _)| id.clone());
@@ -179,7 +267,7 @@ impl Links {
         }
     }
 
-    /// 覚える件数を超えた分を古い順に捨てる。購読中のチャンネルの結果は残す。取得のタスクは
+    /// 覚える件数を超えた分を古い順に捨てる。購読で追っているリンク先の結果は残す。取得のタスクは
     /// 取った ID をもう一度は取らないので、捨てると読み込み中のままになる。
     fn evict(&mut self) {
         let mut excess = self.order.len().saturating_sub(CACHE_SIZE);
@@ -190,7 +278,10 @@ impl Links {
             ..
         } = self;
         order.retain(|key| {
-            let drop = excess > 0 && !channels.contains_key(&key.0);
+            let tracked = channels
+                .get(&key.0)
+                .is_some_and(|fetching| fetching.wanted.contains_key(&key.1));
+            let drop = excess > 0 && !tracked;
             if drop {
                 excess -= 1;
                 results.remove(key);
@@ -199,7 +290,16 @@ impl Links {
         });
     }
 
-    pub fn apply(&mut self, event: LinkedEvent) {
+    /// 番号が `generation` の購読から届いたものを反映する。
+    pub fn apply(&mut self, generation: u64, event: LinkedEvent) {
+        // 閉じた購読から遅れて届いたものは捨てる。止まった購読は残しているので、その失敗は反映する。
+        if self
+            .channels
+            .get(event.channel_id())
+            .is_none_or(|fetching| fetching.generation != generation)
+        {
+            return;
+        }
         match event {
             LinkedEvent::Rows { channel_id, rows } => {
                 for (message_id, row) in rows {
@@ -225,16 +325,17 @@ impl Links {
                 }
                 self.evict();
             }
+            // 暗号化の扱いは、呼ぶ側がチャンネルごとに覚える。
+            LinkedEvent::Ciphertext { .. } => {}
             LinkedEvent::Failed {
                 channel_id,
                 message_ids,
             } => {
+                self.reject(&channel_id);
                 for message_id in message_ids {
                     let key = (channel_id.clone(), message_id);
-                    // 取り直しに失敗したときは、前に取得できた結果を残す。
-                    if !self.results.contains_key(&key) {
-                        self.failed.insert(key);
-                    }
+                    self.started.remove(&key);
+                    self.failed.insert(key);
                 }
             }
         }
@@ -338,10 +439,7 @@ pub fn channel_name(channel: &Channel) -> String {
     if channel.is_dm {
         "ダイレクトメッセージ".to_owned()
     } else {
-        format!(
-            "#{}",
-            zoo2_client_core::text::sanitize_display(&channel.channel_name)
-        )
+        format!("#{}", sanitize_display(&channel.channel_name))
     }
 }
 
@@ -460,6 +558,15 @@ mod tests {
         }
     }
 
+    /// `ids` のリンクを画面に出して購読を始め、その番号を返す。受け取り側は持っておく。
+    fn subscribe(links: &mut Links, now: Instant, ids: &[&str]) -> u64 {
+        links.visible = ids.iter().map(|id| key(id)).collect();
+        links.sync(now, |_, _, mut receiver| {
+            tokio::spawn(async move { while receiver.recv().await.is_some() {} })
+        });
+        links.generation("c1").unwrap()
+    }
+
     #[tokio::test]
     async fn shares_one_subscription_per_channel_and_releases_it() {
         let mut links = Links::default();
@@ -467,18 +574,18 @@ mod tests {
         let mut received = Vec::new();
         let mut spawned = 0;
         links.visible = vec![key("m1"), key("m1"), key("m2")];
-        links.sync(start, |_, receiver| {
+        links.sync(start, |_, _, receiver| {
             spawned += 1;
             received.push(receiver);
             tokio::spawn(std::future::pending())
         });
-        links.sync(start, |_, _| unreachable!("同じチャンネルは作り直さない"));
+        links.sync(start, |_, _, _| {
+            unreachable!("同じチャンネルは作り直さない")
+        });
         assert_eq!(spawned, 1);
-        let mut sent = Vec::new();
-        while let Ok(id) = received[0].try_recv() {
-            sent.push(id);
-        }
-        assert_eq!(sent, ["m1", "m2"]);
+        assert_eq!(received[0].try_recv().unwrap(), ["m1", "m2"]);
+        assert!(received[0].try_recv().is_err(), "変わらなければ送らない");
+        let generation = links.generation("c1").unwrap();
 
         // 10 秒たっても届かなければ読み込めなかったものとし、届けば内容に変わる。
         assert_eq!(
@@ -490,8 +597,8 @@ mod tests {
             links.fetch(&key("m1"), late),
             LinkedFetch::Loading { stalled: true }
         );
-        links.apply(rows("m1", Some("本文")));
-        links.apply(rows("m2", None));
+        links.apply(generation, rows("m1", Some("本文")));
+        links.apply(generation, rows("m2", None));
         assert!(matches!(
             links.fetch(&key("m1"), late),
             LinkedFetch::Found(_)
@@ -500,7 +607,7 @@ mod tests {
 
         // 使わなくなって 30 秒で閉じる。結果は残る。
         links.visible.clear();
-        links.sync(start + RELEASE_DELAY, |_, _| unreachable!());
+        links.sync(start + RELEASE_DELAY, |_, _, _| unreachable!());
         assert!(links.channels.is_empty());
         assert!(matches!(
             links.fetch(&key("m1"), late),
@@ -514,7 +621,7 @@ mod tests {
         let start = Instant::now();
         // 受信側を持っておく（捨てると、送れずに取得の失敗になる）。
         let mut receivers = Vec::new();
-        let mut idle = |_: String, receiver| {
+        let mut idle = |_: String, _, receiver| {
             receivers.push(receiver);
             tokio::spawn(std::future::pending())
         };
@@ -546,7 +653,7 @@ mod tests {
         let start = Instant::now();
         let mut receivers = Vec::new();
         // c0 の購読は、権限の失敗などで止まる（受け取り側がなくなる）。
-        let mut spawn = |channel: String, receiver| {
+        let mut spawn = |channel: String, _, receiver| {
             if channel != "c0" {
                 receivers.push(receiver);
             }
@@ -560,7 +667,7 @@ mod tests {
             LinkedFetch::Failed
         );
         // 止まった購読は残し、作り直さない。
-        links.sync(start + Duration::from_secs(1), |_, _| unreachable!());
+        links.sync(start + Duration::from_secs(1), |_, _, _| unreachable!());
         assert_eq!(links.fetch(&channel(0), start), LinkedFetch::Failed);
     }
 
@@ -569,13 +676,13 @@ mod tests {
         let mut links = Links::default();
         let start = Instant::now();
         links.visible = vec![key("m1")];
-        links.sync(start, |_, receiver| {
+        links.sync(start, |_, _, receiver| {
             drop(receiver);
             tokio::spawn(async {})
         });
         assert_eq!(links.fetch(&key("m1"), start), LinkedFetch::Failed);
         links.visible.clear();
-        links.sync(start + RELEASE_DELAY, |_, _| unreachable!());
+        links.sync(start + RELEASE_DELAY, |_, _, _| unreachable!());
         assert_eq!(
             links.fetch(&key("m1"), start),
             LinkedFetch::Loading { stalled: false }
@@ -583,38 +690,122 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keeps_results_of_subscribed_channels() {
+    async fn keeps_results_of_tracked_messages() {
         let mut links = Links::default();
         let start = Instant::now();
-        links.visible = vec![key("m0")];
-        links.sync(start, |_, _| tokio::spawn(std::future::pending()));
+        let generation = subscribe(&mut links, start, &["m0"]);
         for index in 0..=CACHE_SIZE {
-            links.apply(rows(&format!("m{index}"), Some("本文")));
+            links.apply(generation, rows(&format!("m{index}"), Some("本文")));
         }
-        // 購読中は、上限を超えても捨てない。
+        // 追っている結果は、上限を超えても捨てない。ほかは古い順に捨てる。
         assert!(matches!(
             links.fetch(&key("m0"), start),
             LinkedFetch::Found(_)
         ));
-        // 購読を閉じたら、その場で上限まで捨てる。
-        links.visible.clear();
-        links.sync(start + RELEASE_DELAY, |_, _| unreachable!());
         assert_eq!(links.results.len(), CACHE_SIZE);
+        assert!(!links.results.contains_key(&key("m1")));
+        // 追うのをやめたら、上限を超えた分として捨てる。
+        subscribe(&mut links, start + RELEASE_DELAY, &["m2"]);
+        links.apply(generation, rows("new", Some("本文")));
         assert!(!links.results.contains_key(&key("m0")));
     }
 
-    #[test]
-    fn an_unreadable_update_replaces_the_old_result() {
+    #[tokio::test]
+    async fn messages_away_from_the_screen_are_released() {
         let mut links = Links::default();
-        links.apply(rows("m1", Some("本文")));
-        let broken = json!({ "id": "m1" }).as_object().unwrap().clone();
-        links.apply(LinkedEvent::Rows {
-            channel_id: "c1".into(),
-            rows: vec![("m1".into(), Some(broken))],
+        let start = Instant::now();
+        let mut received = Vec::new();
+        links.visible = vec![key("m1"), key("m2")];
+        links.sync(start, |_, _, receiver| {
+            received.push(receiver);
+            tokio::spawn(std::future::pending())
         });
+        let requested = &mut received[0];
+        assert_eq!(requested.try_recv().unwrap(), ["m1", "m2"]);
+        // 画面の近くにあるものを先にする。外れた直後は追い続ける。
+        let soon = start + Duration::from_secs(1);
+        links.visible = vec![key("m3"), key("m2")];
+        links.sync(soon, |_, _, _| unreachable!());
+        assert_eq!(requested.try_recv().unwrap(), ["m3", "m2", "m1"]);
+        // 30 秒たったら追うのをやめ、もう一度出たら頼み直して待ち時間も数え直す。
+        let later = start + RELEASE_DELAY;
+        links.sync(later, |_, _, _| unreachable!());
+        assert_eq!(requested.try_recv().unwrap(), ["m3", "m2"]);
+        links.visible = vec![key("m1")];
+        links.sync(later + Duration::from_secs(1), |_, _, _| unreachable!());
+        assert_eq!(requested.try_recv().unwrap(), ["m1", "m2", "m3"]);
+        assert_eq!(
+            links.fetch(&key("m1"), later + Duration::from_secs(1)),
+            LinkedFetch::Loading { stalled: false }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_channel_hides_what_was_fetched() {
+        let mut links = Links::default();
+        let start = Instant::now();
+        let generation = subscribe(&mut links, start, &["m1", "m2"]);
+        links.apply(generation, rows("m1", Some("本文")));
+        links.apply(
+            generation,
+            LinkedEvent::Failed {
+                channel_id: "c1".into(),
+                message_ids: vec!["m2".into()],
+            },
+        );
+        for id in ["m1", "m2"] {
+            assert_eq!(links.fetch(&key(id), start), LinkedFetch::Failed, "{id}");
+        }
+        // 閉じて取り直し、届くまでは前の内容を出さない。
+        links.release("c1");
+        let generation = subscribe(&mut links, start, &["m1"]);
+        assert_eq!(
+            links.fetch(&key("m1"), start),
+            LinkedFetch::Loading { stalled: false }
+        );
+        links.apply(generation, rows("m1", Some("取り直した本文")));
+        assert!(matches!(
+            links.fetch(&key("m1"), start),
+            LinkedFetch::Found(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn events_of_released_subscriptions_are_ignored() {
+        let mut links = Links::default();
+        let start = Instant::now();
+        let old = subscribe(&mut links, start, &["m1"]);
+        links.release("c1");
+        let failed = || LinkedEvent::Failed {
+            channel_id: "c1".into(),
+            message_ids: vec!["m1".into()],
+        };
+        links.apply(old, failed());
+        links.apply(old, rows("m1", Some("古い本文")));
+        subscribe(&mut links, start, &["m1"]);
+        links.apply(old, failed());
+        assert_eq!(
+            links.fetch(&key("m1"), start),
+            LinkedFetch::Loading { stalled: false }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_update_replaces_the_old_result() {
+        let mut links = Links::default();
+        let generation = subscribe(&mut links, Instant::now(), &["m1"]);
+        links.apply(generation, rows("m1", Some("本文")));
+        let broken = json!({ "id": "m1" }).as_object().unwrap().clone();
+        links.apply(
+            generation,
+            LinkedEvent::Rows {
+                channel_id: "c1".into(),
+                rows: vec![("m1".into(), Some(broken))],
+            },
+        );
         assert_eq!(links.fetch(&key("m1"), Instant::now()), LinkedFetch::Failed);
         assert!(links.order.is_empty());
-        links.apply(rows("m1", Some("直った本文")));
+        links.apply(generation, rows("m1", Some("直った本文")));
         assert!(matches!(
             links.fetch(&key("m1"), Instant::now()),
             LinkedFetch::Found(_)

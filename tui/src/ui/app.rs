@@ -41,13 +41,28 @@ const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(2);
 const TYPING_IDLE: Duration = Duration::from_secs(3);
 /// 長いメッセージの中を1回で動かす行数。
 const INNER_SCROLL_STEP: usize = 10;
+pub(super) const REPLY_DRAFT_KEEPS_PLACE: &str =
+    "書きかけの返信があるため、移動していません。送信するか消してから開いてください";
+
+/// [`App::follow_link`] で開いて、まだチャンネルの行で確かめていない行き先。
+struct PendingLink {
+    channel_id: String,
+    message_id: String,
+    /// 実際の親を知らないまま開いたときの、手がかりの親（`?thread=`）。
+    hint_root: Option<String>,
+    /// 開いたときに実際の親を知らなかった。分かるまで、`message_id` と `hint_root` のスレッドには
+    /// 書き込まない。
+    parent_unknown: bool,
+    /// 行き先が分かったら表示を切り替える。利用者が自分で移動したら偽にする。
+    follow: bool,
+}
 
 /// 非同期の API 呼び出しから画面に返す結果。
 #[derive(Debug)]
 pub enum AppEvent {
     Notice(String),
-    /// 本文のリンクが指すメッセージの取得の結果。
-    Linked(LinkedEvent),
+    /// 本文のリンクが指すメッセージの取得の結果と、届けた購読の番号。
+    Linked(u64, LinkedEvent),
     AccountProfiles(zoo2_client_core::store::AccountProfiles),
     EmojiCatalog {
         shortcodes: HashMap<String, String>,
@@ -328,9 +343,10 @@ pub struct App {
     /// 本文のアプリ内リンクの、リンク先の取得。
     pub links: super::links::Links,
     pub(super) parsed_links: super::links::ParsedLinks,
-    /// リンクで開いた、まだ同期していないメッセージ (チャンネル, メッセージ)。返信と分かれば
-    /// スレッドを開く。
-    pending_link: Option<(String, String)>,
+    /// リンクで開いた、まだ同期していない行き先。返信と分かればスレッドを開く。
+    pending_link: Option<PendingLink>,
+    /// 暗号文の行が届いたことのあるチャンネル。行を捨てたあとも、起動中は暗号化として扱う。
+    ciphertext_channels: HashSet<String>,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
     /// 端末と検証の画面と、その裏の処理（#362、#368）。
@@ -446,6 +462,7 @@ impl App {
             links: Default::default(),
             parsed_links: Default::default(),
             pending_link: None,
+            ciphertext_channels: HashSet::new(),
         };
         for id in [
             ShapeId::Channels,
@@ -470,6 +487,12 @@ impl App {
         }
         if let ShapeId::Messages(channel_id) = &id {
             self.begin_message_resync(channel_id);
+            // 本同期が同じ行を持つので、リンク先を取る購読は閉じる。取得できた結果は、同期が
+            // そろうまで使う。
+            self.links.release(channel_id);
+            self.links
+                .visible
+                .retain(|(channel, _)| channel != channel_id);
         }
         // 止まった購読を作り直すときは最初から取り直すので、止まっていた間の行は捨てる。
         // 物理削除された行は新しいスナップショットに現れないため、捨てないと残り続ける。
@@ -550,6 +573,19 @@ impl App {
             }
             _ => None,
         };
+        // この行で本同期がそろうかもしれないチャンネル。
+        let syncing = match &event {
+            ShapeEvent::Batch(id @ ShapeId::Messages(channel_id), batch) => {
+                if batch.changes.iter().any(|change| {
+                    matches!(change, electric::Change::Upsert { row, .. }
+                        if electric::has_ciphertext(row))
+                }) {
+                    self.ciphertext_channels.insert(channel_id.clone());
+                }
+                (!self.store.is_synced(id)).then(|| channel_id.clone())
+            }
+            _ => None,
+        };
         let changed_messages = match &event {
             ShapeEvent::Batch(ShapeId::Messages(channel_id), batch) => Some((
                 channel_id.clone(),
@@ -599,8 +635,22 @@ impl App {
                 }
             }
             ShapeEvent::Failed(id, err) => {
-                self.notify(format!("同期を停止しました ({id:?}): {err}"));
+                let mut notice = format!("同期を停止しました ({id:?}): {err}");
+                if let ShapeId::Messages(channel_id) = &id {
+                    // 権限を失ったかもしれないので、リンク先として覚えた内容も出さない。
+                    self.links.reject(channel_id);
+                    if self.abandon_pending_link(channel_id) {
+                        notice.push_str("。リンク先を確認できないので、開き直してください");
+                    }
+                }
+                self.notify(notice);
             }
+        }
+        // 本同期の行がそろったら、リンク先として覚えた結果は古くなるので捨てる。
+        if let Some(channel_id) = syncing
+            && self.synced_channel(&channel_id)
+        {
+            self.links.forget(&channel_id);
         }
         let store = &self.store;
         self.locally_reopened_threads
@@ -702,7 +752,13 @@ impl App {
             } => {
                 self.recipients.insert(channel_id, summary);
             }
-            AppEvent::Linked(event) => self.links.apply(event),
+            AppEvent::Linked(generation, event) => {
+                // 暗号文が届いたことは、購読を閉じたあとに知っても覚える。
+                if let LinkedEvent::Ciphertext { channel_id } = &event {
+                    self.ciphertext_channels.insert(channel_id.clone());
+                }
+                self.links.apply(generation, event);
+            }
             AppEvent::KnownEncryptedChannels { known, failed } => {
                 self.known_encrypted_in_flight = false;
                 self.known_encrypted_loaded = true;
@@ -1385,7 +1441,7 @@ impl App {
             .unwrap_or_else(|| self.sidebar_index.min(items.len().saturating_sub(1)));
     }
 
-    fn reopen_thread(&self) {
+    fn reopen_thread(&mut self) {
         let id = match self.focus {
             Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
                 Some(SidebarItem::Thread { id, .. }) => Some(id.clone()),
@@ -1395,6 +1451,9 @@ impl App {
             _ => None,
         };
         let Some(id) = id else { return };
+        if self.wait_for_link(&id) {
+            return;
+        }
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         self.spawn_api("スレッドの再開", async move {
@@ -1864,6 +1923,10 @@ impl App {
                 if let Some(target) = self.global_search.destination() {
                     self.mode = Mode::Normal;
                     self.open_search_result(target);
+                    // 検索結果は利用者が選んだ行き先なので、このあとリンクの行き先には切り替えない。
+                    if let Some(pending) = &mut self.pending_link {
+                        pending.follow = false;
+                    }
                 }
             }
         }
@@ -1979,7 +2042,7 @@ impl App {
         }
     }
 
-    /// 直近の描画で画面の近くに出ていたリンク先を取得し、使わなくなった購読を閉じる。
+    /// 直近の描画で画面の近くに出ていたリンク先を取得し、使わなくなった取得と購読をやめる。
     pub fn sync_links(&mut self) {
         let (http, base, credentials, tx) = (
             self.http.clone(),
@@ -1987,17 +2050,18 @@ impl App {
             self.credentials.clone(),
             self.app_tx.clone(),
         );
-        self.links.sync(Instant::now(), |channel_id, ids| {
-            let tx = tx.clone();
-            electric::spawn_linked(
-                http.clone(),
-                &base,
-                credentials.clone(),
-                channel_id,
-                ids,
-                move |event| tx.send(AppEvent::Linked(event)).is_ok(),
-            )
-        });
+        self.links
+            .sync(Instant::now(), |channel_id, generation, requests| {
+                let tx = tx.clone();
+                electric::spawn_linked(
+                    http.clone(),
+                    &base,
+                    credentials.clone(),
+                    channel_id,
+                    requests,
+                    move |event| tx.send(AppEvent::Linked(generation, event)).is_ok(),
+                )
+            });
     }
 
     /// 開いているチャンネルのメッセージは、同期済みの行を使う（取り直さない）。
@@ -2031,17 +2095,13 @@ impl App {
         Some((target.channel_id.clone(), message_id.to_owned()))
     }
 
-    /// このチャンネルで読み込んでいる行に、暗号文の行があるか。`cache` に覚えて、1 回の描画で
-    /// 何度も行を調べない。
+    /// このチャンネルで暗号文の行が届いたことがあるか。`cache` に覚えて、1 回の描画で何度も行を
+    /// 調べない。
     fn linked_ciphertext(&self, channel_id: &str, cache: &DrawCache) -> bool {
         if let Some(found) = cache.ciphertext.borrow().get(channel_id) {
             return *found;
         }
-        let found = self.links.has_ciphertext(channel_id)
-            || self
-                .store
-                .visible_messages(channel_id)
-                .any(|message| message.ciphertext.is_some());
+        let found = self.has_ciphertext(channel_id);
         cache
             .ciphertext
             .borrow_mut()
@@ -2187,7 +2247,12 @@ impl App {
             });
             return;
         }
+        let same_channel = self.current.as_deref() == Some(target.channel_id.as_str());
         let Some(message_id) = target.linked_message_id().map(str::to_owned) else {
+            if !same_channel && self.reply_draft().is_some() {
+                self.notify(REPLY_DRAFT_KEEPS_PLACE);
+                return;
+            }
             self.open_channel(target.channel_id);
             self.focus = Focus::Messages;
             return;
@@ -2205,6 +2270,7 @@ impl App {
             LinkedFetch::Found(message) => Some(message.parent_id.clone()),
             _ => None,
         };
+        let parent_unknown = found_parent.is_none();
         // 返信なら実際の親のスレッドを開く。`?thread=` だけのリンクは、そのスレッドを開く。`?message=` の行が
         // ルート投稿なら `?thread=` は使わず、行が分かるまでは `?thread=` を手がかりにする。
         let parent_id = match (found_parent, &target.message_id) {
@@ -2213,6 +2279,15 @@ impl App {
             (Some(None), Some(_)) => None,
             (None, Some(_)) => target.thread_id.clone(),
         };
+        // 書きかけの返信の送り先が変わる移動はしない（チャンネルへの投稿などになってしまうため）。
+        if self
+            .reply_draft()
+            .is_some_and(|root_id| !same_channel || parent_id.as_deref() != Some(root_id))
+        {
+            self.notify(REPLY_DRAFT_KEEPS_PLACE);
+            return;
+        }
+        let hint_root = parent_id.clone().filter(|_| parent_unknown);
         // スレッドの親ではないメッセージへ移るときは、開いているスレッドを閉じる。
         if parent_id.is_none() && self.thread.is_some() {
             self.close_thread();
@@ -2227,26 +2302,58 @@ impl App {
         // 行がそろった時点で、返信ならスレッドを開き、なければ知らせる。
         let confirmed = self.synced_channel(&channel_id)
             && self.store.message(&channel_id, &message_id).is_some();
-        self.pending_link = (!confirmed).then_some((channel_id, message_id));
+        self.pending_link = (!confirmed).then_some(PendingLink {
+            channel_id,
+            message_id,
+            hint_root,
+            parent_unknown,
+            follow: true,
+        });
     }
 
-    /// [`Self::follow_link`] で開いたメッセージが返信と分かったら、スレッドを開く。
+    /// [`Self::follow_link`] で開いた行き先を、チャンネルの行がそろった時点で確かめる。
     fn follow_pending_link(&mut self, channel_id: &str) {
-        let Some((pending, message_id)) = self.pending_link.clone() else {
-            return;
-        };
-        if pending != channel_id || !self.synced_channel(channel_id) {
+        if self
+            .pending_link
+            .as_ref()
+            .is_none_or(|pending| pending.channel_id != channel_id)
+            || !self.synced_channel(channel_id)
+        {
             return;
         }
-        self.pending_link = None;
-        let in_thread = self
-            .thread
-            .as_ref()
-            .is_some_and(|thread| thread.selected.as_deref() == Some(message_id.as_str()));
-        // 利用者がほかを選んだり、別のスレッドを開いたりしていたら、何もしない。
-        if !in_thread
-            && (self.thread.is_some() || self.selected.as_deref() != Some(message_id.as_str()))
+        let provisional = self.provisional_root();
+        let Some(pending) = self.pending_link.take() else {
+            return;
+        };
+        if pending.follow {
+            self.show_linked_message(channel_id, pending.message_id, provisional.is_some());
+        }
+        // 仮のスレッドから切り替えず、実際にはスレッドでなければ閉じる（そこへは書き込ませない）。
+        if let Some(root_id) = provisional
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| thread.root_id == root_id)
+            && !self.is_thread_root(channel_id, &root_id)
+            && !self.replying_to(&root_id)
         {
+            self.close_thread();
+            if !pending.follow {
+                self.notify("リンクで開いたスレッドが見つからないので閉じました");
+            }
+        }
+    }
+
+    /// 開いた行き先を、実際の親に合わせる。返信なら実際の親のスレッドを開く。`provisional` は、
+    /// 手がかりで開いたスレッドを出しているか（そのときは、中で選ぶものを動かしていても合わせる）。
+    fn show_linked_message(&mut self, channel_id: &str, message_id: String, provisional: bool) {
+        let selected = match &self.thread {
+            Some(thread) => thread.selected.as_deref(),
+            None => self.selected.as_deref(),
+        };
+        let on_message = selected == Some(message_id.as_str());
+        // 利用者がほかを選んだり、別のスレッドを開いたりしていたら、何もしない。
+        if !on_message && !provisional {
             return;
         }
         let parent = self
@@ -2256,9 +2363,11 @@ impl App {
         match parent {
             // 行がそろっても見つからなければ、選ばずに知らせる。
             None => {
-                match self.thread.as_mut() {
-                    Some(thread) => thread.selected = None,
-                    None => self.selected = None,
+                if on_message {
+                    match self.thread.as_mut() {
+                        Some(thread) => thread.selected = None,
+                        None => self.selected = None,
+                    }
                 }
                 self.notify("メッセージを表示できません");
             }
@@ -2272,7 +2381,7 @@ impl App {
                 if self.switching_would_move_draft() {
                     return;
                 }
-                if !in_thread {
+                if self.thread.is_none() {
                     self.selected = None;
                 }
                 self.open_search_result(global_search::Destination {
@@ -2299,26 +2408,105 @@ impl App {
         }
     }
 
+    /// 本同期が止まると、リンクの行き先は確かめられない。仮の表示をやめて、開き直せるようにする。
+    /// 確かめている途中の行き先がなければ `false`。
+    fn abandon_pending_link(&mut self, channel_id: &str) -> bool {
+        if self
+            .pending_link
+            .as_ref()
+            .is_none_or(|pending| pending.channel_id != channel_id)
+        {
+            return false;
+        }
+        let provisional = self.provisional_root();
+        let Some(pending) = self.pending_link.take() else {
+            return false;
+        };
+        if self.current.as_deref() != Some(channel_id) {
+            return true;
+        }
+        match provisional {
+            Some(root_id) if !self.replying_to(&root_id) => self.close_thread(),
+            _ => {
+                let selected = match self.thread.as_mut() {
+                    Some(thread) => &mut thread.selected,
+                    None => &mut self.selected,
+                };
+                if selected.as_deref() == Some(pending.message_id.as_str()) {
+                    *selected = None;
+                }
+            }
+        }
+        true
+    }
+
+    /// 書きかけの返信があれば、そのスレッドの親。
+    fn reply_draft(&self) -> Option<&str> {
+        match &self.target {
+            Target::Reply(root_id) if !self.composer.is_empty() => Some(root_id),
+            _ => None,
+        }
+    }
+
+    /// `root_id` への返信を入力中か、書きかけているか。そのスレッドを閉じると送り先が変わる。
+    fn replying_to(&self, root_id: &str) -> bool {
+        matches!(&self.target, Target::Reply(id) if id == root_id)
+            && (self.mode == Mode::Insert || !self.composer.is_empty())
+    }
+
     /// あとから分かった行き先へ表示を切り替えると、書いている返信の送り先が画面とずれるか。ずれるなら知らせる。
     fn switching_would_move_draft(&mut self) -> bool {
-        let writing = self.mode == Mode::Insert
-            || (matches!(self.target, Target::Reply(_)) && !self.composer.is_empty());
+        let writing = self.mode == Mode::Insert || self.reply_draft().is_some();
         if writing {
             self.notify("入力中の本文があるため、リンク先へは切り替えていません");
         }
         writing
     }
 
-    /// 開いているスレッドが、リンクの手がかりで開いたもので、実際の親をまだ確かめていないか。
-    fn thread_unconfirmed(&self) -> bool {
-        let Some((channel_id, message_id)) = &self.pending_link else {
-            return false;
-        };
-        self.current.as_ref() == Some(channel_id)
-            && self
-                .thread
-                .as_ref()
-                .is_some_and(|thread| thread.selected.as_ref() == Some(message_id))
+    /// 開いているチャンネルの `root_id` のスレッドが、リンクで開いたもので、実際の親をまだ確かめて
+    /// いないか。スレッドの中で選んでいるメッセージには左右されない。
+    fn thread_unconfirmed(&self, root_id: &str) -> bool {
+        self.pending_link.as_ref().is_some_and(|pending| {
+            pending.parent_unknown
+                && self.current.as_ref() == Some(&pending.channel_id)
+                && (pending.message_id == root_id || pending.hint_root.as_deref() == Some(root_id))
+        })
+    }
+
+    /// 出しているスレッドが、まだ確かめていないものなら、その親。
+    fn provisional_root(&self) -> Option<String> {
+        self.thread
+            .as_ref()
+            .map(|thread| &thread.root_id)
+            .filter(|root_id| self.thread_unconfirmed(root_id))
+            .cloned()
+    }
+
+    /// `root_id` のスレッドが確かめられるまで待つ操作なら、知らせて `true` を返す。
+    fn wait_for_link(&mut self, root_id: &str) -> bool {
+        let waiting = self.thread_unconfirmed(root_id);
+        if waiting {
+            self.notify("リンク先を確認しています。少し待ってから操作してください");
+        }
+        waiting
+    }
+
+    /// 利用者が自分で移動した。手がかりで開いたスレッドを出したままでなければ、このあと行き先が
+    /// 分かっても表示を切り替えない。確かめていないスレッドへの書き込みは、分かるまで止めたままにする。
+    fn stop_following_link(&mut self) {
+        if self.provisional_root().is_none()
+            && let Some(pending) = &mut self.pending_link
+        {
+            pending.follow = false;
+        }
+    }
+
+    /// 読み込んでいる行で、`root_id` がスレッドの親と分かるか。親が削除されていても、返信があれば親とする。
+    fn is_thread_root(&self, channel_id: &str, root_id: &str) -> bool {
+        self.store
+            .message(channel_id, root_id)
+            .is_some_and(|message| message.parent_id.is_none())
+            || !self.store.replies(channel_id, root_id).is_empty()
     }
 
     fn on_search_key(&mut self, key: KeyEvent, mut query: String) {
@@ -2691,12 +2879,11 @@ impl App {
             });
             self.restore_sidebar_selection(selected);
             self.focus = Focus::Thread;
+            self.stop_following_link();
         }
     }
 
     fn activate_sidebar(&mut self) {
-        // 自分で移動したら、リンクの行き先を追いかけない。
-        self.pending_link = None;
         match self.selected_sidebar_item() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
                 // カーソルは `open_channel` が、押した行に残す。
@@ -2730,6 +2917,7 @@ impl App {
             ),
             None => {}
         }
+        self.stop_following_link();
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
@@ -2764,6 +2952,7 @@ impl App {
             self.selected = None;
             self.scroll = 0;
             self.thread = None;
+            self.pending_link = None;
             // 編集中の本文は元のメッセージのものなので、別のチャンネルへは持ち越さない。
             if matches!(self.target, Target::Edit(_)) {
                 self.composer = new_composer();
@@ -2788,7 +2977,6 @@ impl App {
 
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
-        self.pending_link = None;
         self.typing_poll.wake();
         // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
         let selected = self.selected_sidebar_item();
@@ -2798,6 +2986,7 @@ impl App {
         if matches!(self.target, Target::Reply(_)) {
             self.target = Target::Channel;
         }
+        self.stop_following_link();
     }
 
     /// 送り先はフォーカスで決める。スレッドを見ているときは返信になる。
@@ -2820,7 +3009,7 @@ impl App {
             return;
         }
         // リンクで開いたスレッドは、行がそろうまで実際の親が分からないので、返信を書き始めない。
-        if self.focus == Focus::Thread && self.thread_unconfirmed() {
+        if self.focus == Focus::Thread && self.provisional_root().is_some() {
             self.notify("リンク先を確認しています。少し待ってから返信してください");
             return;
         }
@@ -2959,6 +3148,9 @@ impl App {
             _ => None,
         };
         if let Some(id) = thread_id {
+            if self.wait_for_link(&id) {
+                return;
+            }
             let api = self.api.clone();
             let tx = self.app_tx.clone();
             self.spawn_api("スレッドの参加・退出", async move {
@@ -3107,15 +3299,20 @@ impl App {
     /// 見た（暗号ストアに記録した）、名前が `edm:`、暗号文のある行がある、のどれかで `encrypted = false`
     /// なら格下げとして送信を止める。
     pub fn channel_encryption(&self, channel_id: &str) -> ChannelEncryption {
-        let has_ciphertext = self
-            .store
-            .visible_messages(channel_id)
-            .any(|message| message.ciphertext.is_some());
         ChannelEncryption::of(
             self.store.channel(channel_id),
             self.known_encrypted_channels.contains(channel_id),
-            has_ciphertext,
+            self.has_ciphertext(channel_id),
         )
+    }
+
+    /// このチャンネルで、暗号文の行が届いたことがあるか（リンク先の取得で届いた行を含む）。
+    fn has_ciphertext(&self, channel_id: &str) -> bool {
+        self.ciphertext_channels.contains(channel_id)
+            || self
+                .store
+                .visible_messages(channel_id)
+                .any(|message| message.ciphertext.is_some())
     }
 
     /// `encrypted = true` を見たチャンネルを、暗号ストアを待たずにその場で記録する（暗号ストアに記録する
@@ -3252,6 +3449,12 @@ impl App {
     }
 
     fn submit(&mut self) {
+        // リンクで開いて確かめていないスレッドには送らない（下書きは残す）。
+        if let Target::Reply(root_id) = self.target.clone()
+            && self.wait_for_link(&root_id)
+        {
+            return;
+        }
         let encryption = self
             .current
             .as_deref()
