@@ -23,6 +23,7 @@ import type {
 import { apiPath, assertSafeApiPath } from "./path";
 import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
+import { abortable } from "../abortable";
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -344,7 +345,22 @@ export function createConfiguredApiClient(
  */
 export function createChannelPinsApi(client: ApiClient) {
   return {
-    getChannelPins: () => client.get<ChannelPinsResponse>("/api/channel-pins"),
+    getChannelPins: async () => {
+      // ピン留めの取得待ちで、保存済みのチャンネル一覧まで操作できなくなるのを防ぐ。
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(new TypeError("ピン留めの取得がタイムアウトしました。")),
+        10_000,
+      );
+      try {
+        return await abortable(
+          client.get<ChannelPinsResponse>("/api/channel-pins", { signal: controller.signal }),
+          controller.signal,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    },
     pinChannel: (channelId: string, expectedVersion?: number) =>
       client.post<PinChannelResult>("/api/channel-pins", {
         channel_id: channelId,
