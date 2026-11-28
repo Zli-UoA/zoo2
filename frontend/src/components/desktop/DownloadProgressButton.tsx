@@ -1,4 +1,5 @@
 import { DownloadIcon, LoaderCircleIcon, SquareIcon } from "lucide-react";
+import type { CSSProperties } from "react";
 
 import type { DesktopDownloadState } from "../../lib/desktopDownloads";
 import { Button } from "../ui/button";
@@ -47,8 +48,9 @@ export function DownloadProgressButton({
   onDownload: () => void;
   onCancel: () => void;
 }) {
-  const size = showLabel ? "sm" : "icon-sm";
-  const className = showLabel ? "shrink-0 gap-1 text-xs" : "text-muted-foreground";
+  // ラベルを出す場合は xs の gap・文字サイズが元の指定と同じになる。
+  const size = showLabel ? "xs" : "icon-sm";
+  const className = "shrink-0";
 
   if (!state) {
     return (
@@ -70,11 +72,11 @@ export function DownloadProgressButton({
         >
           {pending ? (
             <LoaderCircleIcon
-              className="size-4 animate-spin motion-reduce:animate-none"
+              className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none"
               aria-hidden="true"
             />
           ) : (
-            <DownloadIcon className="size-4" aria-hidden="true" />
+            <DownloadIcon className="size-4 text-muted-foreground" aria-hidden="true" />
           )}
           {showLabel ? downloadShortLabel : null}
         </Button>
@@ -109,7 +111,7 @@ export function DownloadProgressButton({
         type="button"
         variant="ghost"
         size={size}
-        className={cn(className, "tabular-nums")}
+        className={className}
         aria-label={label}
         title={label}
         disabled={finishing}
@@ -128,7 +130,7 @@ export function DownloadProgressButton({
           aria-valuemax={100}
           aria-valuenow={percent ?? undefined}
           aria-valuetext={percent === null ? undefined : `${percent}%`}
-          className="relative grid size-[18px] shrink-0 place-items-center"
+          className="relative grid size-[18px] shrink-0 place-items-center text-muted-foreground"
         >
           <svg viewBox="0 0 20 20" className="size-[18px]" aria-hidden="true">
             <circle
@@ -154,9 +156,14 @@ export function DownloadProgressButton({
               className={cn(
                 "origin-center -rotate-90 text-primary",
                 indeterminate
-                  ? "animate-spin [animation-duration:1.4s] motion-reduce:animate-none"
-                  : "transition-[stroke-dashoffset] duration-150 motion-reduce:transition-none",
+                  ? "animate-spin motion-reduce:animate-none"
+                  : "transition-all duration-150 motion-reduce:transition-none",
               )}
+              style={
+                indeterminate
+                  ? ({ "--animate-spin": "spin 1.4s linear infinite" } as CSSProperties)
+                  : undefined
+              }
             />
           </svg>
           <SquareIcon
@@ -164,7 +171,9 @@ export function DownloadProgressButton({
             aria-hidden="true"
           />
         </span>
-        {showLabel ? (finishing ? finishingLabel : cancelShortLabel) : null}
+        {showLabel ? (
+          <span className="tabular-nums">{finishing ? finishingLabel : cancelShortLabel}</span>
+        ) : null}
       </Button>
       <ProgressAnnouncement text={announcement} />
     </>

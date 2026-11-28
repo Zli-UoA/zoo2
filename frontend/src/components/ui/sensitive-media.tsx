@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
 import { Button } from "./button";
@@ -38,8 +38,8 @@ export function SensitiveMedia({
         <Button
           type="button"
           variant="ghost"
-          className="relative block h-auto w-full overflow-hidden rounded-lg border p-0 whitespace-normal"
-          style={{ aspectRatio: imageAspectRatio(preview), minHeight: 80, maxHeight: 384 }}
+          className="relative block aspect-(--sensitive-aspect) h-auto w-full min-h-20 max-h-96 overflow-hidden rounded-lg border p-0 whitespace-normal"
+          style={{ "--sensitive-aspect": imageAspectRatio(preview) } as CSSProperties}
           aria-label={t("attachments.showSensitive")}
           title={t("attachments.sensitive")}
           aria-expanded="false"

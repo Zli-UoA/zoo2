@@ -34,7 +34,15 @@ import { usePostEditState } from "./usePostEditState";
 import { usePullToRefresh } from "./usePullToRefresh";
 import { Input } from "../ui/input";
 import { ExternalLink } from "../ui/external-link";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   HomeIcon,
@@ -637,17 +645,19 @@ function HomeScreenContent({
       />
       {newPosts > 0 && !postId ? (
         <div className="absolute inset-x-0 top-20 z-10 flex justify-center pointer-events-none">
-          <Button
-            className="pointer-events-auto rounded-full shadow-md"
-            onClick={() => {
-              virtualizer.scrollToOffset(0);
-              setNewPosts(0);
-              void refresh(true);
-            }}
-          >
-            <ArrowDownIcon className="rotate-180" />
-            {t("home.newPosts", { count: newPosts })}
-          </Button>
+          <span className="pointer-events-auto inline-flex rounded-full shadow-md">
+            <Button
+              shape="circle"
+              onClick={() => {
+                virtualizer.scrollToOffset(0);
+                setNewPosts(0);
+                void refresh(true);
+              }}
+            >
+              <ArrowDownIcon className="rotate-180" />
+              {t("home.newPosts", { count: newPosts })}
+            </Button>
+          </span>
         </div>
       ) : null}
       <div
@@ -692,8 +702,8 @@ function HomeScreenContent({
           {pull > 0 || pulling ? (
             <div
               role="status"
-              className="flex items-center justify-center gap-2 text-xs text-muted-foreground md:hidden"
-              style={{ height: pulling ? 60 : pull }}
+              className="flex h-(--pull-height) items-center justify-center gap-2 text-xs text-muted-foreground md:hidden"
+              style={{ "--pull-height": `${pulling ? 60 : pull}px` } as CSSProperties}
             >
               {pulling ? (
                 <RefreshCwIcon className="size-4 animate-spin" />
@@ -727,11 +737,13 @@ function HomeScreenContent({
             <ol
               ref={listRef}
               aria-label={t("home.timeline")}
-              style={{
-                position: "relative",
-                height: virtualizer.getTotalSize(),
-                overflowAnchor: "none",
-              }}
+              className="relative h-(--timeline-height) [overflow-anchor:var(--timeline-overflow-anchor)]"
+              style={
+                {
+                  "--timeline-height": `${virtualizer.getTotalSize()}px`,
+                  "--timeline-overflow-anchor": "none",
+                } as CSSProperties
+              }
             >
               {virtualRows.map((virtualRow) => {
                 const post = posts[virtualRow.index];
@@ -743,17 +755,15 @@ function HomeScreenContent({
                     ref={virtualizer.measureElement}
                     aria-posinset={virtualRow.index + 1}
                     aria-setsize={hasMore ? -1 : posts.length}
-                    className="border-b px-4 pt-4 pb-2"
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${virtualRow.start - listOffset}px)`,
-                      paddingInlineStart: postId
-                        ? `${16 + Math.min(post.tree_depth ?? 0, 6) * 16}px`
-                        : undefined,
-                    }}
+                    className="absolute top-0 left-0 w-full border-b pe-4 pt-4 pb-2 ps-(--row-indent) translate-y-(--row-offset)"
+                    style={
+                      {
+                        "--row-offset": `${virtualRow.start - listOffset}px`,
+                        "--row-indent": postId
+                          ? `${16 + Math.min(post.tree_depth ?? 0, 6) * 16}px`
+                          : "1rem",
+                      } as CSSProperties
+                    }
                     aria-current={postId === post.id ? "true" : undefined}
                   >
                     {!postId && post.parent_id ? (

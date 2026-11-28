@@ -1,5 +1,5 @@
 import { MfmContent } from "../chat/messages/MfmContent";
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useCollections } from "../../lib/electric/collections-context";
 import { joinUrl } from "../../lib/config";
 import { emojiImageStyle } from "../../lib/emoji/dimensions";
@@ -25,7 +25,15 @@ export function ActivityPubEmoji({
 }) {
   const { config } = useCollections();
   const [failed, setFailed] = useState<string | null>(null);
-  const style = { ...emojiImageStyle(emoji, size), maxWidth: "8em" };
+  const dimensions = emojiImageStyle(emoji, size);
+  // カスタムプロパティは React が数値に px を付けないので、ここで文字列に直す。
+  const px = (value: string | number | undefined) =>
+    typeof value === "number" ? `${value}px` : value;
+  const style = {
+    "--emoji-height": px(dimensions.height),
+    "--emoji-width": px(dimensions.width),
+    "--emoji-max-width": px(dimensions.maxWidth),
+  } as CSSProperties;
   const local = emoji.local && (/^https?:\/\//.test(emoji.url) || /^\/(?!\/)/.test(emoji.url));
   if (!local && !/^[a-f0-9]{64}$/.test(emoji.image_id)) return <span>{emoji.name}</span>;
   const src = local
@@ -35,8 +43,8 @@ export function ActivityPubEmoji({
     : joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${emoji.image_id}`);
   return (
     <span
-      className={`inline-block ${className}`}
-      style={{ ...style, overflow: "hidden", whiteSpace: "nowrap" }}
+      className={`inline-block ${className} h-(--emoji-height) w-(--emoji-width) max-w-(--emoji-max-width) overflow-hidden whitespace-nowrap`}
+      style={style}
       title={emoji.name}
     >
       {failed === emoji.image_id ? (
@@ -45,7 +53,7 @@ export function ActivityPubEmoji({
         <img
           src={src}
           alt={emoji.name}
-          style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
+          className="block h-full w-full object-contain"
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"

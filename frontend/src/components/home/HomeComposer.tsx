@@ -7,7 +7,15 @@ import {
 } from "../../lib/homePreferences";
 import { ActivityPubText, ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
-import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { cn } from "cn";
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type CSSProperties,
+  type Ref,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   ImagePlusIcon,
@@ -347,40 +355,31 @@ export function HomeComposer({
         } else setOpen(next);
       }}
     >
-      <DialogTrigger
-        render={
-          <Button
-            size="icon-lg"
-            className="absolute right-5 bottom-[max(1.25rem,env(safe-area-inset-bottom))] z-20 size-14 rounded-full shadow-lg transition-transform hover:-translate-y-0.5 md:right-8 md:bottom-8"
-            aria-label={t("home.openComposer")}
-            title={t("home.openComposer")}
-          />
-        }
-      >
-        <SquarePenIcon className="size-6" aria-hidden="true" />
-      </DialogTrigger>
+      <div className="absolute right-5 bottom-[max(1.25rem,env(safe-area-inset-bottom))] z-20 inline-flex rounded-full shadow-lg transition-transform hover:-translate-y-0.5 md:right-8 md:bottom-8">
+        <DialogTrigger
+          render={
+            <Button
+              size="icon-lg"
+              shape="circle"
+              className="size-14 hover:-translate-y-0.5"
+              aria-label={t("home.openComposer")}
+              title={t("home.openComposer")}
+            />
+          }
+        >
+          <SquarePenIcon className="size-6" aria-hidden="true" />
+        </DialogTrigger>
+      </div>
       {open ? (
         <DialogContent
           ref={viewportRef}
           showCloseButton={false}
           initialFocus={isDesktop ? inputRef : false}
-          className="flex flex-col gap-0 overflow-hidden p-0 max-md:top-0 max-md:h-dvh max-md:animate-none sm:max-w-xl"
-          style={
-            isDesktop
-              ? undefined
-              : {
-                  top: 0,
-                  left: 0,
-                  translate: "none",
-                  transform: "none",
-                  width: "100%",
-                  maxWidth: "none",
-                  height: "100dvh",
-                  maxHeight: "none",
-                  borderRadius: 0,
-                  animation: "none",
-                }
-          }
+          className={cn(
+            "flex flex-col gap-0 overflow-hidden p-0 max-md:top-0 max-md:h-dvh max-md:animate-none sm:max-w-xl",
+            !isDesktop &&
+              "top-0 left-0 w-full max-w-none h-dvh max-h-none translate-none transform-none rounded-none animate-none",
+          )}
         >
           <form
             className="flex h-full min-h-0 flex-col"
@@ -389,7 +388,12 @@ export function HomeComposer({
               void submit();
             }}
           >
-            <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2 pt-[max(.5rem,env(safe-area-inset-top))]">
+            <header
+              className="flex shrink-0 items-center gap-2 border-b px-3 py-2 pt-(--composer-safe-top)"
+              style={
+                { "--composer-safe-top": "max(.5rem, env(safe-area-inset-top))" } as CSSProperties
+              }
+            >
               <Button
                 type="button"
                 variant="ghost"
@@ -514,7 +518,14 @@ export function HomeComposer({
                 </Button>
               </div>
             </header>
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div
+              className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 pb-(--composer-safe-bottom)"
+              style={
+                {
+                  "--composer-safe-bottom": "max(1rem, env(safe-area-inset-bottom))",
+                } as CSSProperties
+              }
+            >
               {replyTo ? (
                 <div className="flex items-start gap-2 rounded-lg bg-muted p-3 text-xs">
                   <div className="min-w-0 flex-1">
@@ -623,7 +634,7 @@ export function HomeComposer({
                             );
                         }}
                       />
-                      <label className="flex items-center gap-1 text-[11px]">
+                      <label className="flex items-center gap-1 text-micro">
                         <Input
                           type="checkbox"
                           checked={image.is_sensitive ?? false}

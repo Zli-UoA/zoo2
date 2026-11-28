@@ -27,9 +27,9 @@ export function QrCodeImage({ bytes, label }: { bytes: number[]; label: string }
       aria-label={label}
       viewBox={`0 0 ${size} ${size}`}
       shapeRendering="crispEdges"
-      className="aspect-square w-full max-w-64 rounded-md bg-white"
+      className="aspect-square w-full max-w-64 rounded-md bg-white text-black"
     >
-      <path d={path} fill="#000" />
+      <path d={path} fill="currentColor" />
     </svg>
   );
 }
