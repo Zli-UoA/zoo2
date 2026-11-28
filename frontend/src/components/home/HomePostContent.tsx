@@ -137,7 +137,9 @@ export const HomePostContent = memo(function HomePostContent({
     useOptionalCollections()?.config.apiBaseUrl ?? resolvePublicConfig().apiBaseUrl;
   // Remove only the standalone link appended by the receiver, not links in the comment.
   const body =
-    quote && content.endsWith(`<${quote.uri}>`)
+    quote && content.endsWith(`\n\nRE: <${quote.uri}>`)
+      ? content.slice(0, -`\n\nRE: <${quote.uri}>`.length)
+      : quote && content.endsWith(`<${quote.uri}>`)
       ? content === `<${quote.uri}>`
         ? ""
         : content.endsWith(`\n\n<${quote.uri}>`)

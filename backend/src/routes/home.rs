@@ -67,6 +67,7 @@ struct NewPost {
     visibility: String,
     channel_id: Option<String>,
     in_reply_to: Option<String>,
+    quote_post_id: Option<String>,
 }
 fn local_visibility() -> String {
     "local".into()
@@ -125,6 +126,25 @@ async fn create(
         return Err(AppError::BadRequest(
             "Invalid ActivityPub audience or channel association".into(),
         ));
+    }
+    if let Some(id) = &body.quote_post_id {
+        let original = activitypub::interactions::target(&state, &user, id).await?;
+        if original["apub"] != true
+            || !matches!(original["visibility"].as_str(), Some("public" | "unlisted"))
+            || (original["visibility"] == "unlisted" && body.visibility == "public")
+        {
+            return Err(AppError::Forbidden("Quote audience unavailable".into()));
+        }
+        let uri = if original["remote"] == true {
+            id.clone()
+        } else {
+            format!("{}/api/activitypub/notes/{id}", activitypub::base_url()?)
+        };
+        let fallback = format!("RE: <{uri}>");
+        if activitypub::quotes::local_quote_uri(&fallback).is_none() {
+            return Err(AppError::BadRequest("Unsupported quote URI".into()));
+        }
+        body.content = format!("{}\n\n{fallback}", body.content.trim_end());
     }
     let parent = if let Some(id) = &body.in_reply_to {
         Some(activitypub::interactions::target(&state, &user, id).await?)

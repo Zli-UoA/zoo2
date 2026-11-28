@@ -321,7 +321,7 @@ internal class ConnectedScreenState(
         val body = data.text("content").let { content ->
             val rawQuoteUrl = quoteRow.text("uri")
             if (quote == null) content
-            else content.trimEnd().removeSuffix("<$rawQuoteUrl>").removeSuffix(rawQuoteUrl).trimEnd()
+            else content.trimEnd().removeSuffix("\n\nRE: <$rawQuoteUrl>").removeSuffix("<$rawQuoteUrl>").removeSuffix(rawQuoteUrl).trimEnd()
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
         val metadata = display.ifEmpty { data }

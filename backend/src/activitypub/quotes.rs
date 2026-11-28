@@ -135,6 +135,16 @@ async fn resolve(state: &AppState, user: &str, uri: &str) -> Result<(), AppError
     reposts::store_quoted_note(state, user, uri, &note).await
 }
 
+// The final RE line is the portable text fallback used by local quote posts.
+pub(crate) fn local_quote_uri(content: &str) -> Option<&str> {
+    let value = content
+        .lines()
+        .last()?
+        .strip_prefix("RE: <")?
+        .strip_suffix('>')?;
+    emoji::note_quote_uri(&json!({"quoteUrl": value})).map(|_| value)
+}
+
 pub(crate) async fn decorate(
     tx: &mut toasty::Transaction<'_>,
     user: &str,
@@ -149,12 +159,19 @@ pub(crate) async fn decorate(
         return Ok(());
     }
     let base = base_url().unwrap_or_default();
+    let local: std::collections::BTreeMap<_, _> = posts
+        .iter()
+        .flat_map(|p| [p, &p["parent"]])
+        .filter(|p| p["remote"] != true)
+        .filter_map(|p| Some((p["id"].as_str()?, local_quote_uri(p["content"].as_str()?)?)))
+        .collect();
     let sql = r#"WITH refs AS (
       SELECT p.id,p.quote_uri
       FROM (SELECT DISTINCT jsonb_array_elements_text($1::jsonb) AS id) ids
       CROSS JOIN LATERAL (
         SELECT id,quote_uri FROM apub_remote_posts WHERE id=ids.id AND quote_uri IS NOT NULL OFFSET 0
       ) p
+      UNION ALL SELECT key,value FROM jsonb_each_text($4::jsonb)
     ) SELECT json_build_object('id',r.id,'uri',r.quote_uri,'local',starts_with(r.quote_uri,$2 || '/api/activitypub/notes/'),'post',COALESCE(remote.post,local.post))::text FROM refs r
     LEFT JOIN LATERAL (
       SELECT json_build_object('id',p.id,'content',p.content,'user_name',p.user_name || '@' || split_part(p.actor_id,'/',3),'display_name',p.display_name,'created_at',p.published,'emojis',p.emojis,'actor_emojis',p.actor_emojis,'avatar',p.avatar,'media',p.media,'remote',true,'user_id',p.actor_id) AS post
@@ -168,7 +185,17 @@ pub(crate) async fn decorate(
       WHERE p.id=CASE WHEN starts_with(r.quote_uri,$2 || '/api/activitypub/notes/') THEN substr(r.quote_uri,length($2 || '/api/activitypub/notes/')+1) END AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
       OFFSET 0
     ) local ON true"#.replace("/* remote_quote */", REMOTE_QUOTE);
-    let quotes = query(tx, &sql, &[&json!(ids).to_string(), &base, user]).await?;
+    let quotes = query(
+        tx,
+        &sql,
+        &[
+            &json!(ids).to_string(),
+            &base,
+            user,
+            &json!(local).to_string(),
+        ],
+    )
+    .await?;
     if quotes.is_empty() {
         return Ok(());
     }
