@@ -20,7 +20,6 @@ const SHELL = [
   "/",
   "/index.html",
   "/offline.html",
-  "/manifest.webmanifest",
   "/favicon.ico",
   "/icons/zoo.svg",
   "/icons/favicon-32.png",
@@ -30,10 +29,6 @@ const SHELL = [
   "/icons/icon-512.png",
 ];
 const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
-// manifest はインストール済みのアプリが配色を参照する。キャッシュ優先のままだと
-// background_color の変更が古い端末に届かないため、常に取り直す。offline.html も
-// 同じく最新の表示を優先する（オフライン時は precache に戻る）。
-const FRESH_ASSETS = new Set(["/manifest.webmanifest", "/offline.html"]);
 
 // 暗号化チャンネルの Push の復号（#365。docs/e2ee.md の「Web Push の復号」）。`pnpm build` が
 // src/sw/push.ts から作る /sw-push.js が `self.zooDecryptPush` を置く（dev サーバーでは、何もしない
@@ -68,94 +63,24 @@ function cacheNameForIndex(html) {
  * 現在有効な app shell キャッシュを返す。install が書いたメタ情報のうち
  * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
  */
-async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true, knownNames = null) {
-  let names = [];
-  if (knownNames) {
-    names = knownNames.filter((name) => name.startsWith(prefix));
-  } else {
-    try {
-      names = (await caches.keys()).filter((name) => name.startsWith(prefix));
-    } catch {
-      return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
-    }
-  }
-  if (names.length === 0) return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
+async function findActiveShellCache() {
+  const names = (await caches.keys()).filter((name) => name.startsWith(POLICY_PREFIX));
   let latest = null;
-  let readFailed = false;
   for (const name of names) {
-    let installedAt = -1;
-    try {
-      const cache = await caches.open(name);
-      const meta = await cache.match(META_PATH);
-      if (meta) {
-        const value = Number(await meta.text());
-        if (Number.isFinite(value)) installedAt = value;
-      }
-    } catch {
-      readFailed = true;
-      /* An unreadable cache is not the latest. */
-    }
-    if (installedAt >= 0 && (!latest || installedAt > latest.installedAt))
+    const cache = await caches.open(name);
+    const meta = await cache.match(META_PATH);
+    if (!meta) continue;
+    const installedAt = Number(await meta.text());
+    if (Number.isFinite(installedAt) && (!latest || installedAt > latest.installedAt)) {
       latest = { name, installedAt };
+    }
   }
-  if (readFailed && !fallback) return null;
   if (latest) return latest.name;
   for (const name of names) {
-    try {
-      const cache = await caches.open(name);
-      if (await cache.match("/index.html")) return name;
-    } catch {
-      /* Try the next candidate. */
-    }
+    const cache = await caches.open(name);
+    if (await cache.match("/index.html")) return name;
   }
-  return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
-}
-
-const TRANSPORT_HEADERS = [
-  "content-encoding",
-  "content-length",
-  "transfer-encoding",
-  "cache-control",
-  "etag",
-  "last-modified",
-  "expires",
-  "pragma",
-  "age",
-  "date",
-  "connection",
-  "keep-alive",
-  "vary",
-  "set-cookie",
-];
-
-async function fetchBounded(input, init = {}) {
-  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function")
-    return await fetch(input, { ...init, signal: AbortSignal.timeout(10_000) });
-  // AbortSignal.timeout の無い Service Worker でも取得できるようにする。
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
-    // HTTP エラーはヘッダー受信時点で呼び出し元へ渡す（本文の停止を待たない）。
-    if (!response.ok) return response;
-    // fetch() はヘッダー受信で解決するため、本文を読み切るまで期限を維持する。
-    await response.clone().arrayBuffer();
-    return response;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function cacheHeaders(response, validators = false) {
-  const headers = new Headers(response.headers);
-  if (validators) {
-    for (const name of ["etag", "last-modified"])
-      if (headers.has(name)) headers.set(`x-zoo-${name}`, headers.get(name));
-  }
-  for (const name of TRANSPORT_HEADERS) headers.delete(name);
-  // The browser may otherwise revalidate a cached response with the network.
-  headers.set("cache-control", "no-store");
-  return headers;
+  return DEFAULT_CACHE;
 }
 
 /**
@@ -167,7 +92,31 @@ function cacheHeaders(response, validators = false) {
  */
 async function cacheResponse(cache, request, response, validators = false) {
   const body = await response.arrayBuffer();
-  const headers = cacheHeaders(response, validators);
+  const headers = new Headers(response.headers);
+  if (validators) {
+    for (const name of ["etag", "last-modified"])
+      if (headers.has(name)) headers.set(`x-zoo-${name}`, headers.get(name));
+  }
+  for (const name of [
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "cache-control",
+    "etag",
+    "last-modified",
+    "expires",
+    "pragma",
+    "age",
+    "date",
+    "connection",
+    "keep-alive",
+    "vary",
+    "set-cookie",
+  ]) {
+    headers.delete(name);
+  }
+  // The browser may otherwise revalidate a cached response with the network.
+  headers.set("cache-control", "no-store");
   const sanitized = new Response(body, {
     status: response.status,
     statusText: response.statusText,
@@ -265,30 +214,6 @@ async function fetchShellIndex() {
   return null;
 }
 
-async function shellCacheNamesNewestFirst(except) {
-  let keys;
-  try {
-    keys = await caches.keys();
-  } catch {
-    return null;
-  }
-  const candidates = [];
-  for (const name of keys.filter((name) => name.startsWith(CACHE_PREFIX) && name !== except)) {
-    let installedAt = 0;
-    try {
-      const cache = await caches.open(name);
-      const meta = await cache.match(META_PATH);
-      const value = meta ? Number(await meta.text()) : 0;
-      if (Number.isFinite(value)) installedAt = value;
-    } catch {
-      /* A cache whose metadata is unreadable is treated as unknown age. */
-    }
-    candidates.push({ name, installedAt });
-  }
-  candidates.sort((a, b) => b.installedAt - a.installedAt);
-  return candidates.map((candidate) => candidate.name);
-}
-
 async function precacheShell() {
   const index = await fetchShellIndex();
   // Without the app shell there is nothing safe to replace; keep the old cache.
@@ -300,140 +225,26 @@ async function precacheShell() {
     /* Keep the default cache name when the body cannot be read. */
   }
   const name = cacheNameForIndex(html);
-  const existed = (await caches.keys()).includes(name);
   const cache = await caches.open(name);
-  const savedPaths = new Set();
-  try {
-    if (!(await precacheIndexAssets(cache, index))) {
-      throw new Error("Cannot install an app shell without its entry assets");
-    }
-    const cached = await cacheResponse(cache, "/index.html", index);
-    // Navigation fallbacks check /index.html first, but keep / for old clients.
-    await cache.put("/", cached.clone());
-    // Fetch each entry separately: one missing icon must not fail the install.
-    await Promise.all(
-      SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
-        try {
-          const bounded = path === "/manifest.webmanifest" || path === "/offline.html";
-          const response = bounded
-            ? await fetchBounded(path, { cache: "reload" })
-            : await fetch(path, { cache: "reload" });
-          if (!response.ok) return;
-          // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
-          if (path === "/offline.html") {
-            if (!isFreshAssetResponse(path, response) || !(await isOfflinePage(response))) return;
-          }
-          if (path === "/manifest.webmanifest") {
-            if (!isFreshAssetResponse(path, response) || !(await isFreshManifest(response))) return;
-          }
-          await cacheResponse(cache, path, response, bounded);
-          savedPaths.add(path);
-        } catch {
-          /* Offline installs fall back to the runtime cache. */
-        }
-      }),
-    );
-    // 欠けた／不正な応答で保存できなかった分は旧シェルから引き継ぐ。新しいキャッシュが
-    // 選択されたあとにオフラインになっても、案内と配色設定を読めるようにする。
-    // 未解決のアセットだけを記録し、アセットごとに解消していく。
-    const unresolved = new Set();
-    // ファイルごとに、新しい世代から順に有効なコピーを探す。
-    const sources = await shellCacheNamesNewestFirst(name);
-    for (const path of ["/manifest.webmanifest", "/offline.html"]) {
-      // 今回の取得に成功したパスは上書きしない。
-      if (savedPaths.has(path)) continue;
-      let savedHere = null;
-      let destinationUnreadable = false;
-      let hereUsable = false;
-      try {
-        savedHere = await cache.match(path);
-        hereUsable = await isUsableFreshAsset(path, savedHere);
-      } catch {
-        // 保存先を読めない場合は、旧キャッシュから復元を試みる。
-        destinationUnreadable = true;
-      }
-      if (!sources) {
-        if (!hereUsable) unresolved.add(path);
-        continue;
-      }
-      let readFailed = false;
-      let restored = false;
-      let best = hereUsable ? savedHere : null;
-      let bestTime = best ? Date.parse(best.headers.get("x-zoo-last-modified") || "") : -Infinity;
-      let bestHasTime = Number.isFinite(bestTime);
-      let bestFromHere = hereUsable;
-      for (const source of sources) {
-        try {
-          const saved = await (await caches.open(source)).match(path);
-          if (!(await isUsableFreshAsset(path, saved))) continue;
-          const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
-          const hasTime = Number.isFinite(modified);
-          // 両方に更新日時があるときだけ比較し、片方に無ければ新しい世代（一覧の順）を採る。
-          const better = !best || (hasTime && bestHasTime && modified > bestTime);
-          if (better) {
-            best = saved;
-            bestTime = hasTime ? modified : -Infinity;
-            bestHasTime = hasTime;
-            bestFromHere = false;
-          }
-        } catch {
-          // 本文が読めない場合は、旧キャッシュを消さないため記録する。
-          readFailed = true;
-        }
-      }
-      restored = bestFromHere;
-      if (best && !bestFromHere) {
-        // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
-        try {
-          await cache.put(
-            path,
-            path === "/manifest.webmanifest" ? best.clone() : await sanitizedCopy(best.clone()),
-          );
-          restored = true;
-        } catch {
-          readFailed = true;
-        }
-      }
-      // 他に候補があるのに復元できなかった場合だけ未解決とする。
-      if (
-        !restored &&
-        (readFailed || destinationUnreadable) &&
-        (sources === null || sources.length > 0)
-      )
-        unresolved.add(path);
-    }
-    // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
-    const hasOffline = await isUsableFreshAsset(
-      "/offline.html",
-      await cache.match("/offline.html").catch(() => null),
-    ).catch(() => false);
-    if (!hasOffline) {
-      let legacyKeys = [];
-      try {
-        legacyKeys = await caches.keys();
-      } catch {
-        unresolved.add("/offline.html");
-      }
-      if (legacyKeys.includes("zoo-offline-v1")) {
-        try {
-          const saved = await (await caches.open("zoo-offline-v1")).match("/offline.html");
-          if (await isUsableFreshAsset("/offline.html", saved)) {
-            await cache.put("/offline.html", await sanitizedCopy(saved.clone()));
-            unresolved.delete("/offline.html");
-          }
-        } catch {
-          unresolved.add("/offline.html");
-        }
-      }
-    }
-    if (unresolved.size) throw new Error("Cannot carry over a cached app asset");
-    // Write the marker last so a partially precached cache is not selected.
-    await cache.put(META_PATH, new Response(String(Date.now())));
-  } catch (error) {
-    // 今回作成した途中のキャッシュを残すと、次回も容量不足で更新できない。
-    if (!existed) await caches.delete(name).catch(() => {});
-    throw error;
+  if (!(await precacheIndexAssets(cache, index))) {
+    throw new Error("Cannot install an app shell without its entry assets");
   }
+  const cached = await cacheResponse(cache, "/index.html", index);
+  // Navigation fallbacks check /index.html first, but keep / for old clients.
+  await cache.put("/", cached.clone());
+  // Fetch each entry separately: one missing icon must not fail the install.
+  await Promise.all(
+    SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
+      try {
+        const response = await fetch(path, { cache: "reload" });
+        if (response.ok) await cacheResponse(cache, path, response);
+      } catch {
+        /* Offline installs fall back to the runtime cache. */
+      }
+    }),
+  );
+  // Write the marker last so a partially precached cache is not selected.
+  await cache.put(META_PATH, new Response(String(Date.now())));
 }
 
 async function refreshNavigation(request, background = false) {
@@ -459,7 +270,7 @@ async function refreshNavigation(request, background = false) {
     return (
       (await cache.match("/index.html")) ||
       (await cache.match("/")) ||
-      (await cachedFreshAsset("/offline.html")) ||
+      (await cache.match("/offline.html")) ||
       Response.error()
     );
   }
@@ -501,355 +312,6 @@ async function handleAsset(request) {
   } catch {
     return Response.error();
   }
-}
-
-// nginx の try_files は見つからないファイルに index.html を返す。HTML を manifest として
-// 保存するとオフライン起動の配色まで壊れるため拒否する。本番の nginx は webmanifest を
-// application/octet-stream で配信するため、JSON 系だけを許可することはできない。
-function isFreshAssetResponse(path, response) {
-  const type = (response.headers.get("content-type") || "").toLowerCase();
-  // offline.html は HTML そのものなので、こちらは HTML を要求する。
-  return path === "/offline.html" ? type.includes("text/html") : !type.includes("text/html");
-}
-
-async function isFreshManifest(response) {
-  // 本文が読めない場合は解析失敗と区別するため、読み取りエラーをそのまま送出する。
-  const text = await response.clone().text();
-  try {
-    const parsed = JSON.parse(text);
-    return (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      (typeof parsed.name === "string" || typeof parsed.short_name === "string") &&
-      typeof parsed.start_url === "string" &&
-      Array.isArray(parsed.icons) &&
-      parsed.icons.length > 0
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function isOfflinePage(response) {
-  const text = await response.clone().text();
-  // 旧形式の案内ページにもマーカーはない。title の閉じタグは改行で split されていたため空白を許容する。
-  return text.includes('name="zoo-offline"') || /<title>\s*Zoo — Offline\s*<\/title\s*>/.test(text);
-}
-
-async function isUsableFreshAsset(path, response) {
-  if (!response) return false;
-  return (
-    isFreshAssetResponse(path, response) &&
-    (path !== "/manifest.webmanifest" || (await isFreshManifest(response))) &&
-    (path !== "/offline.html" || (await isOfflinePage(response)))
-  );
-}
-
-async function sanitizedCopy(saved) {
-  return new Response(await saved.arrayBuffer(), {
-    status: saved.status,
-    statusText: saved.statusText,
-    headers: cacheHeaders(saved),
-  });
-}
-
-function notModified(cached) {
-  const headers = new Headers();
-  const etag = cached.headers.get("x-zoo-etag");
-  if (etag) headers.set("ETag", etag);
-  return new Response(null, { status: 304, headers });
-}
-
-function parseETagList(value, weak) {
-  // 引用符内のカンマは区切りとして扱わない。
-  const tags = [];
-  let current = "";
-  let quoted = false;
-  for (const character of value || "") {
-    if (character === '"') {
-      quoted = !quoted;
-      current += character;
-    } else if (character === "," && !quoted) {
-      tags.push(current.trim());
-      current = "";
-    } else {
-      current += character;
-    }
-  }
-  tags.push(current.trim());
-  return tags.map((tag) => (weak ? tag.replace(/^W\//, "") : tag));
-}
-
-function cachedForConditional(request, cached) {
-  if (cached.type === "error") return cached;
-  const value = request.headers?.get?.("if-none-match");
-  if (value) {
-    // 前後の空白を除いてから W/ を処理する。ETag が指定されたらこれで判定を終える。
-    const tags = parseETagList(value, true);
-    const etag = cached.headers.get("x-zoo-etag")?.trim().replace(/^W\//, "");
-    // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
-    if (tags.includes("*") || (etag && tags.includes(etag))) return notModified(cached);
-    return cached;
-  }
-  const since = request.headers?.get?.("if-modified-since");
-  const modified = cached.headers.get("x-zoo-last-modified");
-  if (since && modified && Date.parse(modified) <= Date.parse(since)) return notModified(cached);
-  return cached;
-}
-
-function cachedForOnlyIfCached(request, cached) {
-  if (cached.type === "error") return cached;
-  // 事前条件を先に評価する。If-Match: * は保存版があれば成立する。
-  const match = request.headers?.get?.("if-match");
-  if (match) {
-    const etag = cached.headers.get("x-zoo-etag")?.trim();
-    const strong = etag && !etag.startsWith("W/");
-    const tags = parseETagList(match, false);
-    if (!tags.includes("*") && (!strong || !tags.includes(etag)))
-      return new Response(null, { status: 412 });
-  } else {
-    const unmodified = request.headers?.get?.("if-unmodified-since");
-    const modified = cached.headers.get("x-zoo-last-modified");
-    if (unmodified && modified && Date.parse(modified) > Date.parse(unmodified))
-      return new Response(null, { status: 412 });
-  }
-  return cachedForConditional(request, cached);
-}
-
-const freshAssetWrites = new Map();
-let freshAssetSequence = 0;
-
-function noteFreshAssetSequence(path, sequence, etag = null) {
-  const previous = freshAssetWrites.get(path);
-  if (!previous || previous.sequence < sequence)
-    freshAssetWrites.set(path, { sequence, etag, promise: previous?.promise ?? Promise.resolve() });
-}
-
-async function writeFreshAsset(path, cache, response, sequence) {
-  // 取得開始順が古い応答は、直後に届いても新しい保存版を上書きしない。
-  // ただし 304 で確認済みの版と同じ ETag なら、記録した最大の番号を維持して保存する。
-  const previous = freshAssetWrites.get(path);
-  const incomingEtag = response.headers.get("etag");
-  const sameVersion = (entry) => entry?.etag && incomingEtag === entry.etag;
-  const effective = sameVersion(previous) ? Math.max(previous.sequence, sequence) : sequence;
-  const stale = (entry) => entry && entry.sequence > effective && !sameVersion(entry);
-  if (stale(previous)) return;
-  const work = (previous?.promise ?? Promise.resolve())
-    .catch(() => {})
-    .then(async () => {
-      if (stale(freshAssetWrites.get(path))) return;
-      const body = await response.arrayBuffer();
-      // 本文を読んでいる間に 304 が届くことがある。同じ版なら保存を続ける。
-      if (stale(freshAssetWrites.get(path))) return;
-      const sanitized = new Response(body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: cacheHeaders(response, true),
-      });
-      await cache.put(path, sanitized.clone());
-      return sanitized;
-    });
-  freshAssetWrites.set(path, {
-    sequence: effective,
-    etag: sameVersion(previous) ? previous.etag : incomingEtag,
-    // 保存失敗は呼び出し側へ返すが、共有する promise は未処理例外にしない。
-    promise: work.catch(() => {}),
-  });
-  return await work;
-}
-
-async function fetchConditionalAsset(request, path, sequence) {
-  // 条件付き GET は共有もキャッシュ更新もしない。
-  const headers = request.headers;
-  const precondition =
-    headers?.get?.("if-match") || headers?.get?.("if-unmodified-since") ? true : false;
-  try {
-    const response = await fetchBounded(request, { cache: "reload" });
-    // 304 / 412 などの 4xx は呼び出し元へ届ける。キャッシュで上書きしない。
-    if (response.status === 304 || !response.ok || response.status >= 600) {
-      if (response.status === 304)
-        noteFreshAssetSequence(
-          path,
-          sequence,
-          response.headers.get("etag") || response.headers.get("ETag"),
-        );
-      if (precondition && (response.status === 0 || response.status >= 500)) return response;
-      if (precondition || response.status < 500) return response;
-      const cached = cachedForConditional(request, await cachedFreshAsset(path));
-      return cached.type === "error" ? response : cached;
-    }
-    // 200 が返っても try_files の HTML かもしれないので本文を検証する。
-    let usable = false;
-    try {
-      usable = await isUsableFreshAsset(path, response);
-    } catch {
-      usable = false;
-    }
-    if (usable) {
-      if (response.type !== "basic") return response;
-      // 有効な全文が返ったなら、オフライン用の保存版も更新する。
-      const fresh = response.clone();
-      try {
-        const cache = await caches.open(await findActiveShellCache());
-        await writeFreshAsset(path, cache, response, sequence);
-      } catch {
-        /* Storage failure: still serve the fetched response. */
-      }
-      return fresh;
-    }
-    // HTML フォールバックなどは manifest として届けない。
-    if (precondition) return Response.error();
-    return cachedForConditional(request, await cachedFreshAsset(path));
-  } catch {
-    // If-Match などで指定された版は、保存済みの別版では代用できない。
-    if (precondition) return Response.error();
-    return cachedForConditional(request, await cachedFreshAsset(path));
-  }
-}
-
-function withoutRange(request) {
-  if (typeof Request !== "undefined" && request instanceof Request) {
-    const headers = new Headers(request.headers);
-    headers.delete("range");
-    return new Request(request, { headers });
-  }
-  const headers = request.headers;
-  return {
-    ...request,
-    headers: {
-      get: (name) => (name.toLowerCase() === "range" ? null : (headers?.get?.(name) ?? null)),
-    },
-  };
-}
-
-const freshAssetWork = new Map();
-
-function handleFreshAsset(request) {
-  const url = new URL(request.url, self.location.origin);
-  const path = url.pathname;
-  // 共有はクエリを含む URL 単位。保存先は pathname で共通する。
-  const key = url.href;
-  const sequence = ++freshAssetSequence;
-  // キャッシュだけを使う要求は、条件ヘッダーの有無にかかわらず通信しない。
-  if (request.cache === "only-if-cached")
-    return cachedFreshAsset(path).then((cached) => cachedForOnlyIfCached(request, cached));
-  // Range / 条件付き GET は部分応答・304 になり得るので、共有もキャッシュ更新もしない。
-  const headers = request.headers;
-  if (
-    headers?.get("range") ||
-    headers?.get("if-none-match") ||
-    headers?.get("if-modified-since") ||
-    headers?.get("if-match") ||
-    headers?.get("if-unmodified-since")
-  ) {
-    // 部分応答では try_files の HTML を判別できないため、Range を外して全文を検証する。
-    if (headers.get("range")) return fetchConditionalAsset(withoutRange(request), path, sequence);
-    return fetchConditionalAsset(request, path, sequence);
-  }
-  // 同じ URL の同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
-  const pending = freshAssetWork.get(key);
-  // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。
-  if (pending) return pending.then((response) => response.clone());
-  const work = fetchFreshAsset(request, path, sequence).finally(() => freshAssetWork.delete(key));
-  freshAssetWork.set(key, work);
-  return work.then((response) => response.clone());
-}
-
-async function fetchFreshAsset(request, path, sequence) {
-  let response;
-  try {
-    // サーバーが応答を返さない／本文が途中で止まる場合も、保存済みの版に戻れるようにする。
-    response = await fetchBounded(request, { cache: "reload" });
-  } catch {
-    return await cachedFreshAsset(path);
-  }
-  let acceptable = false;
-  try {
-    acceptable = response.ok && (await isUsableFreshAsset(path, response));
-  } catch {
-    return await cachedFreshAsset(path, response.ok ? null : response);
-  }
-  if (acceptable) {
-    if (response.type !== "basic") return response;
-    // 取得した案内ページ自身の CSP を保持するため、シェルの CSP では上書きしない。
-    // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
-    const fresh = response.clone();
-    try {
-      const cache = await caches.open(await findActiveShellCache());
-      // クエリ付きで開いても同じ案内／manifest を使うため、pathname をキーにする。
-      await writeFreshAsset(path, cache, response, sequence);
-    } catch {
-      /* Storage quota or Cache API failure: still serve the fresh response. */
-    }
-    return fresh;
-  }
-  return await cachedFreshAsset(path, response.ok ? null : response);
-}
-
-async function cachedFreshAsset(path, networkResponse = null) {
-  // 現行のポリシーのキャッシュを優先する。案内ページ自身の CSP はそのまま返す。
-  let names = [];
-  try {
-    names = (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX));
-  } catch {
-    // 書き込み側と同じ既定の保存先を読む。
-    names = [DEFAULT_CACHE];
-  }
-  const candidates = [];
-  for (const name of names) {
-    let installedAt = 0;
-    try {
-      const cache = await caches.open(name);
-      const meta = await cache.match(META_PATH);
-      const value = meta ? Number(await meta.text()) : 0;
-      if (Number.isFinite(value)) installedAt = value;
-    } catch {
-      /* An unreadable cache has an unknown age. */
-    }
-    candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
-  }
-  // 候補を集めてから全体に適用する優先順位で選ぶ。列挙順には依存しない。
-  const entries = [];
-  for (const { name, current, installedAt } of candidates) {
-    try {
-      const cache = await caches.open(name);
-      const saved = await cache.match(path);
-      if (!(await isUsableFreshAsset(path, saved))) continue;
-      const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
-      entries.push({
-        name,
-        saved,
-        current,
-        installedAt,
-        modified: Number.isFinite(modified) ? modified : null,
-      });
-    } catch {
-      /* Try the next generation when one cache cannot be read. */
-    }
-  }
-  const allHaveTime = entries.length > 0 && entries.every((entry) => entry.modified !== null);
-  const current = entries.filter((entry) => entry.current);
-  // 現行ポリシーの候補だけに日時が揃っていれば、日時のない旧候補に邪魔されず比較する。
-  const comparable = allHaveTime
-    ? entries
-    : current.length > 0 && current.every((entry) => entry.modified !== null)
-      ? current
-      : null;
-  if (comparable) {
-    const best = [...comparable].sort((a, b) => {
-      if (a.modified !== b.modified) return b.modified - a.modified;
-      if (a.installedAt !== b.installedAt) return b.installedAt - a.installedAt;
-      return a.name.localeCompare(b.name);
-    })[0];
-    if (best) return best.saved;
-  }
-  entries.sort((a, b) => {
-    if (a.current !== b.current) return a.current ? -1 : 1;
-    if (a.installedAt !== b.installedAt) return b.installedAt - a.installedAt;
-    return a.name.localeCompare(b.name);
-  });
-  return entries[0]?.saved || networkResponse || Response.error();
 }
 
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
@@ -975,20 +437,8 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      let names;
-      try {
-        names = await caches.keys();
-      } catch {
-        // 使用中のシェルが分からないときに削除すると、オフライン起動ができなくなる。
-        await self.clients.claim();
-        return;
-      }
-      const active = await findActiveShellCache(POLICY_PREFIX, false, names);
-      if (!active) {
-        await self.clients.claim();
-        return;
-      }
-      for (const name of names) {
+      const active = await findActiveShellCache();
+      for (const name of await caches.keys()) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
         if (
           (managed && name !== active) ||
@@ -1062,6 +512,21 @@ self.addEventListener("message", (event) => {
   );
 });
 
+// manifest は素通しにして常にサーバーの最新版を使う。古い SW がキャッシュを返す経路も
+// ここで外す（sw.js の更新時に install が走る）。
+async function handleOfflinePage(request) {
+  const cache = await caches.open(await findActiveShellCache());
+  try {
+    const response = await fetch(request, { cache: "reload" });
+    // try_files で index.html が返っても案内ページとしては保存しない。
+    if (response.ok && (await response.clone().text()).includes('name="zoo-offline"'))
+      await cacheResponse(cache, "/offline.html", response.clone());
+    return response;
+  } catch {
+    return (await cache.match("/offline.html")) || Response.error();
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
@@ -1077,10 +542,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
-  if (FRESH_ASSETS.has(url.pathname)) {
-    // /offline.html を直接開いたナビゲーションもここで取り直してキャッシュを更新する。
-    event.respondWith(handleFreshAsset(event.request));
-  } else if (event.request.mode === "navigate") {
+  if (url.pathname === "/offline.html") {
+    event.respondWith(handleOfflinePage(event.request));
+    return;
+  }
+  if (event.request.mode === "navigate") {
     event.respondWith(handleNavigation(event.request, event));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));

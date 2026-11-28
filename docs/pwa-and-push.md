@@ -13,7 +13,7 @@ Android の Chrome でインストール済みの PWA を開いた直後に出�
 
 スプラッシュの背景は OS の配色設定に従わず、常に manifest の `background_color`（黒）になる。一方、起動後のステータスバーは `<meta name="theme-color">` が OS の明深色に合わせて黄色／黒を切り替える。OS ダークでは変更前の黄色から黒に変わる。どちらもアプリ内のテーマ設定（`zoo-theme`）には従わないため、OS がダークでアプリ内がライトの場合はステータスバーが黒、画面がライトになる。
 
-`/manifest.webmanifest` は Service Worker が毎回 network-first で取り直す（`public/sw.js`）。新しい Service Worker が有効になったあとの manifest の変更は、再 install を待たずに配信できる。それ以前の Service Worker が制御している端末では、更新が有効になるまで従来のキャッシュ優先のままになる。ネットワークが使えないとき、サーバーがエラーを返したとき、返ってきた内容が manifest として読めないときは保存済みの版を使う。OS がスプラッシュの配色自体をキャッシュしている場合は、端末側の更新または再インストールが必要になることがある。
+`public/sw.js` は `/manifest.webmanifest` をキャッシュ対象から外し、Service Worker を通さずサーバーから取得する。旧 Service Worker がキャッシュした manifest を返す経路も、sw.js の更新時に install が走ることで解消される。`/offline.html` は取得できたときだけ保存し、失敗したときは保存済みの案内を返す。OS がスプラッシュの配色自体をキャッシュしている場合は、端末側の更新または再インストールが必要になることがある。
 
 オフライン用の `public/offline.html` も OS のダーク設定に合わせて背景を黒にする。アプリ本体のスケルトンは既存の dark テーマの `--background` に従う。
 
