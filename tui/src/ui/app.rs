@@ -19,14 +19,16 @@ use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
 use super::global_search::{self, GlobalSearch};
-use super::links::{BodyLinks, DrawCache, LOAD_TIMEOUT, LinkView};
+use super::links::{BodyLinks, DrawCache, LinkView};
 use crate::{
     api::{ApiClient, Me, NotificationLevel, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
         send::{self, ChannelSender, SendContext},
         store::{Decryption, EncryptedRow, RecipientSummary},
     },
-    electric::{self, Batch, LinkedEvent, ShapeEvent, ShapeId},
+    electric::{
+        self, Batch, LOAD_TIMEOUT, LinkedCache, LinkedEvent, LinkedKey, ShapeEvent, ShapeId,
+    },
     http::{ApiError, Credentials},
     store::Store,
 };
@@ -350,12 +352,10 @@ pub struct App {
     emoji_poll: PollGate,
     typing_poll: PollGate,
     /// 本文のアプリ内リンクの、リンク先の取得。
-    pub links: super::links::Links,
+    pub links: LinkedCache,
     pub(super) parsed_links: super::links::ParsedLinks,
     /// リンクで開いた、まだ同期していない行き先。返信と分かればスレッドを開く。
     pending_link: Option<PendingLink>,
-    /// 暗号文の行が届いたことのあるチャンネル。行を捨てたあとも、起動中は暗号化として扱う。
-    ciphertext_channels: HashSet<String>,
     /// チャンネルごとの、本同期の待ち始めと停止。
     sync_waits: HashMap<String, SyncWait>,
     /// 暗号化の画面と、その裏の処理。
@@ -473,7 +473,6 @@ impl App {
             links: Default::default(),
             parsed_links: Default::default(),
             pending_link: None,
-            ciphertext_channels: HashSet::new(),
             sync_waits: HashMap::new(),
         };
         for id in [
@@ -501,10 +500,7 @@ impl App {
             self.begin_message_resync(channel_id);
             // 本同期が同じ行を持つので、リンク先を取る購読は閉じる。取得できた結果は、同期が
             // そろうまで使う。
-            self.links.release(channel_id);
-            self.links
-                .visible
-                .retain(|(channel, _)| channel != channel_id);
+            self.links.close(channel_id);
         }
         // 止まった購読を作り直すときは最初から取り直すので、止まっていた間の行は捨てる。
         // 物理削除された行は新しいスナップショットに現れないため、捨てないと残り続ける。
@@ -592,11 +588,8 @@ impl App {
         // この行で本同期がそろうかもしれないチャンネル。
         let syncing = match &event {
             ShapeEvent::Batch(id @ ShapeId::Messages(channel_id), batch) => {
-                if batch.changes.iter().any(|change| {
-                    matches!(change, electric::Change::Upsert { row, .. }
-                        if electric::has_ciphertext(row))
-                }) {
-                    self.ciphertext_channels.insert(channel_id.clone());
+                if batch.has_ciphertext() {
+                    self.links.saw_ciphertext(channel_id);
                 }
                 let synced = self.store.is_synced(id);
                 // そろっていた行を取り直すときは、ここから待ち直す。停止の知らせのあとに行が届くのは、
@@ -778,13 +771,7 @@ impl App {
             } => {
                 self.recipients.insert(channel_id, summary);
             }
-            AppEvent::Linked(generation, event) => {
-                // 暗号文が届いたことは、購読を閉じたあとに知っても覚える。
-                if let LinkedEvent::Ciphertext { channel_id } = &event {
-                    self.ciphertext_channels.insert(channel_id.clone());
-                }
-                self.links.apply(generation, event);
-            }
+            AppEvent::Linked(generation, event) => self.links.apply(generation, event),
             AppEvent::KnownEncryptedChannels { known, failed } => {
                 self.known_encrypted_in_flight = false;
                 self.known_encrypted_loaded = true;
@@ -2126,7 +2113,7 @@ impl App {
     }
 
     /// 取得が要るリンク先。見られるチャンネルのメッセージで、開いているチャンネル以外のもの。
-    pub fn link_key(&self, target: &LinkTarget) -> Option<super::links::Key> {
+    pub fn link_key(&self, target: &LinkTarget) -> Option<LinkedKey> {
         let message_id = target.linked_message_id()?;
         if self.current.as_deref() == Some(target.channel_id.as_str()) {
             return None;
@@ -3351,7 +3338,7 @@ impl App {
 
     /// このチャンネルで、暗号文の行が届いたことがあるか（リンク先の取得で届いた行を含む）。
     fn has_ciphertext(&self, channel_id: &str) -> bool {
-        self.ciphertext_channels.contains(channel_id)
+        self.links.has_ciphertext(channel_id)
             || self
                 .store
                 .visible_messages(channel_id)

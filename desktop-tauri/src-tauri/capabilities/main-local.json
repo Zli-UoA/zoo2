@@ -20,6 +20,7 @@
     "allow-zoo-resync",
     "allow-zoo-account-profiles",
     "allow-zoo-send-message",
-    "allow-zoo-invoke-app-action"
+    "allow-zoo-invoke-app-action",
+    "allow-zoo-watch-links"
   ]
 }

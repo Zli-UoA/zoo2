@@ -68,6 +68,7 @@ ShapeEvent ─▶ 1 本のループ
 - イベントは 1 本のループから順に送るので、WebView 側に届く順番は Shape に届いた順と同じになる。
 - `zoo_resync` で送る各バッチは `reset: true` なので、何度受け取っても WebView 側の状態は同じになる。読み込み直しで行が抜けたり二重になったりしない。
 - チャンネルを切り替えると、WebView 側は前のチャンネルの行を `Store::forget` で捨ててから `zoo_open_channel` を呼ぶ。Rust 側は前のチャンネルの購読タスクを止め、`Replica::forget` する。
+- 本文のチャンネル・メッセージのリンクの埋め込み（[mfm.md](mfm.md) の「チャンネル・メッセージのリンクの表示」）では、開いているチャンネル以外のリンク先を Rust 側が取る。WebView 側は画面の近くのリンク先を `zoo_watch_links` で伝え、Rust 側は `client-core` の `electric::LinkedCache` でチャンネルごとの購読を持って、分かったことを `zoo://linked` で返す（[request-design.md](request-design.md) の「メッセージリンクの埋め込み」）。どちらも (a) の同梱の画面だけが使う。
 - 書き込みの結果は Shape で届くので、検証の段階では楽観的な表示はしない。`SendResult::txid` は、後で楽観的な表示を入れるときに使う。
 
 ### (b) React（リモート）

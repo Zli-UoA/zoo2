@@ -8,6 +8,7 @@ pub mod accounts;
 pub use zoo_components as components;
 pub mod api;
 pub mod ipc;
+pub mod link_store;
 pub mod links;
 pub mod mentions;
 pub mod mfm;

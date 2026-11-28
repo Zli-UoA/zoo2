@@ -17,7 +17,7 @@ use anyhow::{Result, anyhow};
 use jiff::{civil::DateTime, tz::TimeZone};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
-    sync::{Mutex, mpsc},
+    sync::{Mutex, Notify, mpsc},
     task::{AbortHandle, JoinHandle},
 };
 use zoo2_client_core::{
@@ -29,15 +29,16 @@ use zoo2_client_core::{
         token::{self, StoredTokens, TokenManager},
     },
     config::{AuthConfig, Config, OidcConfig, config_dir_for},
-    electric::{self, ShapeEvent},
+    electric::{self, LinkReport, LinkedCache, LinkedEvent, LinkedKey, ShapeEvent},
     http::{Credentials, HttpError},
 };
 use zoo2_client_types::{
     api::{ChannelNotificationSettings, Me, NotificationLevel},
     ipc::{
-        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginFailed, LoginMethod,
-        LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState,
-        ShapeBatch, ShapeFailed, UiMode, event,
+        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, Linked, LinkedMessage,
+        LinkedUpdate, LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget,
+        PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, WatchLinks,
+        event,
     },
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
@@ -175,10 +176,24 @@ struct Session {
     me: Me,
     events: mpsc::UnboundedSender<ShapeEvent>,
     tasks: Vec<JoinHandle<()>>,
-    /// 開いているチャンネルと、そのメッセージの Shape を購読するタスク。
-    messages: Option<(String, JoinHandle<()>)>,
+    /// 開いているチャンネルのメッセージの購読。
+    messages: Option<OpenMessages>,
     replica: Replica,
     store: Store,
+    /// (a) 本文のリンクが指すメッセージの取得。
+    links: LinkedCache,
+    /// 取得の結果と、届けた購読の番号。
+    link_events: mpsc::UnboundedSender<(u64, LinkedEvent)>,
+    /// 画面の近くのリンク先を入れ替えたとき、時刻の予定を立て直してもらう合図。
+    links_changed: Arc<Notify>,
+}
+
+/// 開いているチャンネルと、そのメッセージの Shape の購読。
+struct OpenMessages {
+    channel_id: String,
+    task: JoinHandle<()>,
+    /// 同期が停止した理由。画面を読み込み直しても、停止したことを伝える。
+    failure: Option<String>,
 }
 
 struct EndingSession {
@@ -191,8 +206,8 @@ impl Drop for Session {
         for task in &self.tasks {
             task.abort();
         }
-        if let Some((_, task)) = &self.messages {
-            task.abort();
+        if let Some(open) = &self.messages {
+            open.task.abort();
         }
     }
 }
@@ -438,6 +453,8 @@ impl Core {
             return;
         }
         let (events, receiver) = mpsc::unbounded_channel();
+        let (link_events, link_receiver) = mpsc::unbounded_channel();
+        let links_changed = Arc::new(Notify::new());
         let mut session = Session {
             tokens,
             api: api.clone(),
@@ -448,6 +465,9 @@ impl Core {
             messages: None,
             replica: Replica::default(),
             store: Store::default(),
+            links: LinkedCache::default(),
+            link_events,
+            links_changed: links_changed.clone(),
         };
         // 着信のトーストのために、通話の招待はどちらの画面でも Rust 側が購読する（WebView は、
         // 表示のための購読を別に持つ。招待の行は通常 0〜数行）。
@@ -475,6 +495,11 @@ impl Core {
             .tasks
             .push(self.spawn_event_loop(generation, receiver));
         session.tasks.push(self.spawn_dnd_refresh(generation, api));
+        if self.ui == UiMode::Leptos {
+            session
+                .tasks
+                .push(self.spawn_link_loop(generation, link_receiver, links_changed));
+        }
         inner.session = Some(session);
         inner.dnd_until = None;
         inner.dnd_checked = false;
@@ -504,6 +529,9 @@ impl Core {
                         );
                     }
                     ShapeEvent::Failed(id, message) => {
+                        if let ShapeId::Messages(channel) = &id {
+                            core.stop_messages(generation, channel, &message).await;
+                        }
                         let _ = core
                             .app
                             .emit(event::SHAPE_FAILED, ShapeFailed { shape: id, message });
@@ -511,6 +539,138 @@ impl Core {
                 }
             }
         })
+    }
+
+    /// リンク先の取得の結果を画面に送る。取得の時間切れと、使わなくなった購読を閉じる時刻にも
+    /// 同期する。予定がなければ待つだけで、定期的には起きない。
+    fn spawn_link_loop(
+        self: &Arc<Self>,
+        generation: u64,
+        mut receiver: mpsc::UnboundedReceiver<(u64, LinkedEvent)>,
+        changed: Arc<Notify>,
+    ) -> JoinHandle<()> {
+        enum Wake {
+            Event(u64, LinkedEvent),
+            Changed,
+            Deadline,
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            let mut deadline: Option<Instant> = None;
+            loop {
+                // 条件が偽でも式は評価されるので、予定がないときの時刻も用意する。
+                let at = tokio::time::Instant::from_std(deadline.unwrap_or_else(Instant::now));
+                let wake = tokio::select! {
+                    event = receiver.recv() => match event {
+                        Some((subscription, event)) => Wake::Event(subscription, event),
+                        None => return,
+                    },
+                    () = changed.notified() => Wake::Changed,
+                    () = tokio::time::sleep_until(at), if deadline.is_some() => Wake::Deadline,
+                };
+                let mut inner = core.inner.lock().await;
+                if inner.generation != generation {
+                    return;
+                }
+                let Some(session) = inner.session.as_mut() else {
+                    return;
+                };
+                let now = Instant::now();
+                match wake {
+                    Wake::Event(subscription, event) => session.links.apply(subscription, event),
+                    Wake::Deadline => {
+                        let fetcher = core.link_fetcher(session);
+                        session.links.sync(now, fetcher);
+                    }
+                    Wake::Changed => {}
+                }
+                // 購読が停止したり閉じたりして枠が空いたら、上限で待っているリンク先を取り始める。
+                if session.links.can_start_waiting() {
+                    let fetcher = core.link_fetcher(session);
+                    session.links.sync(now, fetcher);
+                }
+                // ほかの結果と重なって過ぎた時間切れも含めて、変わった状態を送る。
+                core.emit_links(&mut session.links, now);
+                deadline = session.links.next_deadline(now);
+            }
+        })
+    }
+
+    /// リンク先のチャンネルの取得のタスクを起動する関数。
+    fn link_fetcher(
+        &self,
+        session: &Session,
+    ) -> impl FnMut(String, u64, mpsc::UnboundedReceiver<Vec<String>>) -> JoinHandle<()> + use<>
+    {
+        let http = self.http.clone();
+        let base = self.api_base_url().unwrap_or_default().to_string();
+        let credentials = session.credentials.clone();
+        let events = session.link_events.clone();
+        move |channel_id, subscription, requests| {
+            let events = events.clone();
+            electric::spawn_linked(
+                http.clone(),
+                &base,
+                credentials.clone(),
+                channel_id,
+                requests,
+                move |event| events.send((subscription, event)).is_ok(),
+            )
+        }
+    }
+
+    /// 前に送ってから変わったリンク先の状態と、暗号文の行が届いたチャンネルを画面に送る。
+    fn emit_links(&self, links: &mut LinkedCache, now: Instant) {
+        if let Some(report) = links.report(now) {
+            let _ = self.app.emit(event::LINKED, link_update(report));
+        }
+    }
+
+    /// メッセージの同期が停止した。権限を失ったかもしれないので、リンク先として覚えた内容を出さない。
+    /// 開いているチャンネルなら届いていた行も捨てて、画面を読み込み直しても戻さない。
+    async fn stop_messages(&self, generation: u64, channel_id: &str, message: &str) {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation || self.ui != UiMode::Leptos {
+            return;
+        }
+        if let Some(session) = inner.session.as_mut() {
+            if let Some(open) = session
+                .messages
+                .as_mut()
+                .filter(|open| open.channel_id == channel_id)
+            {
+                open.failure = Some(message.to_owned());
+                let id = ShapeId::Messages(channel_id.to_owned());
+                session.replica.forget(&id);
+                session.store.forget(&id);
+            }
+            session.links.reject(channel_id);
+            self.emit_links(&mut session.links, Instant::now());
+            session.links_changed.notify_one();
+        }
+    }
+
+    /// (a) 画面の近くのリンク先を入れ替える。分かっていることは、すぐに送り直す
+    /// （読み込み直した画面のため）。移動先の確認なら、`targets` を取り直す。
+    pub async fn watch_links(&self, links: WatchLinks) -> Result<(), IpcError> {
+        let mut inner = self.inner.lock().await;
+        let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
+        let keys: Vec<LinkedKey> = links
+            .targets
+            .into_iter()
+            .map(|target| (target.channel_id, target.message_id))
+            .collect();
+        let now = Instant::now();
+        match links.check {
+            Some(check) => session.links.check(check, &keys),
+            None => session.links.end_check(),
+        }
+        let fetcher = self.link_fetcher(session);
+        session.links.watch(now, keys, fetcher);
+        session.links.report_again();
+        self.emit_links(&mut session.links, now);
+        session.links_changed.notify_one();
+        Ok(())
     }
 
     fn spawn_dnd_refresh(self: &Arc<Self>, generation: u64, api: ApiClient) -> JoinHandle<()> {
@@ -573,10 +733,16 @@ impl Core {
                 return;
             };
             // チャンネルを切り替えた後に届いた、前のチャンネルの行は捨てる。
-            if let ShapeId::Messages(channel) = &id
-                && session.messages.as_ref().map(|(open, _)| open) != Some(channel)
-            {
-                return;
+            if let ShapeId::Messages(channel) = &id {
+                let Some(open) = session
+                    .messages
+                    .as_mut()
+                    .filter(|open| &open.channel_id == channel)
+                else {
+                    return;
+                };
+                // 停止した購読からは届かない。停止は、前の購読の知らせが遅れて届いたもの。
+                open.failure = None;
             }
             // 判定は適用より前に行う (適用した後では、新しく届いた行を区別できない)。
             let toasts = if id == ShapeId::Notifications {
@@ -591,9 +757,21 @@ impl Core {
             } else {
                 Vec::new()
             };
+            let was_synced = session.store.is_synced(&id);
             session.replica.apply(&id, &batch);
             session.store.apply(&id, batch.clone());
             if self.ui == UiMode::Leptos {
+                if let ShapeId::Messages(channel) = &id {
+                    if batch.has_ciphertext() {
+                        session.links.saw_ciphertext(channel);
+                    }
+                    // 本同期の行がそろったら、リンク先として覚えた結果は古くなるので捨てる。
+                    if !was_synced && session.store.is_synced(&id) {
+                        session.links.forget(channel);
+                    }
+                    // 暗号文のチャンネルは、行より先に画面に伝える。
+                    self.emit_links(&mut session.links, Instant::now());
+                }
                 let _ = self.app.emit(event::SHAPE, ShapeBatch { shape: id, batch });
             }
             toasts
@@ -1242,12 +1420,17 @@ impl Core {
         let base = self.api_base_url().unwrap_or_default().to_string();
         let mut inner = self.inner.lock().await;
         let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
-        if session.messages.as_ref().map(|(open, _)| open) == Some(&channel_id) {
+        // 停止したチャンネルを開き直したときは、購読し直す。
+        if session
+            .messages
+            .as_ref()
+            .is_some_and(|open| open.channel_id == channel_id && open.failure.is_none())
+        {
             return Ok(());
         }
-        if let Some((old, task)) = session.messages.take() {
-            task.abort();
-            let id = ShapeId::Messages(old);
+        if let Some(old) = session.messages.take() {
+            old.task.abort();
+            let id = ShapeId::Messages(old.channel_id);
             session.replica.forget(&id);
             session.store.forget(&id);
         }
@@ -1258,16 +1441,38 @@ impl Core {
             ShapeId::Messages(channel_id.clone()),
             session.events.clone(),
         );
-        session.messages = Some((channel_id, task));
+        // 本同期が同じ行を持つので、リンク先を取る購読は閉じる。
+        if self.ui == UiMode::Leptos {
+            session.links.close(&channel_id);
+            self.emit_links(&mut session.links, Instant::now());
+            session.links_changed.notify_one();
+        }
+        session.messages = Some(OpenMessages {
+            channel_id,
+            task,
+            failure: None,
+        });
         Ok(())
     }
 
     /// 持っている行を `reset` 付きで送り直す。WebView を読み込み直したときに呼ばれる。
     pub async fn resync(&self) -> Result<(), IpcError> {
-        let inner = self.inner.lock().await;
-        let session = inner.session.as_ref().ok_or_else(not_logged_in)?;
+        let mut inner = self.inner.lock().await;
+        let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
+        // 読み込み直した画面が行を描く前に、暗号文のチャンネルを伝える。
+        session.links.report_again();
+        self.emit_links(&mut session.links, Instant::now());
         for (shape, batch) in session.replica.snapshot() {
             let _ = self.app.emit(event::SHAPE, ShapeBatch { shape, batch });
+        }
+        if let Some(open) = &session.messages
+            && let Some(message) = &open.failure
+        {
+            let failed = ShapeFailed {
+                shape: ShapeId::Messages(open.channel_id.clone()),
+                message: message.clone(),
+            };
+            let _ = self.app.emit(event::SHAPE_FAILED, failed);
         }
         Ok(())
     }
@@ -1403,6 +1608,25 @@ fn reauth_error(error: anyhow::Error) -> IpcError {
             IpcError::new(ErrorCode::Rejected, format!("{error:#}"))
         }
         None => to_ipc(error),
+    }
+}
+
+/// 画面に送るリンク先の状態。
+fn link_update(report: LinkReport) -> LinkedUpdate {
+    LinkedUpdate {
+        linked: report
+            .linked
+            .into_iter()
+            .map(|((channel_id, message_id), state)| Linked {
+                target: LinkedMessage {
+                    channel_id,
+                    message_id,
+                },
+                checked: state.as_ref().and_then(|state| state.checked),
+                fetch: state.map(|state| state.fetch),
+            })
+            .collect(),
+        ciphertext: report.ciphertext,
     }
 }
 

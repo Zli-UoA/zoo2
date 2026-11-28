@@ -23,8 +23,8 @@ use crate::api::SearchKind;
 use crate::e2ee::reauth;
 use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
-use zoo2_client_core::links::LinkTarget;
 use zoo2_client_core::text::sanitize_display;
+use zoo2_client_core::{electric::LinkedKey, links::LinkTarget};
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -791,7 +791,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// 表示範囲と、その前後の半画面にあるメッセージの、取得が要るリンク先。
-fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<super::links::Key> {
+fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<LinkedKey> {
     let near = scroll.saturating_sub(height / 2)..scroll + height + height / 2;
     let ranges: HashMap<&str, &std::ops::Range<usize>> = built
         .ranges
@@ -818,7 +818,7 @@ fn draw_links(
     app: &App,
     targets: &[LinkTarget],
     index: usize,
-) -> Vec<super::links::Key> {
+) -> Vec<LinkedKey> {
     let now = Instant::now();
     let cache = DrawCache::default();
     // 画面に収まらないときは、選んでいる候補が見える範囲だけを出す（枠と操作の案内の分を空ける）。
@@ -1361,7 +1361,6 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::*;
-    use crate::ui::links::LOAD_TIMEOUT;
     use crate::{
         api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
         electric::{Batch, Change, LinkedEvent, ShapeEvent},
@@ -1371,6 +1370,7 @@ mod tests {
             encryption::EncryptionEvent,
         },
     };
+    use zoo2_client_core::electric::LOAD_TIMEOUT;
     use zoo2_client_core::links::LinkState;
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {

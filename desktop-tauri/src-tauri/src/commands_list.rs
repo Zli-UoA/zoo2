@@ -16,6 +16,7 @@ pub const COMMANDS: &[&str] = &[
     "zoo_account_profiles",
     "zoo_send_message",
     "zoo_invoke_app_action",
+    "zoo_watch_links",
     "zoo_access_token",
     "zoo_notifications_observed",
     "zoo_take_call_accept",

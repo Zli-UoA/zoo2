@@ -3,10 +3,15 @@
 
 use jiff::civil::DateTime;
 use percent_encoding::percent_decode_str;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
 use crate::rows::{Channel, Message};
+
+/// リンク先の取得（と、開いているチャンネルの同期）を始めてから、これだけたっても終わらないときは、
+/// 読み込めなかったものとする。
+pub const LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// 要約の最大文字数（Web の `messageExcerpt` と同じ）。画面側でも行数で切るので、これは保険の上限。
 pub const EXCERPT_MAX_CHARS: usize = 200;
@@ -196,7 +201,8 @@ pub fn excerpt(content: &str) -> String {
 }
 
 /// リンク先のメッセージの取得の状態。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LinkedFetch {
     /// 取得中。`stalled` は、始めてから時間がたっても終わらない。
     Loading {
@@ -258,6 +264,12 @@ pub enum LinkState<'a> {
         channel: &'a Channel,
         preview: MessagePreview,
     },
+}
+
+/// 暗号化チャンネルとして扱うか（docs/e2ee.md の「暗号化の格下げを防ぐ」）。`recorded` は端末が
+/// 以前に `encrypted = true` を見た記録があるか、`has_ciphertext` は読み込んでいる行に暗号文の行があるか。
+pub fn treats_as_encrypted(channel: &Channel, recorded: bool, has_ciphertext: bool) -> bool {
+    channel.encrypted || recorded || has_ciphertext || channel.channel_name.starts_with("edm:")
 }
 
 /// リンク先の状態を決める。
@@ -499,6 +511,43 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[test]
+    fn only_urls_written_as_text_are_shortened() {
+        let content = "https://zli.chat/channels/a `https://zli.chat/channels/code` \
+            [資料](https://zli.chat/channels/b) https://example.com/x";
+        let bare: Vec<String> = bare_links(content, APP)
+            .into_iter()
+            .map(|(url, _)| url)
+            .collect();
+        assert_eq!(bare, ["https://zli.chat/channels/a"]);
+    }
+
+    #[test]
+    fn encryption_does_not_rely_on_the_server_flag_alone() {
+        let mut row = channel();
+        assert!(!treats_as_encrypted(&row, false, false));
+        assert!(treats_as_encrypted(&row, true, false));
+        assert!(treats_as_encrypted(&row, false, true));
+        row.channel_name = "edm:a:b".into();
+        assert!(treats_as_encrypted(&row, false, false));
+        row = channel();
+        row.encrypted = true;
+        assert!(treats_as_encrypted(&row, false, false));
+    }
+
+    #[test]
+    fn fetch_states_survive_the_ipc() {
+        for fetch in [
+            LinkedFetch::Loading { stalled: true },
+            found(json!({ "ciphertext": { "a": 1 }, "forwarded_message_ids": ["x"] })),
+            LinkedFetch::Missing,
+            LinkedFetch::Failed,
+        ] {
+            let text = serde_json::to_string(&fetch).unwrap();
+            assert_eq!(serde_json::from_str::<LinkedFetch>(&text).unwrap(), fetch);
+        }
     }
 
     #[test]

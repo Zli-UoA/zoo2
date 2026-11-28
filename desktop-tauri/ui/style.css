@@ -15,6 +15,7 @@
   --brand-ink: #1e1e1e;
   --code-bg: #f5f5f5;
   --mention-bg: #fff3c4;
+  --message-target: rgba(47, 111, 222, 0.18);
   font-family: "Segoe UI", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, "Noto Sans CJK JP", "Hiragino Sans", sans-serif;
   font-size: 14px;
 }
@@ -32,6 +33,7 @@
     --selected-fg: #0f0f11;
     --code-bg: #1c1c20;
     --mention-bg: #4a3f12;
+    --message-target: rgba(138, 180, 255, 0.22);
   }
 }
 * { box-sizing: border-box; }
@@ -327,3 +329,21 @@ time { color: var(--muted); font-size: 12px; }
 .components .carousel { display: flex; gap: 8px; overflow-x: auto; }
 .components .grid-row { display: flex; gap: 12px; }
 .components .confirm { display: inline-flex; gap: 6px; align-items: center; margin-left: 6px; flex-wrap: wrap; }
+
+/* 本文のチャンネル・メッセージのリンク */
+.link-icon { width: 1em; height: 1em; margin-right: 0.25em; vertical-align: -0.125em; }
+.link-card { display: flex; flex-direction: column; gap: 2px; max-width: 520px; margin-top: 6px; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--fg); text-decoration: none; overflow-wrap: anywhere; }
+a.link-card:hover { border-color: var(--line-strong); }
+a.link-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.link-card .meta { display: flex; gap: 8px; align-items: baseline; }
+.link-card .title { font-weight: 600; }
+.link-card time, .link-card .sub, .link-card.note { color: var(--muted); font-size: 12px; }
+.link-card .excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.link-card .excerpt.short { -webkit-line-clamp: 2; line-clamp: 2; }
+.composer .archived { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.composer textarea:read-only { color: var(--muted); }
+.channel-head { padding: 10px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
+button.notice { display: flex; justify-content: space-between; gap: 12px; align-items: center; width: 100%; padding: 8px 16px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 12px; text-align: left; }
+.message.jumped { animation: jumped 2.5s ease-out; }
+@keyframes jumped { 0%, 80% { background: var(--message-target); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .message.jumped { animation: none; background: var(--message-target); } }
