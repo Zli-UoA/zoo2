@@ -170,6 +170,10 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
 /// 1 投稿の通知先に関する運用上限 (docs/query-design.md)。超過しても配信は止めず、警告を出す。
 const MAX_NOTIFICATION_TARGETS: usize = 10_000;
 
+fn exceeds_notification_target_limit(targets: usize) -> bool {
+    targets > MAX_NOTIFICATION_TARGETS
+}
+
 /// チャンネルの通知設定を `channel_id` で1クエリだけ読み、user_id -> level にする。
 ///
 /// `idx_user_channel_notification_settings_channel_id (channel_id, user_id)` の範囲走査で
@@ -408,7 +412,7 @@ pub async fn create_message_notifications(
     // 上限は除外前の候補数 T で判定する。除外後に数えると、無効化ユーザー等が
     // 候補に含まれていた事実が隠れ、運用者が監視したい負荷を見逃すため。
     let candidate_targets = targets_to_notify.len();
-    if candidate_targets > MAX_NOTIFICATION_TARGETS {
+    if exceeds_notification_target_limit(candidate_targets) {
         tracing::warn!(
             target: "notifications",
             channel_id = %message.channel_id,
@@ -548,6 +552,13 @@ pub async fn create_reaction_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_target_limit_warns_only_above_ten_thousand() {
+        assert!(!exceeds_notification_target_limit(9_999));
+        assert!(!exceeds_notification_target_limit(10_000));
+        assert!(exceeds_notification_target_limit(10_001));
+    }
 
     #[test]
     fn account_avatar_shortcodes_do_not_send_mentions() {
