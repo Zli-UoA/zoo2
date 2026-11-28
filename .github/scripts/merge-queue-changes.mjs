@@ -1,4 +1,4 @@
-// マージキューで実行する CI を選ぶ。各 workflow の on.pull_request.paths を読み、
+// マージキューで実行する CI を選ぶ。各 workflow の対象パスを読み、
 // キューの base からの差分に当てはまるものを true として GITHUB_OUTPUT に書く。
 // パスの一覧は各 workflow にだけ書き、merge-queue.yaml には重複させない。
 import { execFileSync } from 'node:child_process';

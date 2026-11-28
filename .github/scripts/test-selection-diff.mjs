@@ -31,8 +31,8 @@ export function workflowChanges(workflow, changes, eventName) {
 
 export const isFrontendLocale = path => /^frontend\/src\/lib\/i18n\/locales\/[^/]+\.json$/.test(path);
 
-export function isLightweightChange({ path, status }) {
-  return path === 'frontend/README.md' || (status === 'M' && isFrontendLocale(path));
+export function isLightweightChange({ path, status, translationText }) {
+  return path === 'frontend/README.md' || (status === 'M' && isFrontendLocale(path) && !translationText);
 }
 
 export function isFrontendTestInput(path) {
@@ -112,6 +112,10 @@ export function classifyTranslationChanges(base, changes, { git = execFileSync, 
     if (!isFrontendLocale(change.path) || !['A', 'M'].includes(change.status)) return change;
     const before = change.status === 'A' ? '{}' : git('git', ['show', `${base}:${change.path}`], { cwd: root, encoding: 'utf8' });
     const after = read(resolve(root, change.path), 'utf8');
-    return translationOnlyChange(before, after, change.path) ? change : { ...change, status: 'T' };
+    if (!translationOnlyChange(before, after, change.path)) return { ...change, status: 'T' };
+    const oldEntries = translationEntries(JSON.parse(before), change.path);
+    const newEntries = translationEntries(JSON.parse(after), change.path);
+    const translationText = [...oldEntries].some(([key, { value }]) => value !== newEntries.get(key).value);
+    return { ...change, translationText };
   });
 }

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { pathMatcher, PR_WORKFLOWS, selectWorkflows, WORKFLOWS } from './merge-queue-changes.mjs';
 import { aggregateChecks, expectedWorkflows } from './automerge-gate.mjs';
-import { selectPrPlans } from './test-selection.mjs';
+import { selectPrPlans, selectWorkflowPlan } from './test-selection.mjs';
 import { workflowChanges } from './test-selection-diff.mjs';
 import { changedSections, jobClosure, workflowJobs, restrictWorkflow } from './workflow-test-selection.mjs';
 
@@ -82,7 +82,7 @@ test('needs parses its entire multiline block, including comments and later entr
   assert.equal(jobClosure(multiline.replace('      - test-selection', '      - *unknown'), new Set(['runner'])), null);
 });
 
-test('checks deferred on PRs remain wired into the merge queue gate', () => {
+test('expensive checks run on PRs and remain wired into the merge queue gate', () => {
   const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
   const queue = readWorkflow('merge-queue');
   const deferred = {
@@ -107,7 +107,8 @@ test('checks deferred on PRs remain wired into the merge queue gate', () => {
     const blocks = source.split(/^jobs:\n/m)[1].split(/^  (?=[\w-]+:)/m);
     for (const job of jobs) {
       const block = blocks.find(block => block.startsWith(`${job}:\n`));
-      assert.match(block.match(/^    if: [^\n]*(?:\n {6}[^\n]*)*/m)?.[0], /github\.event_name != 'pull_request'/, `${workflow}/${job}`);
+      assert.ok(block, `${workflow}/${job}`);
+      assert.doesNotMatch(block.match(/^    if: [^\n]*(?:\n {6}[^\n]*)*/m)?.[0] ?? '', /github\.event_name != 'pull_request'/);
     }
   }
 });
@@ -194,4 +195,13 @@ test('dedicated OIDC and E2EE specs still get the Web type check on PRs', () => 
     assert.equal(selectPrPlans([change])['ci-frontend'].frontendBuild.check, true);
     assert.deepEqual(workflowChanges('ci-frontend', [change], 'merge_group'), []);
   }
+});
+
+test('PR runs the shared Rust and cross-stack regression checks without a merge queue', () => {
+  const changed = path => ({ status: 'M', path });
+  const backend = selectPrPlans([changed('backend/src/db.rs')])['ci-backend'].backend;
+  assert.ok(backend.full && backend.run && backend.deploy);
+  assert.ok(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [changed('backend/src/db.rs')]).frontend.auth);
+  assert.ok(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [changed('frontend/src/lib/e2ee/setupController.ts')]).frontend.e2ee);
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [changed('frontend/src/lib/i18n/locales/ja.json')]).frontend.auth, false);
 });

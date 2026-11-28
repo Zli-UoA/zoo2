@@ -122,20 +122,18 @@ concurrency:
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   test-selection:
-    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-frontend-e2ee-e2e
 
   runner:
-    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）。アプリが lib/e2ee を読むので、dev サーバーの起動に要る（#359）。
   crypto-wasm:
-    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.frontend).e2ee
+    if: fromJSON(needs.test-selection.outputs.frontend).e2ee
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30

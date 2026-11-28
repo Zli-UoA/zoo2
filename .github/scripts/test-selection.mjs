@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, validateChangedTranslations, workflowChanges } from './test-selection-diff.mjs';
+import { classifyTranslationChanges, isFrontendLocale, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, validateChangedTranslations, workflowChanges } from './test-selection-diff.mjs';
 import { routeTestTargets, testLeg } from './backend-e2e-selection.mjs';
 import { isRelatedFrontendModule, isVitestInput } from './frontend-test-selection.mjs';
 import { isStorybookVitestInput } from './frontend-test-selection-paths.mjs';
@@ -96,6 +96,7 @@ function selectPullRequest(changes, full) {
     if (path.startsWith('backend/') || /^(infra\/db\/|crates\/zoo-components\/|docs\/slack-event-coverage\.json$)/.test(path) ||
         path === 'frontend/src/lib/emoji/emoji-kitchen.json') {
       backend.check = true;
+      if (!path.startsWith('backend/tests/') && !path.startsWith('docs/')) backend.deploy = true;
       const test = /^backend\/tests\/([a-zA-Z0-9_]+_test)\.rs$/.exec(path);
       if (edit && test) targets.add(test[1]);
       else if (edit && Object.hasOwn(routeTestTargets, path)) {
@@ -117,6 +118,8 @@ function selectPullRequest(changes, full) {
       if (path.startsWith('infra/compose.stack')) selected.push('proxy');
       if (path === 'infra/frontend-nginx.conf') selected.push('offline');
       enable(path, ...selected);
+    } else if (isFrontendLocale(path) && edit) {
+      enable(path, 'unit', 'browser', 'vrt', 'storybook', 'i18n');
     } else if (Object.hasOwn(specs, path)) {
       if (/\.tsx?$/.test(path)) frontendBuild.check = true;
       enable(path, specs[path]);
@@ -188,6 +191,15 @@ export function selectWorkflowPlan(eventName, workflow, changes, base) {
     path === '.github/workflows/ci-android.yaml' ||
     (path.startsWith('frontend/') && !/^(?:frontend\/src\/(?:android-phone|lib\/(?:sip|call))\/|frontend\/vite\.android-phone\.config\.ts$|frontend\/scripts\/android-phone-smoke\.mjs$)/.test(path)));
   selection.desktopTauri ??= { check: true, macos: true, windows: true };
+  if (eventName === 'pull_request' && relevant?.length &&
+      ['ci-frontend-auth-e2e', 'ci-frontend-e2ee-e2e'].includes(workflow)) {
+    const suite = workflow === 'ci-frontend-auth-e2e' ? 'auth' : 'e2ee';
+    // Workflow paths express the E2E app and infrastructure inputs. Locale
+    // copy has a dedicated i18n check in CI Frontend.
+    if (relevant.some(({ path }) => !isFrontendLocale(path) && path !== 'frontend/README.md')) {
+      selection.frontend[suite] = true;
+    }
+  }
   if (relevant?.some(({ path }) => path.startsWith('.github/scripts/rust-test-selection/'))) {
     selection.backend.verifyCaseSelector = true;
     selection.backend.check = true;
@@ -203,7 +215,7 @@ export function selectPrPlans(changes, base) {
     if (changes?.length && !workflowChanges(workflow, changes, 'pull_request').length) continue;
     const selection = selectWorkflowPlan('pull_request', workflow, changes, base);
     const { backend, frontend, frontendBuild, clients, bots } = selection;
-    if (workflow === 'ci-backend' && (backend.check || (!backend.full && (backend.run || backend.emoji)))) plans[workflow] = { backend };
+    if (workflow === 'ci-backend' && (backend.check || backend.deploy || backend.run || backend.emoji)) plans[workflow] = { backend };
     if (workflow === 'ci-frontend' && (
       Object.values(frontendBuild).some(Boolean) ||
       Object.entries(frontend).some(([key, enabled]) => !['auth', 'e2ee'].includes(key) && enabled)

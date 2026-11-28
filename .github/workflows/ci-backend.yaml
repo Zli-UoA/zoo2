@@ -106,7 +106,7 @@ jobs:
     if: >-
       !cancelled() && needs.runner.result == 'success' &&
       (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
-      (github.event_name != 'pull_request' && fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.deploy)
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.deploy)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.
@@ -268,7 +268,7 @@ jobs:
     if: >-
       !cancelled() && needs.runner.result == 'success' &&
       (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
-      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.run && (github.event_name != 'pull_request' || !fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.full))
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.run)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
@@ -401,7 +401,7 @@ jobs:
     if: >-
       !cancelled() && needs.runner.result == 'success' &&
       (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
-      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.emoji && (github.event_name != 'pull_request' || !fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.full))
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.emoji)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 45
