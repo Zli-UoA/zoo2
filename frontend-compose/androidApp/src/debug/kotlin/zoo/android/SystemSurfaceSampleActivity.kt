@@ -1,6 +1,11 @@
 package zoo.android
 
 import android.app.*
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
+import zoo.android.ui.*
 import android.content.*
 import android.os.Bundle
 import androidx.core.content.FileProvider
@@ -9,9 +14,24 @@ import java.io.File
 import zoo.obj
 
 /** Debug-only fixture for capturing Android-owned surfaces with non-personal sample data. */
-class SystemSurfaceSampleActivity : Activity() {
+class SystemSurfaceSampleActivity : ComponentActivity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        if (intent.action == "zoo.sample.STATUS_BAR") {
+            val dark = intent.getBooleanExtra("dark", false)
+            val clear = android.graphics.Color.TRANSPARENT
+            val style = if (dark) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
+            enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            val entries = (1..24).map { n ->
+                TimelineItem("sample-$n", "はる", if (n == 1) "北口で受付を始めました。" else "展示の様子をお届けします。", "10:00",
+                    canReact = true, canRepost = true, postHeader = PostHeaderData("@haru", "11/28 10:00", PostAudience.Public, null, "zli.chat"))
+            }
+            setContent {
+                AndroidScreens(AndroidScreen.Home(entries, timeline = "home", showingSavedHead = true), dark, true,
+                    dispatch = {}, language = "ja") { _, _ -> }
+            }
+            return
+        }
         if (intent.action == "zoo.sample.SHARE") {
             val file = File(cacheDir, "preview-files/展示メモ.txt")
             file.parentFile?.mkdirs()
