@@ -836,7 +836,15 @@ class AndroidSamplesTest {
         val handle = ui.onNodeWithText("@yui@social.example", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val body = ui.onNodeWithText("引用本文", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         check(handle.left >= quoteName.right && handle.center.y in quoteName.top..quoteName.bottom)
-        check(body.left < quoteName.left && body.top >= quoteName.bottom)
+        val avatar = ui.onNodeWithTag("quote-avatar", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        check(body.left == avatar.left && body.top >= quoteName.bottom)
+        fun baseline(label: String): Float {
+            val node = ui.onNodeWithText(label, useUnmergedTree = true)
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            node.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            return node.fetchSemanticsNode().boundsInRoot.top + layouts.single().firstBaseline
+        }
+        check(kotlin.math.abs(baseline("ゆい") - baseline("@yui@social.example")) <= 1f)
         ui.onNodeWithText("ローカル").performClick()
         ui.onNodeWithText("ソーシャル").performClick()
         for (authorName in listOf("はる", "ゆい")) {

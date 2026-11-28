@@ -173,12 +173,18 @@ internal fun TimelineQuoteCard(
                     .semantics { contentDescription = "「${quote.author}」のプロフィールを開く" }
                 Row(Modifier.fillMaxWidth().then(profileAction).heightIn(min = 28.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
-                    Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
-                        Modifier.widthIn(max = nameWidth), color = colors.foreground, fontSize = entryTextSize,
-                        fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    quote.handle?.let { handle ->
-                        Text(handle, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (quote.author.isNotBlank()) Box(Modifier.testTag("quote-avatar")) {
+                        TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
+                            Modifier.widthIn(max = nameWidth).alignByBaseline(), color = colors.foreground,
+                            fontSize = entryTextSize, fontWeight = AndroidWeights.entryAuthor,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        quote.handle?.let { handle ->
+                            Text(handle, Modifier.alignByBaseline(), color = colors.secondary, fontSize = 12.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
             }
