@@ -47,6 +47,8 @@ function isPrivatePath(pathname) {
   );
 }
 
+// manifest はここから外して素通しにする。旧 SW がキャッシュを返す経路も
+// SHELL からの削除と sw.js の更新（install）で解消される。
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
@@ -512,19 +514,24 @@ self.addEventListener("message", (event) => {
   );
 });
 
-// manifest は素通しにして常にサーバーの最新版を使う。古い SW がキャッシュを返す経路も
-// ここで外す（sw.js の更新時に install が走る）。
+// 案内ページは取得できたときだけ更新し、オフラインでは保存済みの版を返す。
 async function handleOfflinePage(request) {
   const cache = await caches.open(await findActiveShellCache());
+  let response;
   try {
-    const response = await fetch(request, { cache: "reload" });
-    // try_files で index.html が返っても案内ページとしては保存しない。
-    if (response.ok && (await response.clone().text()).includes('name="zoo-offline"'))
-      await cacheResponse(cache, "/offline.html", response.clone());
-    return response;
+    response = await fetch(request, { cache: "reload" });
   } catch {
     return (await cache.match("/offline.html")) || Response.error();
   }
+  // try_files で index.html が返っても案内ページとしては保存しない。
+  if (response.ok && (await response.clone().text()).includes('name="zoo-offline"')) {
+    try {
+      await cacheResponse(cache, "/offline.html", response.clone());
+    } catch {
+      /* 保存できなくても、取得した応答は返す。 */
+    }
+  }
+  return response;
 }
 
 self.addEventListener("fetch", (event) => {
