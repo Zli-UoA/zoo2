@@ -35,6 +35,7 @@ import zoo.android.update.UpdateScheduler
 private class UnbackedKeysPrompt(val count: Int, val answer: CompletableDeferred<Boolean>)
 
 class MainActivity : ComponentActivity() {
+    private val networkLifecycle = NetworkLifecycleObserver()
     private var unbackedKeysPrompt by mutableStateOf<UnbackedKeysPrompt?>(null)
 
     private suspend fun confirmUnbackedKeys(count: Int): Boolean {
@@ -181,6 +182,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycle.addObserver(networkLifecycle)
         enableEdgeToEdge()
         receiveLaunchIntent(intent)
         setContent { AndroidApp() }
@@ -361,25 +363,20 @@ class MainActivity : ComponentActivity() {
                         current.phone.refreshInvites()
                     }
                 }
-                val observer = NetworkLifecycleObserver(
-                    isVisible = { platform.env.visible },
-                    update = { visible, returning ->
-                        platform.visible(visible)
-                        updateNetworkStatus(returning)
-                    },
-                    onResume = {
+                val unbindLifecycle = networkLifecycle.bind(current.networkRevisionAtStart) { visible, returning, resumed ->
+                    platform.visible(visible)
+                    updateNetworkStatus(returning)
+                    if (resumed) {
                         notificationSettingsVersion++
                         current.push.refresh()
-                    },
-                )
-                lifecycle.addObserver(observer)
+                    }
+                }
                 val callback = DefaultNetworkCallback {
                     runOnUiThread {
                         if (!disposed) updateNetworkStatus()
                     }
                 }
                 connectivity.registerDefaultNetworkCallback(callback)
-                updateNetworkStatus()
                 val offlineNetworkCheck = scope.launch {
                     recheckDefaultNetworkWhileOffline(snapshotFlow { platform.env.visible && !platform.env.online }) {
                         updateNetworkStatus()
@@ -388,7 +385,7 @@ class MainActivity : ComponentActivity() {
                 onDispose {
                     disposed = true
                     offlineNetworkCheck.cancel()
-                    lifecycle.removeObserver(observer)
+                    unbindLifecycle()
                     connectivity.unregisterNetworkCallback(callback)
                 }
             }
@@ -503,6 +500,7 @@ class MainActivity : ComponentActivity() {
                 connection.base, "/api/shapes", me.text("id"), me.flag("is_admin"),
                 assetsBaseUrl = connection.base,
             )
+            val networkRevisionAtStart = networkLifecycle.reconnectRevision
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
             session.setNavigationCacheLimit(platform.navigationCacheLimit)
             lifetime.launch {
@@ -539,7 +537,7 @@ class MainActivity : ComponentActivity() {
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
-            return RunningSession(session, platform, lifetime, http, transport, shapeReconnects, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
+            return RunningSession(session, platform, lifetime, http, transport, networkRevisionAtStart, shapeReconnects, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
                 try {
                     session.start()
                     e2ee.start()
@@ -565,6 +563,7 @@ private class RunningSession(
     val scope: CoroutineScope,
     private val http: HttpClient,
     val transport: SessionHttpEngine,
+    val networkRevisionAtStart: Long,
     val shapeReconnects: MutableStateFlow<Long>,
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,

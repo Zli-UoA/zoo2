@@ -93,20 +93,18 @@ class ShapeReconnectTransportTest {
             val activity = object : LifecycleOwner {
                 override val lifecycle = LifecycleRegistry.createUnsafe(this)
             }
-            val lifecycle = activity.lifecycle
-            lifecycle.currentState = Lifecycle.State.RESUMED
+
+            val observer = NetworkLifecycleObserver()
+            activity.lifecycle.addObserver(observer)
+            activity.lifecycle.currentState = Lifecycle.State.RESUMED
             var visible = true
-            lifecycle.addObserver(NetworkLifecycleObserver(
-                isVisible = { visible },
-                update = { nowVisible, returning ->
-                    visible = nowVisible
-                    if (returning) {
-                        engine.reconnect()
-                        table.refresh(reconnect = true)
-                    }
-                },
-                onResume = {},
-            ))
+            val unbind = observer.bind(observer.reconnectRevision) { nowVisible, returning, _ ->
+                visible = nowVisible
+                if (returning) {
+                    engine.reconnect()
+                    table.refresh(reconnect = true)
+                }
+            }
             var phase = "first page"
             try {
                 withTimeout(10_000) {
@@ -114,10 +112,10 @@ class ShapeReconnectTransportTest {
                     phase = "original live request"
                     oldLive.await()
 
-                    lifecycle.currentState = Lifecycle.State.STARTED
+                    activity.lifecycle.currentState = Lifecycle.State.STARTED
                     assertTrue(visible)
                     invalidate.set(true)
-                    lifecycle.currentState = Lifecycle.State.RESUMED
+                    activity.lifecycle.currentState = Lifecycle.State.RESUMED
 
                     phase = "replacement page"
                     val recovered = table.rows.first { rows -> rows.any { it.text("id") == "new-row" } }
@@ -130,6 +128,7 @@ class ShapeReconnectTransportTest {
             } catch (timeout: TimeoutCancellationException) {
                 fail("Timed out waiting for $phase (snapshots=${snapshots.get()}, error=${table.error.value})", timeout)
             } finally {
+                unbind()
                 table.close()
                 http.close()
                 engine.close()

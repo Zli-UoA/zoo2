@@ -28,25 +28,40 @@ internal class DefaultNetworkCallback(private val refresh: () -> Unit) : Connect
 internal fun ConnectivityManager.activeInternetNetwork(): Network? =
     activeNetwork?.takeIf { hasInternet(getNetworkCapabilities(it)) }
 
-internal class NetworkLifecycleObserver(
-    private val isVisible: () -> Boolean,
-    private val update: (visible: Boolean, returning: Boolean) -> Unit,
-    private val onResume: () -> Unit,
-) : LifecycleEventObserver {
+internal class NetworkLifecycleObserver : LifecycleEventObserver {
     private var paused = false
+    private var stopped = false
+    private var visible = false
+    private var resumed = false
+    private var listener: ((Boolean, Boolean, Boolean) -> Unit)? = null
+    var reconnectRevision = 0L
+        private set
+
+    fun bind(since: Long, update: (visible: Boolean, returning: Boolean, resumed: Boolean) -> Unit): () -> Unit {
+        listener = update
+        update(visible, reconnectRevision != since, resumed)
+        return { if (listener === update) listener = null }
+    }
 
     override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
         if (event == Lifecycle.Event.ON_PAUSE) paused = true
+        if (event == Lifecycle.Event.ON_STOP) stopped = true
         val returning = when (event) {
-            Lifecycle.Event.ON_START -> !isVisible()
+            Lifecycle.Event.ON_START -> stopped
             Lifecycle.Event.ON_RESUME -> paused
             else -> false
         }
         // A stopped activity reconnects at ON_START. A still-visible activity can
         // return directly to ON_RESUME, for example after leaving the app switcher.
-        if (returning) paused = false
-        update(source.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED), returning)
-        if (event == Lifecycle.Event.ON_RESUME) onResume()
+        if (returning) {
+            stopped = false
+            paused = false
+            reconnectRevision++
+        }
+        visible = source.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        val resumeEvent = event == Lifecycle.Event.ON_RESUME
+        resumed = source.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        listener?.invoke(visible, returning, resumeEvent)
     }
 }
 
