@@ -51,7 +51,7 @@ internal data class SelectionItem(
     val selected: Boolean? = null,
     val unavailable: String? = null,
 )
-internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false)
+internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false, val description: String = "")
 
 @Composable
 internal fun DirectoryPage(
@@ -112,6 +112,17 @@ internal fun NewPostPage(
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val input = screen.input
+    var describing by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    screen.attached.firstOrNull { it.id == describing }?.let { item ->
+        androidx.compose.material3.AlertDialog(onDismissRequest = { describing = null },
+            title = { Text("画像の説明") },
+            text = {
+                ChannelField(item.label, item.description, colors, singleLine = false) { text ->
+                    if (text.codePointCount(0, text.length) <= 1000) dispatch(AndroidUiAction.DescribePhoto(item.id, text))
+                }
+            },
+            confirmButton = { TextAction("完了", colors) { describing = null } })
+    }
     PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
         screen.visibility?.let { PostAudienceButton(it, colors, dispatch) }
         screen.federate?.let { enabled ->
@@ -164,6 +175,7 @@ internal fun NewPostPage(
             items(screen.attached, key = { it.id }) { item ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+                    TextAction("説明", colors, style = TextActionStyle.Plain) { describing = item.id }
                     if (item.failed) TextAction("再試行", colors, icon = UiIcon.Refresh) { dispatch(AndroidUiAction.RetryFile(item.id)) }
                     TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
                 }

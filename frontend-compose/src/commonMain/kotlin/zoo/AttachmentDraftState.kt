@@ -234,6 +234,7 @@ class AttachmentLinks(private val app: Session) {
 }
 
 class AttachmentDraft(val file: Row, val name: String, val type: String) {
+    var description by mutableStateOf("")
     var sensitive by mutableStateOf(false)
     var uploaded by mutableStateOf<Row?>(null)
     var bitmap by mutableStateOf<ImageBitmap?>(null)

@@ -220,6 +220,7 @@ internal sealed interface AndroidUiAction {
     data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null, val quotedMedia: Boolean = false) : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
     data class RetryFile(val id: String) : AndroidUiAction
+    data class DescribePhoto(val id: String, val description: String) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
     data class Mention(val name: String) : AndroidUiAction

@@ -1155,6 +1155,9 @@ internal class ConnectedScreenState(
                     drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(selection = action.range)
                 else -> Unit
             }
+            is AndroidUiAction.DescribePhoto -> if (screen is AndroidScreen.NewPost && action.description.codePointCount(0, action.description.length) <= 1000) {
+                postFiles.items.find { it.file.text("id") == action.id }?.description = action.description
+            }
             is AndroidUiAction.RetryFile -> (if (screen is AndroidScreen.NewPost) postFiles else channelFiles[draftKey])?.retry(action.id)
             is AndroidUiAction.RemoveFile -> {
                 val attachments = if (screen is AndroidScreen.NewPost) postFiles else channelFiles[draftKey]
@@ -1480,7 +1483,10 @@ internal class ConnectedScreenState(
                             val text = postDraft
                             val ids = sent.mapNotNull { it.uploaded?.text("id") }
                             if (!postFiles.canSend(postDraft)) return@request
-                            app.api.request("/api/home", "POST", obj("content" to text,
+                            val descriptions = sent.mapNotNull { draft ->
+                                draft.uploaded?.text("id")?.takeIf { draft.description.isNotBlank() }?.let { it to JsonPrimitive(draft.description) }
+                            }.toMap()
+                            app.api.request("/api/home", "POST", obj("content" to text, "image_descriptions" to JsonObject(descriptions),
                                 "apub" to (federatePost && federationAvailable), "visibility" to postVisibility, "image_ids" to JsonArray(ids.map(::JsonPrimitive))))
                             val sentIds = sent.map { it.file.text("id") }.toSet()
                             postFiles.items.removeAll { it.file.text("id") in sentIds }
