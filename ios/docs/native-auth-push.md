@@ -24,7 +24,7 @@ PRF に対応しない保存先ではリカバリーキーを使います。
 本番で有効にするために必要な設定は次のとおりです。
 
 - AuthZ の iOS 公開クライアントで `authorization_code` と `refresh_token` を許可し、
-  `works.zli.zoo:/reauth-callback` をリダイレクト URI に登録する。
+  `https://account.zli.works/ios/oauth/callback` を登録し、カスタムスキームURIを削除する。
 - App ID `F82XB5KFX2.works.zli.zoo` の Associated Domains を有効にする。
   アプリの `Zoo.entitlements` は `webcredentials:account.zli.works` を指定済み。
 - AuthZ の `https://account.zli.works/.well-known/apple-app-site-association` を認証不要の
@@ -37,14 +37,20 @@ PRF に対応しない保存先ではリカバリーキーを使います。
 - [zoo2-infra #222](https://github.com/Zli-UoA/zoo2-infra/pull/222)（`4189928`）で
   AASAのアプリIDとiOSの再認証audienceを追加し、AuthZ・ZooのFlux同期成功を確認しました。
 - [AuthZ #121](https://github.com/Zli-UoA/AuthZ/pull/121)（`ccb94da`）でAASAの公開と
-  Publicクライアントのカスタムスキーム登録に対応し、mainのCIと本番配備が成功しました。
-- AuthZ管理画面の既存「Zoo for iOS」に `works.zli.zoo:/reauth-callback` を追加しました。
+  初回の関連付けに対応し、mainのCIと本番配備が成功しました。
+- AuthZ管理画面の既存「Zoo for iOS」に `https://account.zli.works/ios/oauth/callback` を追加し、
+  今回登録した `works.zli.zoo:/reauth-callback` は削除しました。
   既存のHTTPSコールバック、Public種別、S256必須、スコープ、デバイスコード許可、API設定は維持しています。
 - AuthZ直配信とApple CDNの
   `https://app-site-association.cdn-apple.com/a/v1/account.zli.works` の両方が
   HTTP 200・JSONで、`webcredentials.apps` に `F82XB5KFX2.works.zli.zoo` を返しました。
 - 未認証の認可要求（`prompt=none`、認可コード＋S256、iOS専用クライアント）は
-  登録したカスタムスキームへ `login_required` を返し、変更前の `invalid_redirect` は解消しました。
+  登録したHTTPSコールバックへ `login_required` を返しました。旧カスタムスキームへの要求は
+  AuthZのエラー画面へ `invalid_redirect` を返し、旧経路が拒否されることも確認しました。
+- 別アプリが同じカスタムスキームを名乗る問題への対策として、iOSは関連付け済みのHTTPSだけを
+  受け取ります。AuthZの汎用カスタムスキーム登録の撤回は
+  [AuthZ #122](https://github.com/Zli-UoA/AuthZ/pull/122)、運用手順の統一は
+  [zoo2-infra #223](https://github.com/Zli-UoA/zoo2-infra/pull/223)で管理します。
 
 この確認では本人の認可コードやトークンを取得していません。
 コード交換とPKCEの検証はローカルのProvider結合テスト、アプリの取消・nonceなどの検査は
@@ -93,7 +99,7 @@ iOS 専用の公開 OAuth クライアントは登録済みです。
 | クライアント種別 | 公開クライアント。クライアントシークレットなし |
 | デバイスコードによるログイン | 許可 |
 | グラント種別 | `authorization_code`、`refresh_token`。旧版向けのデバイスコード設定も維持 |
-| リダイレクト URI・PKCE | `works.zli.zoo:/reauth-callback`、S256 |
+| リダイレクト URI・PKCE | `https://account.zli.works/ios/oauth/callback`、S256 |
 | トークンエンドポイントの認証方式 | `none` |
 | 許可スコープ | `openid profile offline_access` |
 | 関連付けるリソース / audience | `https://zli.chat/api` |
@@ -112,8 +118,10 @@ Discovery の `issuer` が設定値と一致することを検証し、認可・
 Team ID は `F82XB5KFX2`、バンドル識別子は `works.zli.zoo` です。
 この明示的な App ID で Push Notifications を有効にし、チーム用の署名・プロビジョニング設定を用意してください。
 アプリの Associated Domains と AuthZ 側の AASA をそろえてください。
-現在のコールバックはカスタムスキームのため、`/ios/oauth/callback` へのルーティングは使いません。
-既存のサーバールートを廃止する場合は、HTTPS コールバックを使う旧版への影響を別途確認してください。
+コールバックは `ASWebAuthenticationSession.Callback.https(host:path:)` で受け取ります。
+このAPIはホストとアプリのwebcredentials関連付けを検証するため、通常のUniversal Links用の
+`applinks`は追加しません。カスタムスキームへのフォールバックも設けません。
+[AppleのHTTPSコールバック仕様](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:))を参照してください。
 
 APNsトークンの署名鍵はサンドボックス用と本番用で分けます。
 通常通知のトピックは`works.zli.zoo`、VoIP着信のトピックは`works.zli.zoo.voip`です。
