@@ -215,3 +215,10 @@ test('visible translation changes reach dedicated E2E jobs before merge', () => 
   const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
   assert.equal(selectWorkflows([change.path], readWorkflow)['ci-frontend-e2ee-e2e'], false);
 });
+
+test('the layout fixture is not an input to dedicated auth E2E', () => {
+  const plan = selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [
+    { status: 'M', path: 'frontend/e2e/fixtures/layout.tsx' },
+  ]);
+  assert.equal(plan.frontend.auth, false);
+});

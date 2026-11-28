@@ -84,12 +84,21 @@ export function caseDependencies(source, ts) {
   }
   collect(ast);
   if (aliasedRunner || !cases.length || cases.some(c => c.unsupported)) return null;
-  return cases.map(c => {
+  let unknownImport = false;
+  const dependencies = cases.map(c => {
     const modules = new Set(shared.flatMap(s => s.module ? [s.module] : []));
     const visited = new Set();
     function references(node) {
       if (visited.has(node)) return;
       visited.add(node);
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const specifier = node.arguments[0];
+        if (specifier && (ts.isStringLiteral(specifier) || ts.isNoSubstitutionTemplateLiteral(specifier))) {
+          modules.add(specifier.text);
+        } else {
+          unknownImport = true;
+        }
+      }
       if (ts.isIdentifier(node)) {
         if (imports.has(node.text)) modules.add(imports.get(node.text));
         for (const declaration of declarations.get(node.text) ?? []) references(declaration);
@@ -100,6 +109,7 @@ export function caseDependencies(source, ts) {
     for (const item of shared) if (item.node) references(item.node);
     return { pattern: c.pattern, modules: [...modules] };
   });
+  return unknownImport ? null : dependencies;
 }
 
 export function selectSourceCases(project, selection, changes, base, { compiler, git = execFileSync, read = path => readFileSync(resolve(root, path), 'utf8'), exists = path => statSync(resolve(root, path), { throwIfNoEntry: false })?.isFile() ?? false, files, log = () => {} } = {}) {

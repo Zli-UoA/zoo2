@@ -154,6 +154,7 @@ function selectPullRequest(changes, full) {
         }
         if (path === 'frontend/public/manifest.webmanifest' || path.startsWith('frontend/public/icons/')) selected.push('pwa');
         if (path.startsWith('frontend/src/lib/offline/')) selected.push('offline');
+        if (path === 'frontend/public/android/reauth-callback.html') selected.push('container');
         if (!isVitestInput(path) || /^frontend\/(package\.json|pnpm-lock\.yaml|vite\.config\.)/.test(path)) {
           selected.push('pwa', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection', 'container', 'catalog');
         }
@@ -195,9 +196,16 @@ export function selectWorkflowPlan(eventName, workflow, changes, base) {
       ['ci-frontend-auth-e2e', 'ci-frontend-e2ee-e2e'].includes(workflow)) {
     const suite = workflow === 'ci-frontend-auth-e2e' ? 'auth' : 'e2ee';
     // Dedicated E2E tests also use translated accessible names.
-    if (relevant.some(change => !isLightweightChange(change))) {
-      selection.frontend[suite] = true;
-    }
+    const hasInput = relevant.some(change => {
+      if (isLightweightChange(change)) return false;
+      if (!/^frontend\/(?:e2e\/|playwright\.)/.test(change.path)) return true;
+      const owners = playwrightOwners(change.path);
+      return !owners || owners.includes(suite === 'auth' ? 'oidc' : 'e2ee');
+    });
+    // Mixed unowned fixture changes can make the generic plan select every
+    // Playwright suite. Dedicated workflows must apply their own ownership.
+    selection.frontend[suite] = hasInput;
+
   }
   if (relevant?.some(({ path }) => path.startsWith('.github/scripts/rust-test-selection/'))) {
     selection.backend.verifyCaseSelector = true;

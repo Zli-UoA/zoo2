@@ -222,3 +222,12 @@ test('case dependencies trace nested destructured aliases back to imports', () =
   `;
   assert.deepEqual(caseDependencies(source, compiler)?.map(testCase => testCase.modules), [['./First'], ['./Second']]);
 });
+
+test('case dependencies include literal dynamic imports and retain computed imports in full', () => {
+  const source = `
+    test('affected', async () => (await import('./First')).first());
+    test('independent', async () => (await import('./Second')).second());
+  `;
+  assert.deepEqual(caseDependencies(source, compiler)?.map(testCase => testCase.modules), [['./First'], ['./Second']]);
+  assert.equal(caseDependencies(source.replace("'./First'", "name"), compiler), null);
+});

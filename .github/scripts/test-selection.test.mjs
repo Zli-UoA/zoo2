@@ -351,3 +351,16 @@ test('existing copy edits keep all Web text-sensitive checks before merge', () =
 test('Slack event documentation embedded in the backend selects deploy validation', () => {
   assert.equal(selectSuites('pull_request', [change('docs/slack-event-coverage.json')]).backend.deploy, true);
 });
+
+test('a new plural variant of an existing message runs localization tests', () => {
+  const path = 'frontend/src/lib/i18n/locales/ja.json';
+  const changed = classifyTranslationChanges('a'.repeat(40), [change(path)], {
+    git: () => '{"messages":{"count_one":"1 message","count_other":"{{count}} messages"}}',
+    read: () => '{"messages":{"count_one":"1 message","count_other":"{{count}} messages","count_zero":"No messages"}}',
+  });
+  assert.equal(selectSuites('pull_request', changed).frontend.unit, true);
+});
+
+test('the Android reauthentication callback validates its production container', () => {
+  assert.equal(selectSuites('pull_request', [change('frontend/public/android/reauth-callback.html')]).frontend.container, true);
+});

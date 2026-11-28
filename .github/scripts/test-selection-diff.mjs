@@ -115,7 +115,11 @@ export function classifyTranslationChanges(base, changes, { git = execFileSync, 
     if (!translationOnlyChange(before, after, change.path)) return { ...change, status: 'T' };
     const oldEntries = translationEntries(JSON.parse(before), change.path);
     const newEntries = translationEntries(JSON.parse(after), change.path);
-    const translationText = [...oldEntries].some(([key, { value }]) => value !== newEntries.get(key).value);
+    const variants = /_(?:zero|one|two|few|many|other)$/;
+    const existingMessages = new Set([...oldEntries.keys()].map(key => key.replace(variants, '')));
+    const translationText = [...oldEntries].some(([key, { value }]) => value !== newEntries.get(key).value) ||
+      [...newEntries.keys()].some(key => !oldEntries.has(key) && variants.test(key) &&
+        existingMessages.has(key.replace(variants, '')));
     return { ...change, translationText };
   });
 }
