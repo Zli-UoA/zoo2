@@ -121,6 +121,28 @@ pub(super) mod tests {
         serde_json::from_slice(&plaintext).ok()
     }
 
+    /// `all` 設定で届く通常投稿も、既存のプレビューの union を壊さずに送る (#620)。
+    #[test]
+    fn channel_message_preview_keeps_the_notification_type() {
+        use crate::push::ENCRYPTED_MESSAGE_BODY;
+        let notification: crate::models::Notification = serde_json::from_value(json!({
+            "id": NOTICE, "user_id": USER, "actor_id": "actor", "channel_id": CHANNEL,
+            "message_id": MESSAGE, "notification_type": "channel_message", "is_read": false,
+            "created_at": crate::models::now_utc_millis()
+        }))
+        .unwrap();
+        let preview =
+            NotificationPreview::new(&notification, "Alice", "general", false, Some("本文"));
+        assert_eq!(
+            serde_json::to_value(&preview).unwrap()["notificationType"],
+            "channel_message"
+        );
+        assert_eq!(preview.title, "Alice · #general");
+        assert_eq!(preview.body, "本文");
+        let encrypted = NotificationPreview::new(&notification, "Alice", "secret", false, None);
+        assert_eq!(encrypted.body, ENCRYPTED_MESSAGE_BODY);
+    }
+
     #[test]
     fn e2ee_row_is_attached_only_within_the_apns_limit() {
         let notification = Notification {

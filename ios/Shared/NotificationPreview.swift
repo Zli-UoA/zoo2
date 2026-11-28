@@ -120,7 +120,7 @@ enum NotificationPreview {
         switch text.notificationType {
         case "push_test" where isTest, "missed_call" where !isTest && message.isEmpty:
             break
-        case "mention", "reply", "dm", "reaction":
+        case "mention", "reply", "dm", "reaction", "channel_message":
             guard !isTest, !message.isEmpty else { return content }
         default:
             return content

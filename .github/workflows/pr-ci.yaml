@@ -1,0 +1,53 @@
+# Keep the existing completion subscription on the default branch during rollout.
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      pr-batch: true
+
+  ci-backend:
+    needs: plan
+    if: needs.plan.outputs.plan != '' && fromJSON(needs.plan.outputs.plan)['ci-backend'] != null
+    uses: ./.github/workflows/ci-backend.yaml
+    with:
+      test-plan: ${{ toJSON(fromJSON(needs.plan.outputs.plan)['ci-backend']) }}
+    secrets: inherit
+
+  ci-frontend:
+    needs: plan
+    if: needs.plan.outputs.plan != '' && fromJSON(needs.plan.outputs.plan)['ci-frontend'] != null
+    uses: ./.github/workflows/ci-frontend.yaml
+    with:
+      test-plan: ${{ toJSON(fromJSON(needs.plan.outputs.plan)['ci-frontend']) }}
+    secrets: inherit
+
+  ci-tui:
+    needs: plan
+    if: needs.plan.outputs.plan != '' && fromJSON(needs.plan.outputs.plan)['ci-tui'] != null
+    uses: ./.github/workflows/ci-tui.yaml
+    with:
+      test-plan: ${{ toJSON(fromJSON(needs.plan.outputs.plan)['ci-tui']) }}
+    secrets: inherit
+
+  ci-github-bot:
+    needs: plan
+    if: needs.plan.outputs.plan != '' && fromJSON(needs.plan.outputs.plan)['ci-github-bot'] != null
+    uses: ./.github/workflows/ci-github-bot.yaml
+    with:
+      test-plan: ${{ toJSON(fromJSON(needs.plan.outputs.plan)['ci-github-bot']) }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write

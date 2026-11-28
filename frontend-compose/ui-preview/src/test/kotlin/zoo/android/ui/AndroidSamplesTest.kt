@@ -175,7 +175,13 @@ class AndroidSamplesTest {
                 followActor = "https://example.test/rin", followActivity = "https://example.test/follow", kind = "follow_request"),
         ))
         val conversation = AndroidScreen.Conversation("dev", "開発", "Zoo の開発と通話のテストについて相談するチャンネルです。",
-            posts, InputState("確認しました。"))
+            posts.mapIndexed { index, post ->
+                when (index) {
+                    0 -> post.copy(dateDivider = "昨日")
+                    1 -> post.copy(dateDivider = "今日", unreadDivider = "新着メッセージ")
+                    else -> post
+                }
+            }, InputState("確認しました。"))
         val avatar = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888).apply {
             eraseColor(0xffd6e9df.toInt())
             val canvas = Canvas(this)
@@ -232,6 +238,20 @@ class AndroidSamplesTest {
             ),
             loaded = true, canLoadOlder = true, searchedUntil = "2025-12",
             filters = searchFilterChoices,
+        ))
+        val channelSettings = AndroidScreen.ChannelSettings("開発", listOf(
+            SettingsGroup("チャンネル", listOf(
+                SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
+                SettingsEntry.Destination("members", "メンバー"),
+                SettingsEntry.Destination("add-member", "メンバーを追加"),
+                SettingsEntry.Destination("rename", "名前と説明を編集"),
+                SettingsEntry.Destination("archive", "アーカイブ"),
+            )),
+            SettingsGroup("通知", listOf(
+                SettingsEntry.Choice("notification:all", "すべての投稿", false),
+                SettingsEntry.Choice("notification:mentions", "メンション", true),
+                SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", false),
+            )),
         ))
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
@@ -301,13 +321,7 @@ class AndroidSamplesTest {
             "search-error" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.All, error = true)),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
-            "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
-                SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
-                SettingsEntry.Destination("members", "メンバー"),
-                SettingsEntry.Destination("add-member", "メンバーを追加"),
-                SettingsEntry.Destination("rename", "名前と説明を編集"),
-                SettingsEntry.Destination("archive", "アーカイブ"),
-            )))),
+            "channel-settings" to channelSettings,
             "channel-members" to AndroidScreen.Directory("メンバー", "", listOf(
                 SelectionItem("haru", "はる", isUserName = true),
                 SelectionItem("yui", "ゆい", isUserName = true),
@@ -335,7 +349,7 @@ class AndroidSamplesTest {
                     actions.add(action)
                     if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
                     if (action == AndroidUiAction.OpenChannelSettings("dev")) {
-                        screen = AndroidScreen.ChannelSettings("開発", settings)
+                        screen = channelSettings
                     }
                 }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
                     Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
@@ -343,13 +357,17 @@ class AndroidSamplesTest {
             }
             if (emojiPicker) {
                 val choices = remember {
-                    listOf("👍", "😊", "🎉", "❤️", "😀", "😂", "🥰", "😎", "🥳", "🙌", "👏", "👋", "✨", "🔥",
-                        "🌈", "🚀", "🌍", "🍕", "🍩", "☕", "⚽", "🎮", "🎵", "🎁", "🎂", "💡", "💯", "✅",
-                        "🐶", "🦊", "🐼", "🐻", "🐸", "🐵", "🦁", "🐯", "🐧", "🦄", "🦋", "🐙", "🌸", "🌻")
-                        .map { EmojiChoice(it, it, it) } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ")
+                    listOf(
+                        "スマイリーと感情" to "😀 😊 😂 🥰 😎 🥳",
+                        "アクティビティ" to "🎉 🎁 ⚽ 🎮 🎈 🎊",
+                        "動物と自然" to "🐶 🦊 🐼 🐻 🐸 🐵 🦁 🐯 🐧 🦄 🦋 🐙 🌸 🌻",
+                        "飲み物・食べ物" to "🍕 🍩 ☕ 🎂",
+                    ).flatMap { (category, glyphs) ->
+                        glyphs.split(' ').map { EmojiChoice(it, it, it, category = category) }
+                    } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ", category = "動物と自然")
                 }
                 EmojiPicker("絵文字", AndroidColors(dark), choices,
-                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji")),
+                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji", category = "イベント")),
                     loadKitchen = {
                         KitchenChoices(listOf(EmojiChoice("1f431", "🐱", "cat"))) {
                             listOf(EmojiChoice("kitchen:1f431_1f431", "🐱🐱", "cat duo", "fixture-emoji"))
@@ -537,12 +555,15 @@ class AndroidSamplesTest {
             ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second; dark = night }
             ui.onNodeWithContentDescription("絵文字").performClick()
             ui.onNodeWithText("🎉").assertIsDisplayed()
+            ui.onNodeWithText("スマイリーと感情").assertIsDisplayed()
+            ui.onNodeWithText("アクティビティ").assertIsDisplayed()
             capture("emoji-picker-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithTag("emoji-search").performTextInput("cat")
             ui.onNodeWithContentDescription("cat").assertIsDisplayed()
             ui.onNodeWithText("🎉").assertDoesNotExist()
             ui.onNodeWithText("カスタム").performClick()
             ui.onNodeWithContentDescription("party").assertIsDisplayed()
+            ui.onNodeWithText("イベント").assertIsDisplayed()
             capture("emoji-picker-custom-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithText("Emoji Kitchen").performClick()
             ui.onNodeWithContentDescription("cat").performClick()
@@ -618,9 +639,13 @@ class AndroidSamplesTest {
             screen = conversation
         }
         ui.onNodeWithText("開発").assertHasClickAction().performClick()
-        ui.onNodeWithText("テーマ").assertIsDisplayed()
+        for (label in listOf("すべての投稿", "メンション", "メンション以外を通知しない")) {
+            ui.onNodeWithText(label).assertIsDisplayed()
+        }
+        ui.onNodeWithText("メンション以外を通知しない").performClick()
         ui.runOnIdle {
             check(actions.contains(AndroidUiAction.OpenChannelSettings("dev")))
+            check(actions.contains(AndroidUiAction.OpenSetting("notification:mute")))
             check(actions.none { it is AndroidUiAction.ViewedNotification })
             screen = inbox
             foreground = true

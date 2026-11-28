@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 import Testing
@@ -26,6 +27,35 @@ struct NotificationPreviewTests {
         content.userInfo = ["preview_v1": preview, "user_id": userID, "notification_id": noticeID,
                             "channel_id": channelID, "message_id": messageID]
         return content
+    }
+
+    private func channelMessageContent(message: String?) throws -> UNMutableNotificationContent {
+        let original = content("")
+        original.userInfo["message_id"] = message
+        let aad = Data(["zoo-preview-v1", userID, noticeID, channelID, message ?? ""].joined(separator: "|").utf8)
+        let plaintext = try JSONEncoder().encode([
+            "title": "送信者 · #動物園", "body": "通常投稿の本文", "notificationType": "channel_message"
+        ])
+        let sealed = try AES.GCM.seal(plaintext, using: SymmetricKey(data: key.key), authenticating: aad)
+        original.userInfo["preview_v1"] = try #require(sealed.combined).base64EncodedString()
+        return original
+    }
+
+    @Test("すべて通知で届く通常投稿は送信者と本文を表示する")
+    func channelMessagePreview() throws {
+        let rendered = NotificationPreview.content(for: try channelMessageContent(message: messageID), key: key)
+        #expect(rendered.title == "送信者 · #動物園")
+        #expect(rendered.body == "通常投稿の本文")
+        #expect(rendered.userInfo[NotificationPreview.renderedKey] as? Bool == true)
+    }
+
+    @Test("通常投稿の通知は認証済みでもメッセージIDがなければ本文を表示しない")
+    func channelMessageRequiresMessageID() throws {
+        let original = try channelMessageContent(message: nil)
+        let rendered = NotificationPreview.content(for: original, key: key)
+        #expect(rendered.title == original.title)
+        #expect(rendered.body == original.body)
+        #expect(rendered.userInfo[NotificationPreview.renderedKey] == nil)
     }
 
     @Test("無効化更新か鍵削除が成功すれば旧鍵を返さず、同時失敗は既知の制約として残る", arguments: [(false, true), (true, false), (true, true)])

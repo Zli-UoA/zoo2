@@ -3,7 +3,12 @@ import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
+import {
+  useActiveChannels,
+  useAllUsers,
+  useChannelAccess,
+  useUsers,
+} from "../../hooks/useRealtime";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
@@ -56,6 +61,12 @@ export function ChannelScreen({
   );
   // 権限判定（閲覧可否・参加状態・保留中）は `useChannelAccess` に集約する。
   const access = useChannelAccess(channel);
+  // 参加中・DM では共有ユーザーで足りる。未参加の公開チャンネルだけ人数判定に全件を使う。
+  // 参加状態が確定する前は判定しない（loading 中に全件購読が始まらないようにする）。
+  const needsAllUsers =
+    !!channel && !access.isSyncing && !channel.is_dm && !channel.is_private && !access.isMember;
+  const allUsersQuery = useAllUsers(needsAllUsers);
+  const countUsers = needsAllUsers ? (allUsersQuery.data ?? []) : (usersQuery.data ?? []);
   const dm = useMemo(() => {
     if (!channel?.is_dm) {
       return null;
@@ -122,7 +133,7 @@ export function ChannelScreen({
             : access.canRead
               ? access.isLoading
                 ? null
-                : withoutDeactivatedMembers(access.members, usersQuery.data ?? []).length
+                : withoutDeactivatedMembers(access.members, countUsers).length
               : undefined
         }
       />

@@ -76,6 +76,8 @@ const config = defineConfig({
     fs: { allow: [dirname, path.resolve(dirname, "../crates/zoo-crypto-wasm/pkg")] },
   },
   build: {
+    // perf-kit の late-chunk 解析に使う。描画には影響しない。
+    manifest: true,
     // Production CSP permits same-origin fonts only. Keep small KaTeX fonts out of data URLs.
     assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
   },

@@ -380,7 +380,8 @@ struct MessageEncryptionTests {
         #expect(EncryptedAttachmentFiles.shared.decrypt(tampered, id: try #require(shown.encryptedFileID)) == nil)
     }
 
-    @Test func 通知拡張は通知の暗号文の行を暗号ストアの読み取りだけで復号する() async throws {
+    @Test(arguments: ["dm", "channel_message"])
+    func 通知拡張は通知の暗号文の行を暗号ストアの読み取りだけで復号する(notificationType: String) async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
         let secret = String(repeating: "通知🌏e\u{301}", count: 80)
@@ -411,7 +412,7 @@ struct MessageEncryptionTests {
         original.userInfo = info()
         original.userInfo["notification_id"] = notice
         let aad = Data(["zoo-preview-v1", user, notice, channel, messageID].joined(separator: "|").utf8)
-        let plaintext = try JSONEncoder().encode(["title": "Zoo", "body": "新しいメッセージ", "notificationType": "dm"])
+        let plaintext = try JSONEncoder().encode(["title": "Zoo", "body": "新しいメッセージ", "notificationType": notificationType])
         original.userInfo["preview_v1"] = try AES.GCM.seal(plaintext, using: SymmetricKey(data: previewKey.key), authenticating: aad).combined?.base64EncodedString()
         #expect(NotificationE2ee.content(for: original, previewKey: previewKey, roots: [root], loadKey: { _ in storageKey }).body == previewText)
         let newKey = NotificationPreviewKey(userID: user, secret: "再登録後のテスト用ダミー")

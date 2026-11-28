@@ -2,21 +2,11 @@ name: CI GitHub Bot
 on:
   # merge-queue.yaml がマージキューで呼び出す。
   workflow_call:
+    inputs:
+      test-plan:
+        type: string
+        default: ""
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "apps/github-bot/**"
-      - "sdk/**"
-      # sdk の E2EE（sdk/src/e2ee.ts）は zoo-crypto の wasm を読む。サンプルの Bot もここで試す。
-      - "examples/e2ee-echo-bot/**"
-      - "crates/zoo-crypto/**"
-      - "crates/zoo-crypto-wasm/**"
-      - "rust-toolchain.toml"
-      - ".github/actions/crypto-wasm/**"
-      - ".github/workflows/select-tests.yaml"
-      - ".github/scripts/*test-selection*.mjs"
-      - ".github/workflows/ci-github-bot.yaml"
-      - ".github/workflows/select-runner.yaml"
   push:
     branches: [main]
     paths:
@@ -41,6 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   test-selection:
+    if: inputs.test-plan == ''
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-github-bot
@@ -50,7 +41,10 @@ jobs:
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
   test:
-    if: fromJSON(needs.test-selection.outputs.bots).bot
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').bots.bot)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 10
@@ -68,10 +62,10 @@ jobs:
       - run: npm --prefix apps/github-bot run check
       - run: node .github/scripts/node-test-selection.mjs bot
       - name: Build standalone bot image
-        if: fromJSON(needs.test-selection.outputs.bots).image
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').bots.image
         run: docker build -f apps/github-bot/Dockerfile -t zoo-github-bot:test .
       - name: Smoke-test the packaged server and SQLite as an unprivileged user
-        if: fromJSON(needs.test-selection.outputs.bots).image
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').bots.image
         run: |
           docker run --rm --entrypoint node zoo-github-bot:test --experimental-strip-types --input-type=module -e '
             import { Store } from "./apps/github-bot/src/store.ts";
@@ -89,7 +83,10 @@ jobs:
           '
   # sdk の E2EE（Bot の端末。#366）とサンプルの Bot。wasm（crates/zoo-crypto-wasm）を作ってから試す。
   sdk-e2ee:
-    if: fromJSON(needs.test-selection.outputs.bots).sdk
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').bots.sdk)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30

@@ -27,12 +27,26 @@ internal fun notificationBody(row: Row, translate: (String, String) -> String): 
     val data = row.nested("display_data")
     val content = data.nested("message").text("content")
     val kind = row.text("notification_type")
-    if (kind != "reaction") return content.ifEmpty { translate("notifications.$kind", notificationActor(row)) }
-    val description = translate("notifications.$kind", notificationActor(row))
+    val actor = notificationActor(row)
+    if (kind != "reaction") return content.ifEmpty { notificationKindText(kind, actor, translate) }
+    val description = notificationKindText(kind, actor, translate)
     val emoji = data["reactions"]?.rows()?.firstOrNull {
         it.text("user_id") == row.text("actor_id")
     }?.text("emoji").orEmpty()
     return listOf(description, emoji, content).filter { it.isNotEmpty() }.joinToString("\n")
+}
+
+/**
+ * `channel_message` のキーは新しい辞書だけに追加される。辞書に無いとき [translate] はキー名を返すので、
+ * 全ロケールに既存の `notifications.channelMessage` へ落とし、それも無いときは固定文言を使う。
+ * いずれの場合も翻訳キー名を通知に出さない。
+ */
+private fun notificationKindText(kind: String, actor: String, translate: (String, String) -> String): String {
+    val key = "notifications.$kind"
+    val text = translate(key, actor)
+    if (text != key || kind != "channel_message") return text
+    val previousKey = "notifications.channelMessage"
+    return translate(previousKey, actor).takeIf { it != previousKey } ?: "新しいメッセージ"
 }
 
 /** Native styles let Android handle expansion, accessibility and conversation layout. */

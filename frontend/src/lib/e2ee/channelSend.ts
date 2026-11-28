@@ -1,6 +1,7 @@
 import type { AttachmentInfo, JsonObject, Mentions, OutgoingMessage } from "@zoo/crypto-wasm";
 
 import type { ApiClient } from "../api/client";
+import { postThreadReply } from "../api/threadReply";
 import type { CryptoWorker } from "./cryptoWorker";
 import {
   claimKeys,
@@ -29,6 +30,8 @@ export interface ChannelCryptoDeps {
    * 送るのに使う（`E2eeContextValue.requestKeyBackup`）。
    */
   onSessionCreated?: () => void;
+  /** 503 `THREAD_BUSY` の再送で待つ関数。既定は `setTimeout`（テストで差し替える）。 */
+  replyRetryDelay?: (ms: number) => Promise<void>;
 }
 
 /** 送信の要求に入れる、暗号化チャンネルのメッセージ（docs/e2ee.md の「メッセージ」）。 */
@@ -275,7 +278,15 @@ export async function sendEncryptedMessage(
           ? { attachment_ids: attachments.map((attachment) => attachment.attachment_id) }
           : {}),
       };
-      await deps.client.post("/api/messages", request, { signal: deps.signal });
+      // 返信だけが 503 THREAD_BUSY の対象。暗号化し直さず、同じ id・同じ暗号文の body を再送する。
+      if (parentId) {
+        await postThreadReply(deps.client, request, {
+          signal: deps.signal,
+          delay: deps.replyRetryDelay,
+        });
+      } else {
+        await deps.client.post("/api/messages", request, { signal: deps.signal });
+      }
     },
   );
 }

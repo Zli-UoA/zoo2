@@ -116,6 +116,38 @@ impl AppError {
         err_str.contains("40P01") || err_str.contains("deadlock detected")
     }
 
+    /// `toasty::Error` が PostgreSQL の lock_not_available (55P03) かどうか。
+    /// 返信のルート行ロック待ちに `SET LOCAL lock_timeout` を設けたときの早期失敗に使う。
+    pub fn is_lock_timeout(err: &toasty::Error) -> bool {
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = curr {
+            if e.downcast_ref::<tokio_postgres::Error>()
+                .and_then(|pg_err| pg_err.code())
+                .is_some_and(|code| *code == tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+            {
+                return true;
+            }
+            curr = e.source();
+        }
+        err.to_string().contains("55P03") || err.to_string().contains("lock not available")
+    }
+
+    /// `toasty::Error` が statement_timeout (57014) かどうか。
+    /// ルート行ロックの待ち全体を制限するために使う。
+    pub fn is_statement_timeout(err: &toasty::Error) -> bool {
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = curr {
+            if e.downcast_ref::<tokio_postgres::Error>()
+                .and_then(|pg_err| pg_err.code())
+                .is_some_and(|code| *code == tokio_postgres::error::SqlState::QUERY_CANCELED)
+            {
+                return true;
+            }
+            curr = e.source();
+        }
+        err.to_string().contains("57014") || err.to_string().contains("canceling statement")
+    }
+
     /// `toasty::Error` が UNIQUE 制約違反かどうか、および指定された制約名（オプション）に合致するか判定する
     pub fn is_unique_violation(err: &toasty::Error, constraint_name: Option<&str>) -> bool {
         let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
@@ -174,8 +206,11 @@ impl IntoResponse for AppError {
             body.insert("error".into(), message.into());
             body.insert("code".into(), code.into());
             let mut response = (status, Json(serde_json::Value::Object(body))).into_response();
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                let value = retry_after.unwrap_or(60).to_string();
+            // retry_after は必要な経路だけが明示する。429 は既存どおり既定60秒。
+            let retry_after =
+                retry_after.or_else(|| (status == StatusCode::TOO_MANY_REQUESTS).then_some(60));
+            if let Some(value) = retry_after {
+                let value = value.to_string();
                 if let Ok(value) = axum::http::HeaderValue::from_str(&value) {
                     response.headers_mut().insert("retry-after", value);
                 }

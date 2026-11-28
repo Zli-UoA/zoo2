@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   ATTACHMENT_SCHEMA,
   CHANNEL_LEAVE_SCHEMA,
+  CHANNEL_NOTIFICATION_SETTINGS_SCHEMA,
+  CHANNEL_USER_SCHEMA,
   MESSAGE_REACTION_SCHEMA,
   SHAPE_META,
   USER_PINNED_CHANNEL_SCHEMA,
@@ -84,6 +86,26 @@ describe("SHAPE_META", () => {
       table: "channel_user",
       proxyPath: "channel_users",
     });
+    expect(Object.keys(CHANNEL_USER_SCHEMA.columns)).toEqual([
+      "user_id",
+      "channel_id",
+      "joined_at",
+    ]);
+  });
+
+  it("maps the notification settings shape to its own table and proxy path", () => {
+    expect(SHAPE_META.channelNotificationSettings).toEqual({
+      table: "user_channel_notification_settings",
+      proxyPath: "channel_notification_settings",
+    });
+    expect(CHANNEL_NOTIFICATION_SETTINGS_SCHEMA.table).toBe("user_channel_notification_settings");
+    expect(CHANNEL_NOTIFICATION_SETTINGS_SCHEMA.columns.notification_level).toBe("text");
+    const row = coerceElectricRow("user_channel_notification_settings", {
+      user_id: "user-1",
+      channel_id: "channel-1",
+      notification_level: "all",
+    });
+    expect(row.notification_level).toBe("all");
   });
 
   it("maps the channel leave proxy path to the channel_leave table", () => {

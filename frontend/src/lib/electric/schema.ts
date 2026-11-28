@@ -1,6 +1,7 @@
 import type {
   AttachmentRow,
   ChannelLeaveRow,
+  ChannelNotificationSettingRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -43,7 +44,9 @@ export type ShapeName =
   | "messages"
   | "messageReactions"
   | "users"
+  | "allUsers"
   | "channelUsers"
+  | "channelNotificationSettings"
   | "channelLeaves"
   | "notifications"
   | "callInvites"
@@ -61,7 +64,13 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
+  allUsers: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  // 通知設定は専用テーブル。自分の行だけを配信する別の Shape を使う。
+  channelNotificationSettings: {
+    table: "user_channel_notification_settings",
+    proxyPath: "channel_notification_settings",
+  },
   channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   callInvites: { table: "call_invites", proxyPath: "call_invites" },
   attachments: { table: "attachments", proxyPath: "attachments" },
@@ -166,6 +175,16 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
   },
 };
 
+/** 本人の通知設定だけを配信する Shape の列定義。 */
+export const CHANNEL_NOTIFICATION_SETTINGS_SCHEMA: ShapeSchema<ChannelNotificationSettingRow> = {
+  table: "user_channel_notification_settings",
+  columns: {
+    user_id: "text",
+    channel_id: "text",
+    notification_level: "text",
+  },
+};
+
 export const CHANNEL_LEAVE_SCHEMA: ShapeSchema<ChannelLeaveRow> = {
   table: "channel_leave",
   columns: {
@@ -240,6 +259,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  user_channel_notification_settings: CHANNEL_NOTIFICATION_SETTINGS_SCHEMA,
   channel_leave: CHANNEL_LEAVE_SCHEMA,
   call_invites: CALL_INVITE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,
