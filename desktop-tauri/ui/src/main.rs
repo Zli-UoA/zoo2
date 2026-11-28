@@ -23,7 +23,8 @@ use zoo2_client_types::{
     ipc::{
         ChannelNotificationSettings, FocusState, IpcError, LinkedMessage, LinkedUpdate,
         LoginFailed, LoginPrompt, OpenChannel, OpenTarget, SendMessage, SendResult, SessionInfo,
-        SessionState, SetChannelNotificationLevel, ShapeBatch, ShapeFailed, UiMode, command, event,
+        SessionState, SetChannelNotificationLevel, ShapeBatch, ShapeFailed, UiMode, WatchLinks,
+        command, event,
     },
     link_store,
     links::{LOAD_TIMEOUT, bare_links, embedded_links, parse_channel_link},
@@ -137,8 +138,8 @@ struct Ctx {
     starting: RwSignal<bool>,
     /// 本文のリンクが指すメッセージで、Rust 側が取った結果。
     linked: RwSignal<link_store::Fetched>,
-    /// その結果のうち、変化を受け取り続けているもの。
-    live: RwSignal<HashSet<LinkedMessage>>,
+    /// その結果のうち、移動先の確認で取り直して届いたもの。
+    checked: RwSignal<HashSet<LinkedMessage>>,
     /// 開いているチャンネルの同期した行に、暗号文の行があるか。
     open_ciphertext: Memo<bool>,
     /// 暗号文の行が届いたことのあるチャンネル（Rust 側のリンク先の取得を含む）。
@@ -150,14 +151,14 @@ struct Ctx {
     /// 待ち始めた回数。前の待ちの時間切れを区別する。
     open_waits: StoredValue<u64>,
     /// Rust 側に伝えるリンク先と、伝えている途中かどうか。
-    watched: StoredValue<Option<(u64, Vec<LinkedMessage>)>>,
+    watched: StoredValue<Option<WatchLinks>>,
     watching: StoredValue<bool>,
     /// リンクで開いたメッセージ（その行が届くまで）。
     jump: RwSignal<Option<links::Jump>>,
     /// 別のチャンネルの行き先で、表示できるか確かめているもの。分かるまで移らない。
     pending: RwSignal<Option<links::Jump>>,
-    /// 同じリンク先でも、Rust 側に伝え直して結果を送ってもらう回数。
-    watch_round: StoredValue<u64>,
+    /// 直近の移動先の確認の番号。
+    check_round: StoredValue<u64>,
     /// リンクで開けなかったときなどの知らせ。
     notice: RwSignal<Option<&'static str>>,
     /// 同じチャンネルへの PATCH を送信順に直列化するロック。コンポーネントが再生成されても
@@ -212,7 +213,7 @@ impl Ctx {
             self.store.set(Store::default());
             self.channel.set(None);
             self.linked.set(Default::default());
-            self.live.set(Default::default());
+            self.checked.set(Default::default());
             self.ciphertext.set(Default::default());
             self.stopped.set(Default::default());
             self.watched.set_value(None);
@@ -328,12 +329,12 @@ impl Ctx {
                 .update(|seen| seen.extend(update.ciphertext));
         }
         if !update.linked.is_empty() {
-            self.live.update(|live| {
+            self.checked.update(|checked| {
                 for update in &update.linked {
-                    if update.live {
-                        live.insert(update.target.clone());
+                    if update.checked {
+                        checked.insert(update.target.clone());
                     } else {
-                        live.remove(&update.target);
+                        checked.remove(&update.target);
                     }
                 }
             });
@@ -408,12 +409,12 @@ fn App() -> impl IntoView {
         generation: RwSignal::new(0),
         starting: RwSignal::new(false),
         linked: RwSignal::new(Default::default()),
-        live: RwSignal::new(Default::default()),
+        checked: RwSignal::new(Default::default()),
         watched: StoredValue::new(None),
         watching: StoredValue::new(false),
         jump: RwSignal::new(None),
         pending: RwSignal::new(None),
-        watch_round: StoredValue::new(0),
+        check_round: StoredValue::new(0),
         notice: RwSignal::new(None),
         notification_locks: StoredValue::new_local(HashMap::new()),
         notification_saved: RwSignal::new_local(HashMap::new()),
@@ -779,7 +780,10 @@ fn Main() -> impl IntoView {
     // Rust 側に残る前のリンク先を外す。
     Effect::new(move |_| {
         if ctx.channel.with(Option::is_none) {
-            ctx.watch_links(Vec::new());
+            ctx.watch_links(WatchLinks {
+                targets: Vec::new(),
+                check: None,
+            });
         }
     });
     links::follow_destination();

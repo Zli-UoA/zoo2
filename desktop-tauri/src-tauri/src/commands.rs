@@ -213,7 +213,7 @@ pub async fn zoo_watch_links(
 ) -> Result<(), IpcError> {
     require(&webview, &core, BUNDLED)?;
     leptos_only(&core)?;
-    core.watch_links(links.targets).await
+    core.watch_links(links).await
 }
 
 #[tauri::command]

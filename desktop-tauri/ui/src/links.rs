@@ -8,7 +8,7 @@ use jiff::civil::DateTime;
 use leptos::{ev, html, prelude::*, task::spawn_local};
 use wasm_bindgen::JsCast;
 use zoo2_client_types::{
-    ipc::{LinkedMessage, WatchLinks, command},
+    ipc::{WatchLinks, command},
     link_store::{self, Destination},
     links::{self, LinkState, LinkTarget, LinkedFetch, PreviewBody},
     rows::Message,
@@ -201,15 +201,30 @@ impl Ctx {
         if self.pending.with_untracked(Option::is_some) {
             self.dismiss_notice();
         }
-        let note = untrack(|| {
-            self.with_link_state(target, |state, _| match state {
-                LinkState::Unavailable { message: true } => Some(UNAVAILABLE_MESSAGE),
-                LinkState::Unavailable { message: false } => Some(UNAVAILABLE_CHANNEL),
-                _ => None,
+        let here = self
+            .channel
+            .with_untracked(|open| open.as_deref() == Some(target.channel_id.as_str()));
+        let message_id = target.linked_message_id();
+        // 別のチャンネルのメッセージは取り直してから判定するので、ここではチャンネルを見られるかだけを
+        // 調べる（覚えている「見つからない」は、古いかもしれない）。
+        let judged = match message_id {
+            Some(_) if !here => LinkTarget {
+                channel_id: target.channel_id.clone(),
+                message_id: None,
+                thread_id: None,
+            },
+            _ => target.clone(),
+        };
+        let unavailable = untrack(|| {
+            self.with_link_state(&judged, |state, _| {
+                matches!(state, LinkState::Unavailable { .. })
             })
         });
-        if let Some(note) = note {
-            self.notice.set(Some(note));
+        if unavailable {
+            self.notice.set(Some(match message_id {
+                Some(_) => UNAVAILABLE_MESSAGE,
+                None => UNAVAILABLE_CHANNEL,
+            }));
             return;
         }
         // チャンネルの一覧の同期がまだなら、行き先が分からないので何もしない。
@@ -219,13 +234,10 @@ impl Ctx {
         {
             return;
         }
-        let to = target.linked_message_id().map(|message_id| Jump {
+        let to = message_id.map(|message_id| Jump {
             channel_id: target.channel_id.clone(),
             message_id: message_id.to_owned(),
         });
-        let here = self
-            .channel
-            .with_untracked(|open| open.as_deref() == Some(target.channel_id.as_str()));
         match to {
             // 別のチャンネルのメッセージは、表示できると分かるまで移らない（書きかけの本文を保つ）。
             Some(to) if !here => self.check_destination(to),
@@ -238,50 +250,43 @@ impl Ctx {
         }
     }
 
-    /// 取得した結果で、行き先へ移れるか。読んだ値が変わると、呼び出し元はもう一度調べる。
+    /// 取り直した結果で、行き先へ移れるか。読んだ値が変わると、呼び出し元はもう一度調べる。
     fn destination(&self, to: &Jump) -> Destination {
         self.linked.with(|fetched| {
-            self.live
-                .with(|live| link_store::destination(fetched, live, &to.channel_id, &to.message_id))
+            self.checked.with(|checked| {
+                link_store::destination(fetched, checked, &to.channel_id, &to.message_id)
+            })
         })
     }
 
-    fn open_destination(&self, to: Jump) {
-        self.open_channel(to.channel_id.clone());
-        self.jump.set(Some(to));
-    }
-
+    /// 行き先の確認を始める。覚えている結果は埋め込みに残し、取り直した結果で移るかを決める
+    /// （[`follow_destination`]）。
     fn check_destination(&self, to: Jump) {
         self.jump.set(None);
-        match untrack(|| self.destination(&to)) {
-            Destination::Ready => self.open_destination(to),
-            Destination::Unavailable => self.notice.set(Some(UNAVAILABLE_MESSAGE)),
-            Destination::Waiting(_) | Destination::Failed => {
-                // 前の失敗は捨てて、いまの状態を送り直してもらう。
-                self.linked.update(|linked| {
-                    linked.retain(|key, fetch| {
-                        key.channel_id != to.channel_id
-                            || !matches!(
-                                fetch,
-                                LinkedFetch::Failed | LinkedFetch::Loading { stalled: true }
-                            )
-                    });
-                });
-                self.watch_round.update_value(|round| *round += 1);
-                self.notice.set(Some(CHECKING));
-                self.pending.set(Some(to));
-                self.give_up_destination_later();
-            }
-        }
+        self.checked.set(Default::default());
+        // 前の失敗は捨てて、いまの状態を送り直してもらう。
+        self.linked.update(|linked| {
+            linked.retain(|key, fetch| {
+                key.channel_id != to.channel_id
+                    || !matches!(
+                        fetch,
+                        LinkedFetch::Failed | LinkedFetch::Loading { stalled: true }
+                    )
+            });
+        });
+        self.check_round.update_value(|round| *round += 1);
+        self.notice.set(Some(CHECKING));
+        self.pending.set(Some(to));
+        self.give_up_destination_later();
     }
 
     /// 時間がたっても行き先が分からなければ、読み込めなかったものとする。前の結果が残る行き先は、
     /// 取り直せなくても、取得の時間切れにならない。
     fn give_up_destination_later(self) {
-        let round = self.watch_round.get_value();
+        let round = self.check_round.get_value();
         set_timeout(
             move || {
-                if self.watch_round.try_get_value() == Some(round)
+                if self.check_round.try_get_value() == Some(round)
                     && self.pending.with_untracked(Option::is_some)
                 {
                     self.pending.set(None);
@@ -298,12 +303,15 @@ impl Ctx {
         self.notice.set(None);
     }
 
-    /// 行き先を確かめるために、取得してもらうリンク先。
-    fn pending_targets(&self) -> Vec<LinkedMessage> {
+    /// 行き先を確かめるために、取り直してもらうリンク先。確かめていなければ `None`。
+    fn pending_check(&self) -> Option<WatchLinks> {
         self.pending.with(
             |pending| match pending.as_ref().map(|to| self.destination(to)) {
-                Some(Destination::Waiting(targets)) => targets,
-                _ => Vec::new(),
+                Some(Destination::Waiting(targets)) => Some(WatchLinks {
+                    targets,
+                    check: Some(self.check_round.get_value()),
+                }),
+                _ => None,
             },
         )
     }
@@ -317,15 +325,14 @@ impl Ctx {
 
     /// 画面の近くのリンク先を Rust 側に伝える。届く順番が入れ替わらないよう、前の呼び出しが
     /// 終わってから次を送る。
-    pub fn watch_links(self, targets: Vec<LinkedMessage>) {
-        let next = (self.watch_round.get_value(), targets);
+    pub fn watch_links(self, links: WatchLinks) {
         if self
             .watched
-            .with_value(|watched| watched.as_ref() == Some(&next))
+            .with_value(|watched| watched.as_ref() == Some(&links))
         {
             return;
         }
-        self.watched.set_value(Some(next));
+        self.watched.set_value(Some(links));
         if self.watching.get_value() {
             return;
         }
@@ -334,15 +341,12 @@ impl Ctx {
         spawn_local(async move {
             let mut sent = None;
             while self.generation.get_untracked() == generation {
-                let Some(next) = self.watched.get_value() else {
+                let Some(links) = self.watched.get_value() else {
                     break;
                 };
-                if sent.as_ref() == Some(&next) {
+                if sent.as_ref() == Some(&links) {
                     break;
                 }
-                let links = WatchLinks {
-                    targets: next.1.clone(),
-                };
                 if let Err(err) =
                     tauri::invoke::<()>(command::WATCH_LINKS, serde_json::json!({ "links": links }))
                         .await
@@ -354,7 +358,7 @@ impl Ctx {
                     }
                     break;
                 }
-                sent = Some(next);
+                sent = Some(links);
             }
             self.watching.set_value(false);
         });
@@ -378,7 +382,8 @@ pub fn follow_destination() {
                         .is_some_and(|channel| channel.deleted_at.is_none())
                 });
                 if listed {
-                    ctx.open_destination(to);
+                    ctx.open_channel(to.channel_id.clone());
+                    ctx.jump.set(Some(to));
                     return;
                 }
                 UNAVAILABLE_MESSAGE
@@ -662,8 +667,10 @@ pub fn follow_timeline(
         });
         // 行き先を確かめる間は、それだけを伝える。購読の上限まで使っていても、使っていない購読を
         // 閉じて取得できるようにする。
-        let waiting = ctx.pending_targets();
-        ctx.watch_links(if waiting.is_empty() { nearby } else { waiting });
+        ctx.watch_links(ctx.pending_check().unwrap_or(WatchLinks {
+            targets: nearby,
+            check: None,
+        }));
     });
 
     let resize = window_event_listener(ev::resize, move |_| measure());

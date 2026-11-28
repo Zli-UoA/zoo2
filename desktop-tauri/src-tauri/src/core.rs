@@ -37,7 +37,8 @@ use zoo2_client_types::{
     ipc::{
         BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, Linked, LinkedMessage,
         LinkedUpdate, LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget,
-        PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
+        PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, WatchLinks,
+        event,
     },
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
@@ -650,15 +651,20 @@ impl Core {
     }
 
     /// (a) 画面の近くのリンク先を入れ替える。分かっていることは、すぐに送り直す
-    /// （読み込み直した画面のため）。
-    pub async fn watch_links(&self, targets: Vec<LinkedMessage>) -> Result<(), IpcError> {
+    /// （読み込み直した画面のため）。移動先の確認なら、`targets` を取り直す。
+    pub async fn watch_links(&self, links: WatchLinks) -> Result<(), IpcError> {
         let mut inner = self.inner.lock().await;
         let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
-        let keys: Vec<LinkedKey> = targets
+        let keys: Vec<LinkedKey> = links
+            .targets
             .into_iter()
             .map(|target| (target.channel_id, target.message_id))
             .collect();
         let now = Instant::now();
+        match links.check {
+            Some(check) => session.links.check(now, check, &keys),
+            None => session.links.end_check(),
+        }
         let fetcher = self.link_fetcher(session);
         session.links.watch(now, keys, fetcher);
         session.links.report_again();
@@ -1616,7 +1622,7 @@ fn link_update(report: LinkReport) -> LinkedUpdate {
                     channel_id,
                     message_id,
                 },
-                live: state.as_ref().is_some_and(|state| state.live),
+                checked: state.as_ref().is_some_and(|state| state.checked),
                 fetch: state.map(|state| state.fetch),
             })
             .collect(),
