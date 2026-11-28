@@ -6,6 +6,24 @@ import Testing
 @MainActor
 @Suite("一覧から前の会話へ戻る")
 struct WorkspaceNavigationTests {
+    @Test("親投稿が未取得でもスレッドリンクで返信画面を開く", arguments: [false, true])
+    func opensLinkedThread(withReply: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let channelID = "11111111-1111-4111-8111-111111111111", parentID = "22222222-2222-4222-8222-222222222222", replyID = "44444444-4444-4444-8444-444444444444"
+        let channel = Channel(id: channelID, channel_name: "一般", is_private: false, is_dm: false)
+        let bytes = try JSONEncoder().encode(channel)
+        harness.stub { request in
+            #expect(request.url?.path == "/api/channels/\(channelID)")
+            return (200, [:], bytes)
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: "33333333-3333-4333-8333-333333333333", user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        #expect(await workspace.openMessage(channelID: channelID, messageID: withReply ? replyID : nil, threadID: parentID))
+        #expect(workspace.channelPath == [.channel(channelID), .thread(channelID: channelID, parentID: parentID, focusComposer: false)])
+        #expect(workspace.conversation(for: channel).focusedMessageID == (withReply ? replyID : nil))
+    }
+
     @Test("メンバー取得中に会話を離れて戻っても要求を共有し、ログアウト後は反映しない", arguments: [false, true])
     func sharesMembersAcrossVisits(logout: Bool) async throws {
         let harness = try ChatHarness()

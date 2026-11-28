@@ -46,6 +46,21 @@ final class MessageRenderCache {
 final class MessageRenderState {
     let id = UUID()
     @ObservationIgnored private var attachments: [String: AttachmentRenderState] = [:]
+    @ObservationIgnored private var mfmState: MfmNativeState?
+    @ObservationIgnored private var mfmScope = ""
+
+    func mfm(content: String, scope: String = "") -> MfmNativeState {
+        if let mfmState, mfmScope == scope, mfmState.document.source == content { return mfmState }
+        let state = MfmNativeState(content: content)
+        mfmState = state
+        mfmScope = scope
+        return state
+    }
+
+    func mfmIfNeeded(content: String, scope: String = "") -> MfmNativeState? {
+        guard MessageContent.requiresMfm(content) else { mfmState = nil; return nil }
+        return mfm(content: content, scope: scope)
+    }
 
     func attachment(_ attachment: MessageAttachment) -> AttachmentRenderState {
         if let state = attachments[attachment.id], state.attachment == attachment { return state }
@@ -69,8 +84,10 @@ struct MessageContentView: View {
     let message: Message
     let workspace: WorkspaceStore
     @Bindable var renderState: MessageRenderState
+    let isVisible: Bool
     @ScaledMetric(relativeTo: .body) private var emojiHeight: CGFloat = 24
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
 
     private struct ImageLoadKey: Equatable {
         let stateID: UUID
@@ -79,6 +96,25 @@ struct MessageContentView: View {
     }
 
     var body: some View {
+        Group {
+            if let mfm = renderState.mfmIfNeeded(content: message.content, scope: workspace.client.serverURL + "|" + workspace.user.id) {
+                MfmMessageView(message: message, workspace: workspace, isVisible: isVisible,
+                               state: mfm)
+            } else {
+                plainBody
+            }
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            if let target = MessageLink.target(url, serverURL: workspace.client.serverURL) {
+                Task { _ = await workspace.openMessage(channelID: target.channelID, messageID: target.messageID, threadID: target.threadID) }
+                return .handled
+            }
+            openURL(url)
+            return .handled
+        })
+    }
+
+    @ViewBuilder private var plainBody: some View {
         let parts = MessageContent.parse(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content, mention: { workspace.mentionIdentity($0, in: message) }) {
             workspace.emojiImageURL(for: $0, message: message)
         }
@@ -95,7 +131,6 @@ struct MessageContentView: View {
             await workspace.images.watch(states, policy: .stored)
         }
     }
-
 }
 
 @MainActor
@@ -136,5 +171,33 @@ enum MessageContentText {
         // 入れ子を二分し、上限近い本文でも Text の再帰深度を対数に抑える。
         let middle = runs.index(runs.startIndex, offsetBy: runs.count / 2)
         return Text("\(joined(runs[..<middle]))\(joined(runs[middle...]))")
+    }
+}
+
+enum MessageLink {
+    struct Target: Equatable { let channelID: String; let messageID: String?; let threadID: String? }
+    static func url(serverURL: String, channelID: String, messageID: String? = nil, threadID: String? = nil) -> URL? {
+        guard var parts = URLComponents(string: serverURL), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
+              parts.host?.isEmpty == false, parts.user == nil, parts.password == nil,
+              UUID(uuidString: channelID) != nil,
+              [messageID, threadID].compactMap({ $0 }).allSatisfy({ UUID(uuidString: $0) != nil }) else { return nil }
+        parts.path = "/channels/" + channelID
+        let query = [threadID.map { URLQueryItem(name: "thread", value: $0) }, messageID.map { URLQueryItem(name: "message", value: $0) }].compactMap { $0 }
+        parts.queryItems = query.isEmpty ? nil : query
+        parts.fragment = nil
+        return parts.url
+    }
+    static func target(_ url: URL, serverURL: String) -> Target? {
+        guard let server = URL(string: serverURL), url.scheme?.lowercased() == server.scheme?.lowercased(),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.user == nil, url.password == nil,
+              url.host?.lowercased() == server.host?.lowercased(),
+              (url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)) == (server.port ?? (server.scheme?.lowercased() == "https" ? 443 : 80)) else { return nil }
+        let path = url.pathComponents
+        guard path.count == 3, path[1] == "channels", UUID(uuidString: path[2]) != nil else { return nil }
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func id(_ key: String) -> String? {
+            query.first(where: { $0.name == key })?.value.flatMap { UUID(uuidString: $0) == nil ? nil : $0 }
+        }
+        return Target(channelID: path[2], messageID: id("message"), threadID: id("thread"))
     }
 }

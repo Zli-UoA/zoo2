@@ -1,11 +1,15 @@
 import SwiftUI
+import UIKit
 
 struct ComposerView: View {
     @Bindable var store: ConversationStore
     let workspace: WorkspaceStore
     let parentID: String?
-    @FocusState.Binding var focused: Bool
+    @Binding var focused: Bool
     @State private var selection: TextSelection?
+    @State private var inputIsComposing = false
+    @State private var mfmSelectedIndex = 0
+    @State private var dismissedMfmText: String?
     @State private var submission: UUID?
     @State private var showingEmoji = false
     @State private var emojiInsertionRange: Range<String.Index>?
@@ -45,6 +49,15 @@ struct ComposerView: View {
         }
         return MentionInput.query(in: text, caret: text.endIndex)
     }
+    private var mfmQuery: MfmInput.Query? {
+        guard focused, dismissedMfmText != draft.wrappedValue else { return nil }
+        let text = draft.wrappedValue
+        if let range = selectedRange {
+            guard range.isEmpty else { return nil }
+            return MfmInput.query(in: text, caret: range.lowerBound)
+        }
+        return MfmInput.query(in: text, caret: text.endIndex)
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -66,12 +79,14 @@ struct ComposerView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .center, spacing: 8) {
                         if !expanded { additionSpace }
-                        TextField(placeholder, text: draft, selection: $selection, axis: .vertical)
-                            .lineLimit(1...6).focused($focused)
+                        MfmComposerTextField(placeholder: placeholder, text: draft, selection: $selection, focused: $focused, composing: $inputIsComposing,
+                            completionEnabled: mfmQuery != nil && !MfmInput.options(mfmQuery?.text ?? "").isEmpty,
+                            inputID: parentID == nil ? "message-input" : "reply-input",
+                            inputLabel: parentID == nil ? "メッセージを入力" : "返信を入力", handle: handleMfmKey)
                             .padding(.vertical, expanded ? 12 : 10)
                             .frame(minHeight: expanded ? 48 : 40)
-                            .accessibilityLabel(parentID == nil ? "メッセージを入力" : "返信を入力")
-                            .accessibilityIdentifier(parentID == nil ? "message-input" : "reply-input")
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(TapGesture().onEnded { focused = true })
                         if !expanded { sendButton }
                     }
                     .padding(.horizontal, expanded ? 12 : 0)
@@ -87,7 +102,9 @@ struct ComposerView: View {
                 .overlay(alignment: expanded ? .bottomLeading : .leading) { additions }
                 .padding(expanded ? 8 : 4)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: expanded ? 24 : 28))
-                .overlay(alignment: .top) { mentionPanel }
+                .overlay(alignment: .top) {
+                    if let query = mfmQuery { mfmPanel(query) } else { mentionPanel }
+                }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(parentID == nil ? "message-composer" : "reply-composer")
                 if draft.wrappedValue.unicodeScalars.count > 40_000 {
@@ -97,13 +114,18 @@ struct ComposerView: View {
         }
         .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
         .onChange(of: focused) { _, focused in
-            if !focused { store.typing.activity(false, parentID: parentID) }
+            if !focused { inputIsComposing = false; store.typing.activity(false, parentID: parentID) }
+            else { mfmSelectedIndex = 0; dismissedMfmText = nil }
         }
         .sheet(isPresented: $showingEmoji, onDismiss: { focused = true }) {
             ReactionPicker(workspace: workspace) { value in
                 insert(value, replacing: draft.wrappedValue == emojiInsertionText ? emojiInsertionRange : nil)
                 showingEmoji = false
             }
+        }
+        .onChange(of: draft.wrappedValue) { _, _ in mfmSelectedIndex = 0; dismissedMfmText = nil }
+        .onChange(of: selectedRange.map { draft.wrappedValue[..<$0.lowerBound].utf16.count }) { _, _ in
+            mfmSelectedIndex = 0; dismissedMfmText = nil
         }
         .onChange(of: store.accessGeneration) { _, _ in submission = nil }
         .task(id: submission) {
@@ -240,6 +262,79 @@ struct ComposerView: View {
         showingEmoji = true
     }
 
+    private func mfmPanel(_ query: MfmInput.Query) -> some View {
+        let candidates = MfmInput.options(query.text)
+        let height = min(candidateHeight * CGFloat(candidates.count), 250)
+        let headerHeight = max(44, candidateHeight * 0.9)
+        return Group {
+            if !candidates.isEmpty {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("MFM").font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        Button("挿入") { insertMfm(candidates[min(mfmSelectedIndex, candidates.count - 1)], query: query) }
+                            .keyboardShortcut(.defaultAction).disabled(inputIsComposing)
+                            .accessibilityLabel("選択したMFM候補を挿入").accessibilityIdentifier("mfm-confirm")
+                        Button("閉じる") { dismissedMfmText = draft.wrappedValue }
+                            .keyboardShortcut(.cancelAction).disabled(inputIsComposing)
+                            .accessibilityLabel("MFM候補を閉じる").accessibilityIdentifier("mfm-dismiss")
+                    }
+                    .padding(.horizontal, 12).frame(height: headerHeight)
+                    Divider()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                                Button { insertMfm(candidate, query: query) } label: {
+                                    HStack(spacing: 10) {
+                                        Text(candidate.name).fontWeight(.semibold).foregroundStyle(.primary)
+                                        Text(candidate.description).foregroundStyle(.secondary).lineLimit(1)
+                                        Spacer(minLength: 0)
+                                    }.padding(.horizontal, 12).frame(height: candidateHeight).contentShape(Rectangle())
+                                        .background(index == mfmSelectedIndex ? AppDesign.accentBackground : Color.clear)
+                                }
+                                .buttonStyle(.plain).accessibilityIdentifier("mfm-option-\(candidate.name)")
+                                .accessibilityAddTraits(index == mfmSelectedIndex ? .isSelected : [])
+                                .id(candidate.id)
+                            }
+                        }
+                    }
+                    .onChange(of: mfmSelectedIndex) { _, index in
+                        if candidates.indices.contains(index) { proxy.scrollTo(candidates[index].id) }
+                    }
+                }
+                    .frame(height: height)
+                }
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 12).offset(y: -height - headerHeight - 7)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("MFMの候補").accessibilityIdentifier("mfm-suggestions")
+            }
+        }
+    }
+
+    private func handleMfmKey(_ input: String) {
+        guard !inputIsComposing, let query = mfmQuery else { return }
+        let candidates = MfmInput.options(query.text)
+        guard !candidates.isEmpty else { return }
+        switch input {
+        case UIKeyCommand.inputUpArrow: mfmSelectedIndex = (mfmSelectedIndex + candidates.count - 1) % candidates.count
+        case UIKeyCommand.inputDownArrow: mfmSelectedIndex = (mfmSelectedIndex + 1) % candidates.count
+        case "\r", "\n", "\t": insertMfm(candidates[min(mfmSelectedIndex, candidates.count - 1)], query: query)
+        case UIKeyCommand.inputEscape: dismissedMfmText = draft.wrappedValue
+        default: break
+        }
+    }
+
+    private func insertMfm(_ candidate: MfmInput.Candidate, query: MfmInput.Query) {
+        let text = draft.wrappedValue
+        guard !inputIsComposing, let active = MfmInput.query(in: text, caret: selectedRange?.lowerBound ?? text.endIndex),
+              active.utf16Range == query.utf16Range, active.text == query.text else { return }
+        let offset = text[..<active.range.lowerBound].utf16.count + candidate.template.utf16.count - 1
+        insert(candidate.template, replacing: active.range)
+        selection = TextSelection(insertionPoint: String.Index(utf16Offset: offset, in: draft.wrappedValue))
+    }
+
     private func insertMention() {
         let text = draft.wrappedValue
         let caret = selectedRange?.lowerBound ?? text.endIndex
@@ -260,5 +355,177 @@ struct ComposerView: View {
 
     private func valid(_ index: String.Index, in text: String) -> Bool {
         index >= text.startIndex && index <= text.endIndex && (index == text.endIndex || text.indices.contains(index))
+    }
+}
+
+private struct MfmComposerTextField: UIViewRepresentable {
+    let placeholder: String
+    let text: Binding<String>
+    let selection: Binding<TextSelection?>
+    @Binding var focused: Bool
+    @Binding var composing: Bool
+    let completionEnabled: Bool
+    let inputID: String
+    let inputLabel: String
+    let handle: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> MfmInputTextView {
+        let view = MfmInputTextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.isScrollEnabled = false
+        view.showsHorizontalScrollIndicator = false
+        view.showsVerticalScrollIndicator = false
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = true
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-keyboard") {
+            view.keyboardType = .asciiCapable
+            view.autocorrectionType = .no
+            view.spellCheckingType = .no
+        }
+        return view
+    }
+    func updateUIView(_ view: MfmInputTextView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.updating = true
+        defer { context.coordinator.updating = false }
+        view.font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: view.traitCollection)
+        view.textColor = .label
+        view.tintColor = UIColor(AppDesign.link)
+        view.isEditable = context.environment.isEnabled
+        view.accessibilityLabel = inputLabel
+        view.accessibilityIdentifier = inputID
+        view.accessibilityHint = placeholder
+        view.placeholder.text = placeholder
+        view.completionEnabled = completionEnabled
+        view.handle = handle
+        view.focusRequested = focused
+        if view.markedTextRange == nil {
+            if view.text != text.wrappedValue { view.text = text.wrappedValue }
+            if let value = selection.wrappedValue, case .selection(let range) = value.indices,
+               range.lowerBound >= text.wrappedValue.startIndex, range.upperBound <= text.wrappedValue.endIndex,
+               (range.lowerBound == text.wrappedValue.endIndex || text.wrappedValue.indices.contains(range.lowerBound)),
+               (range.upperBound == text.wrappedValue.endIndex || text.wrappedValue.indices.contains(range.upperBound)) {
+                let selected = NSRange(range, in: text.wrappedValue)
+                if view.selectedRange != selected { view.selectedRange = selected }
+            }
+        }
+        view.refreshPlaceholder()
+        if !focused && view.isFirstResponder { view.resignFirstResponder() }
+        else if focused && !view.isFirstResponder { view.requestFocus() }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: MfmInputTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.bounds.width
+        let measured = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let line = uiView.font?.lineHeight ?? 21
+        let height = min(max(line, ceil(measured.height)), ceil(line * 6))
+        let scrolls = measured.height > height + 1
+        if uiView.isScrollEnabled != scrolls { uiView.isScrollEnabled = scrolls }
+        return CGSize(width: width, height: height)
+    }
+    static func dismantleUIView(_ view: MfmInputTextView, coordinator: Coordinator) {
+        view.focusRequested = false
+        view.delegate = nil
+        view.handle = nil
+        view.completionEnabled = false
+        view.resignFirstResponder()
+    }
+    @MainActor final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: MfmComposerTextField
+        var updating = false
+        init(_ parent: MfmComposerTextField) { self.parent = parent }
+        func textViewDidBeginEditing(_ textView: UITextView) { if !updating { parent.composing = textView.markedTextRange != nil; parent.focused = true } }
+        func textViewDidEndEditing(_ textView: UITextView) { if !updating { parent.focused = false; parent.composing = false } }
+        func textViewDidChange(_ textView: UITextView) {
+            guard !updating else { return }
+            parent.text.wrappedValue = textView.text
+            (textView as? MfmInputTextView)?.refreshPlaceholder()
+            textViewDidChangeSelection(textView)
+        }
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            let text = parent.text.wrappedValue
+            guard !updating, text == textView.text, let range = Range(textView.selectedRange, in: text) else { return }
+            parent.composing = textView.markedTextRange != nil
+            parent.selection.wrappedValue = range.isEmpty ? TextSelection(insertionPoint: range.lowerBound) : TextSelection(range: range)
+        }
+    }
+}
+
+@MainActor
+final class MfmInputTextView: UITextView {
+    var completionEnabled = false
+    var handle: ((String) -> Void)?
+    var focusRequested = false
+    let placeholder = UILabel()
+    private var keyModifiers: UIKeyModifierFlags = []
+    private lazy var completionCommands: [UIKeyCommand] =
+        [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\n", "\t", UIKeyCommand.inputEscape].map {
+            let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(completeMfmKey(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if placeholder.superview == nil { placeholder.isAccessibilityElement = false; addSubview(placeholder) }
+        if focusRequested { requestFocus() }
+    }
+    func requestFocus() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.focusRequested, self.window != nil, self.isEditable else { return }
+            self.becomeFirstResponder()
+        }
+    }
+    func refreshPlaceholder() { placeholder.isHidden = !text.isEmpty; setNeedsLayout() }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        placeholder.font = font
+        placeholder.textColor = .placeholderText
+        placeholder.frame = CGRect(x: 0, y: 0, width: bounds.width, height: font?.lineHeight ?? 21)
+        refreshPlaceholderVisibility()
+    }
+    private func refreshPlaceholderVisibility() { placeholder.isHidden = !text.isEmpty }
+    override var keyCommands: [UIKeyCommand]? {
+        completionCommands + (super.keyCommands ?? [])
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(completeMfmKey(_:)) { return completionEnabled && markedTextRange == nil }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    @objc func completeMfmKey(_ command: UIKeyCommand) {
+        guard completionEnabled, markedTextRange == nil, let input = command.input else { return }
+        handle?(input)
+    }
+    override func insertText(_ text: String) {
+        if completionEnabled && markedTextRange == nil && keyModifiers.intersection([.command, .control, .alternate, .shift]).isEmpty && ["\n", "\r", "\t"].contains(text) {
+            handle?(text)
+        } else { super.insertText(text) }
+    }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let key = presses.first?.key {
+            keyModifiers = key.modifierFlags
+            if completionEnabled, markedTextRange == nil, keyModifiers.intersection([.command, .control, .alternate, .shift]).isEmpty {
+                let input: String?
+                switch key.keyCode {
+                case .keyboardUpArrow: input = UIKeyCommand.inputUpArrow
+                case .keyboardDownArrow: input = UIKeyCommand.inputDownArrow
+                case .keyboardReturnOrEnter, .keypadEnter: input = "\r"
+                case .keyboardTab: input = "\t"
+                case .keyboardEscape: input = UIKeyCommand.inputEscape
+                default: input = nil
+                }
+                if let input { handle?(input); return }
+            }
+        }
+        super.pressesBegan(presses, with: event)
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        super.pressesCancelled(presses, with: event)
+        keyModifiers = []
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        super.pressesEnded(presses, with: event)
+        keyModifiers = []
     }
 }

@@ -704,14 +704,15 @@ struct PersistentSyncIntegrationTests {
         #expect(saved.offset == "100_0")
     }
 
-    @Test("オフラインで会話を繰り返し開いても確定済みの履歴が残る")
-    func preservesOfflineMessages() async throws {
+    @Test("オフラインで会話を繰り返し開いても通常文とMFMの履歴が残る", arguments: ["投稿1", "**太字** $[spin 回転] \\(x^2\\) :smile:"])
+    func preservesOfflineMessages(content: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let sync = try await session(harness)
         var state = MessageSyncState()
         state.shape.handle = "h"; state.shape.offset = "100_0"; state.shape.isLive = true
         _ = try state.addSnapshot(subsetData([1]), response: syncResponse())
+        state.shape.rows["k1"]?["content"] = .string(content)
         state.windows["root"] = MessageWindow(parentID: nil, limit: 50, hasMore: false)
         let key = "messages-v1:" + syncChannel
         try await sync.store(state, key: key, channelID: syncChannel)
@@ -726,7 +727,7 @@ struct PersistentSyncIntegrationTests {
             }
             #expect(snapshots.count == 1)
             #expect(snapshots.first?.fromCache == true)
-            #expect(snapshots.first?.messages?.first?.content == "投稿1")
+            #expect(snapshots.first?.messages?.first?.content == content)
             #expect(try await sync.load(key, as: MessageSyncState.self)?.shape.isLive == true)
         }
     }

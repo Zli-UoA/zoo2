@@ -727,7 +727,7 @@ final class WorkspaceStore {
         return await openMessage(channelID: channelID, messageID: messageID, requiredVisit: tabVisit)
     }
 
-    func openMessage(channelID: String, messageID: String?, requiredVisit: UUID? = nil) async -> Bool {
+    func openMessage(channelID: String, messageID: String?, threadID: String? = nil, requiredVisit: UUID? = nil) async -> Bool {
         guard active else { return false }
         let epoch = UUID()
         destinationGeneration = epoch
@@ -741,7 +741,9 @@ final class WorkspaceStore {
             store.update(channel)
             store.focusedMessageID = messageID
             addAndOpen(channel, joined: false)
-            if let parentID = store.focusedThreadID { openThread(parentID, in: store, focusComposer: false) }
+            if let threadID {
+                openThreadDestination(threadID, in: store, messageID: messageID)
+            } else if let parentID = store.focusedThreadID { openThread(parentID, in: store, focusComposer: false) }
             return true
         } catch {
             if destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit { report(error) }
@@ -773,17 +775,21 @@ final class WorkspaceStore {
             store.update(channel)
             guard !store.blocked else { throw ZooError.rejected(403, "この会話を閲覧できません。") }
             addAndOpen(channel, joined: false)
-            // prepareForThread が focusedMessageID を消すので、必ず先に呼ぶ。
-            store.prepareForThread(parentID)
-            store.focusedMessageID = destination.messageID
-            let route = ChatRoute.thread(channelID: channel.id, parentID: parentID, focusComposer: false)
-            if channel.is_dm { dmPath = [.channel(channel.id), route] }
-            else { channelPath = [.channel(channel.id), route] }
+            openThreadDestination(parentID, in: store, messageID: destination.messageID)
             return true
         } catch {
             if destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit { report(error) }
             return false
         }
+    }
+
+    private func openThreadDestination(_ parentID: String, in store: ConversationStore, messageID: String?) {
+        // スレッドの準備が移動先を消すため、返信へのフォーカスは準備後に設定する。
+        store.prepareForThread(parentID)
+        store.focusedMessageID = messageID
+        let route = ChatRoute.thread(channelID: store.channel.id, parentID: parentID, focusComposer: false)
+        if store.channel.is_dm { dmPath = [.channel(store.channel.id), route] }
+        else { channelPath = [.channel(store.channel.id), route] }
     }
 
     func isChannelAccessCurrent(_ id: String?, since generations: [String: UUID]) -> Bool {

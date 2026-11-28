@@ -106,6 +106,36 @@ final class PreviewChatClient: ChatClient {
                     content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z",
                     display_data: MessageDisplayData(reactions: []))
         ]
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm") {
+            allMessages[0].content = "# MFMの表示\n**太字** <i>斜体</i> ~~取り消し~~ :smile: @you\n$[fg.color=ff0000 赤い文字] $[ruby 漢字 かんじ]\n$[spin.speed=2s 回転] $[jelly ぷるぷる]\n\\(x^2 + y^2 = 1\\)\n> 引用文\n[安全なリンク](https://example.com)"
+            allMessages[1].content = "後ろの投稿も読めます。"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-interactions") {
+            let target = serverURL + "/channels/55555555-5555-4555-8555-555555555555"
+            allMessages[0].content = "# 画像のぼかし\n$[blur :sakura:]\n# 画像リンク\n$[position.x=2 [:sakura:](\(target))]\n# ルビリンク\n$[ruby [漢字](\(target)) かんじ]"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-text-link") {
+            allMessages[0].content = "# 移動したリンク\n$[position.x=2 [a](https://ui.test.invalid/channels/55555555-5555-4555-8555-555555555555)]"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-centered-link") {
+            allMessages[0].content = "<center>[中央リンク](https://ui.test.invalid/channels/55555555-5555-4555-8555-555555555555)</center>"
+        }
+
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-plain-link") {
+            allMessages[0].content = serverURL + "/channels/55555555-5555-4555-8555-555555555555"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-message-target") {
+            let reply = ProcessInfo.processInfo.arguments.contains("--uitesting-message-target-thread")
+            let replyID = "77777777-7777-4777-8777-777777777777"
+            let destination = reply ? "thread=\(Self.messageID)&message=\(replyID)" : "message=66666666-6666-4666-8666-666666666666"
+            allMessages[0].content = "[投稿へ移動](\(serverURL)/channels/\(Self.channelID)?\(destination))"
+            allMessages[1].content = "リンク先のメッセージ"
+            if reply {
+                allMessages.append(Message(id: replyID, user_id: colleague.id, channel_id: Self.channelID,
+                                           content: "リンク先の返信", created_at: "2026-11-18T09:02:00Z", parent_id: Self.messageID))
+            }
+        }
+
         if ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
             // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。
             let encryptedID = "77777777-7777-4777-8777-777777777777"
