@@ -299,6 +299,7 @@ class AndroidSamplesTest {
             "navigation-cache" to AndroidScreen.SettingsDetail("画面遷移キャッシュ", listOf(
                 SettingsGroup("", listOf(
                     SettingsEntry.Information("navigation-cache-info", "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。"),
+                    SettingsEntry.Destination("clear-navigation-cache", "画面キャッシュを消去", "ホームと過去に開いた画面の保存内容"),
                     SettingsEntry.Choice("navigation-cache:0", "オフ", false),
                     SettingsEntry.Choice("navigation-cache:4", "4 件", false),
                     SettingsEntry.Choice("navigation-cache:8", "8 件", true),

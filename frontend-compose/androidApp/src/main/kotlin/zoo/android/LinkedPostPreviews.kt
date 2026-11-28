@@ -101,7 +101,7 @@ internal class LinkedPostPreviews(private val fetch: suspend (List<String>) -> L
 
 @Composable
 internal fun rememberPostPreviews(session: Session, enabled: Boolean, limit: Int): PostPreviewSource {
-    val previews = remember(session, limit) {
+    val previews = remember(session, limit, session.navigationCacheRevision) {
         LinkedPostPreviews({ ids -> session.api.request("/api/home/entries", "POST", obj(
             "timeline" to "social", "entries" to JsonArray(ids.map(::JsonPrimitive)),
         )).rows() }, session.config.apiBaseUrl, limit)

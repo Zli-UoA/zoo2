@@ -27,6 +27,18 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         scope.launch { startupTimeline.replace(version, "", emptyList()) }
     }
 
+    var navigationCacheRevision by mutableIntStateOf(0)
+        private set
+
+    fun clearNavigationCache() {
+        homeTimelines.clear()
+        clearStartupTimeline()
+        val limit = repo.navigationCacheLimit
+        repo.navigationCacheLimit = 0
+        repo.navigationCacheLimit = limit
+        navigationCacheRevision++
+    }
+
     fun setNavigationCacheLimit(limit: Int) {
         if (limit == 0) clearStartupTimeline()
         homeTimelines.limit = limit.coerceIn(0, 16)

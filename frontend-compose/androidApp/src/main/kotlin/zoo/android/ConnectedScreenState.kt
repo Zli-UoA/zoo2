@@ -1108,6 +1108,7 @@ internal class ConnectedScreenState(
             }
             "navigation-cache" -> app.t("androidNavigationCache.title") to buildList<SettingsEntry> {
                 add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description") + " 件数を減らすと、古い画面に戻った際に再読み込みします。"))
+                add(SettingsEntry.Destination("clear-navigation-cache", "画面キャッシュを消去", "ホームと過去に開いた画面の保存内容"))
                 navigationCacheLimits.forEach { limit ->
                     add(SettingsEntry.Choice("navigation-cache:$limit", cacheLimitLabel(limit),
                         platform.navigationCacheLimit == limit))
@@ -1312,6 +1313,10 @@ internal class ConnectedScreenState(
                 action.id == "os-notifications" -> enableNotifications()
                 action.id == "logout" -> request { platform.invoke("logout") }
                 action.id.startsWith("theme:") || action.id.startsWith("locale:") -> platform.action(action.id)
+                action.id == "clear-navigation-cache" -> {
+                    app.clearNavigationCache()
+                    app.toast = "画面キャッシュを消去しました"
+                }
                 action.id.startsWith("navigation-cache:") ->
                     action.id.substringAfter(':').toIntOrNull()?.takeIf { it in navigationCacheLimits }?.let { limit ->
                         platform.saveNavigationCacheLimit(limit)
