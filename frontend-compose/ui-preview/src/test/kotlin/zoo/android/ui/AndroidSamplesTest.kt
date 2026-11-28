@@ -953,6 +953,50 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun pendingRepostDisablesOnlyRepostingAndFailureAllowsRetry() {
+        var status by mutableStateOf(EntryOperationStatus.Sending)
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            val entry = TimelineItem("post", "なぎ", "展示のお知らせ", "12:00", canReact = true, canRepost = true,
+                operationStatus = mapOf(EntryOperation.Repost to status))
+            AndroidScreens(AndroidScreen.Home(listOf(entry)), false, true, dispatch = actions::add, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("再投稿を反映中…").assertIsDisplayed()
+        ui.onNodeWithContentDescription("再投稿").assertIsNotEnabled()
+        ui.onNodeWithContentDescription("リアクションを追加").assertIsEnabled()
+        ui.runOnIdle { status = EntryOperationStatus.Denied }
+        ui.onNodeWithText("再投稿を変更する権限がありません").assertIsDisplayed()
+        ui.onNodeWithContentDescription("再投稿").performClick()
+        ui.runOnIdle { check(actions.filterIsInstance<AndroidUiAction.ActOnEntry>().single().operation == EntryOperation.Repost) }
+    }
+
+    @Test
+    fun imageDescriptionStaysWithItsAttachment() {
+        var description by mutableStateOf("")
+        var dark by mutableStateOf(false)
+        ui.setContent {
+            AndroidScreens(AndroidScreen.NewPost(InputState(), emptyList(), false,
+                attached = listOf(RecentPhoto("map", "map.png", description = description))),
+                dark, true, dispatch = { action ->
+                    if (action is AndroidUiAction.DescribePhoto) {
+                        check(action.id == "map")
+                        description = action.description
+                    }
+                }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("説明").performClick()
+        ui.onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextInput("北口から受付までの地図")
+        for (night in listOf(false, true)) {
+            ui.runOnIdle { dark = night }
+            ui.onNodeWithText("北口から受付までの地図").assertIsDisplayed()
+            capture("image-description-" + if (night) "dark" else "light", withSheet = true)
+        }
+        ui.onNodeWithText("完了").performClick()
+        ui.onNodeWithText("説明").performClick()
+        ui.onNodeWithText("北口から受付までの地図").assertIsDisplayed()
+    }
+
+    @Test
     fun unavailableReactionRemainsVisibleButCannotBeTapped() {
         var toggles = 0
         ui.setContent {
