@@ -203,7 +203,7 @@ class AndroidSamplesTest {
             Canvas(this).drawText("★", 24f, 38f, paint)
         }.asImageBitmap()
         val illustratedPost = homePosts.first().copy(
-            repostedBy = "みずき",
+            repostedBy = "みずき", reposterAvatar = "fixture-avatar",
             postAuthor = zoo.obj("id" to "haru"),
             quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "チケットは当日も受付で購入できます。", emptyList(), handle = "@nagi@example.test",
                 postAuthor = zoo.obj("id" to "nagi")),
@@ -459,7 +459,7 @@ class AndroidSamplesTest {
                     ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)
                 }
                 if (name == "home-media") {
-                    val repost = ui.onNodeWithText("みずきさんが再投稿", useUnmergedTree = true)
+                    val repost = ui.onNodeWithText("みずきさんがリノート", useUnmergedTree = true)
                         .assertIsDisplayed().getUnclippedBoundsInRoot()
                     val author = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(repost.left < author.left && repost.bottom <= author.top)
@@ -486,7 +486,7 @@ class AndroidSamplesTest {
                     val channelHandle = ui.onNodeWithText("@mizuki", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(channelBounds.top - channelHandle.bottom == serverBounds.top - nameBounds.bottom)
                     val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
-                    val controls = listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作").map { label ->
+                    val controls = listOf("返信", "リノート", "リアクションを追加", "その他の投稿操作").map { label ->
                         ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true)
                             .assertHasClickAction().assertIsEnabled().assertHeightIsEqualTo(36.dp).getUnclippedBoundsInRoot()
                     }
@@ -496,7 +496,7 @@ class AndroidSamplesTest {
                     check(controls.first().left == bodyBounds.left && controls.last().right == postBounds.right - 16.dp)
                     val gaps = controls.zipWithNext { left, right -> (right.left - left.right).value }
                     check(gaps.max() - gaps.min() <= 1f)
-                    ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("再投稿"),
+                    ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("リノート"),
                         useUnmergedTree = true).assertIsNotEnabled()
                 }
                 if (name == "channels") {
@@ -628,7 +628,7 @@ class AndroidSamplesTest {
         ui.onNode(firstPost and hasContentDescription("返信"), useUnmergedTree = true).performTouchInput {
             click(center.copy(x = center.x + 15.dp.toPx()))
         }
-        for (label in listOf("再投稿", "リアクションを追加", "その他の投稿操作")) {
+        for (label in listOf("リノート", "リアクションを追加", "その他の投稿操作")) {
             ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true).performClick()
         }
         ui.onNodeWithText("本文をコピー").assertIsDisplayed()
@@ -813,7 +813,7 @@ class AndroidSamplesTest {
         ui.runOnIdle { screen = AndroidScreen.Home(listOf(root.copy(canRepost = true))); dark = false }
         message.performTouchInput { longClick() }
         ui.onNodeWithText("投稿を開く").assertIsDisplayed()
-        ui.onNodeWithText("再投稿").assertIsDisplayed()
+        ui.onNodeWithText("リノート").assertIsDisplayed()
         capture("post-menu-light", withSheet = true)
         ui.runOnIdle { dark = true }
         capture("post-menu-dark", withSheet = true)
@@ -975,12 +975,12 @@ class AndroidSamplesTest {
                 operationStatus = mapOf(EntryOperation.Repost to status))
             AndroidScreens(AndroidScreen.Home(listOf(entry)), false, true, dispatch = actions::add, language = "ja") { _, _ -> }
         }
-        ui.onNodeWithText("再投稿を反映中…").assertIsDisplayed()
-        ui.onNodeWithContentDescription("再投稿").assertIsNotEnabled()
+        ui.onNodeWithText("リノートを反映中…").assertIsDisplayed()
+        ui.onNodeWithContentDescription("リノート").assertIsNotEnabled()
         ui.onNodeWithContentDescription("リアクションを追加").assertIsEnabled()
         ui.runOnIdle { status = EntryOperationStatus.Denied }
-        ui.onNodeWithText("再投稿の権限がありません").assertIsDisplayed()
-        ui.onNodeWithContentDescription("再投稿").performClick()
+        ui.onNodeWithText("リノートの権限がありません").assertIsDisplayed()
+        ui.onNodeWithContentDescription("リノート").performClick()
         ui.runOnIdle { check(actions.filterIsInstance<AndroidUiAction.ActOnEntry>().single().operation == EntryOperation.Repost) }
     }
 
@@ -1139,7 +1139,7 @@ class AndroidSamplesTest {
                     full.recycle()
                 }
                 if (!room) {
-                    val controls = listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作")
+                    val controls = listOf("返信", "リノート", "リアクションを追加", "その他の投稿操作")
                     fun positions() = controls.map { label ->
                         ui.onNodeWithContentDescription(label).assertHasClickAction().getUnclippedBoundsInRoot().left
                     }

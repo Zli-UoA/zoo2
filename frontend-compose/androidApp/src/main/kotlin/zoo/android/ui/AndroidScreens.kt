@@ -97,7 +97,7 @@ internal data class TimelineItem(
     val entryKey: String = id,
     val attachmentSizes: Map<String, String> = emptyMap(),
     val media: List<TimelineMedia> = emptyList(),
-    val quote: TimelineQuote? = null, val repostedBy: String? = null,
+    val quote: TimelineQuote? = null, val repostedBy: String? = null, val reposterAvatar: String? = null,
     val postHeader: PostHeaderData? = null,
     val richContent: EntryRichContent = EntryRichContent(),
     val linkCard: EntryCard? = null,
@@ -1091,7 +1091,7 @@ private fun Timeline(
                             .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
                     ) {
                         entry.divider?.let { EncryptionDivider(it, colors) }
-                        entry.repostedBy?.let { RepostAttribution(it, colors) }
+                        entry.repostedBy?.let { RepostAttribution(it, entry.reposterAvatar, colors) }
                         val openProfile = entry.postAuthor.takeIf { posts }?.let { author ->
                             { dispatch(AndroidUiAction.OpenProfile(author)) }
                         }
@@ -1150,7 +1150,7 @@ private fun Timeline(
                                     val name = when (operation) {
                                         EntryOperation.React -> "リアクション"
                                         EntryOperation.Delete -> "削除"
-                                        else -> "再投稿"
+                                        else -> "リノート"
                                     }
                                     val label = when (status) {
                                         EntryOperationStatus.Sending -> "${name}を反映中…"
@@ -1222,8 +1222,8 @@ private fun PostActions(
         UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
             { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.postHeader?.audience != null,
             iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
-            if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
+        UiIconButton(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート",
+            if (entry.reposted) colors.renote else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
             enabled = entry.canRepost && entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.AddReaction, "リアクションを追加",

@@ -158,7 +158,7 @@ class NotificationInbox(private val session: Session) {
         "like" -> "リアクション"
         "reply" -> "返信"
         "mention" -> "メンション"
-        "repost" -> "リポスト"
+        "repost" -> "リノート"
         "missed_call" -> session.t("notifications.missedCallContext")
         "channel_message" -> session.t("notifications.channelMessageContext")
         "dm" -> "ダイレクトメッセージ"

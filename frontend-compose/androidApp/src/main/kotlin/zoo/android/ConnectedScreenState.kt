@@ -396,6 +396,8 @@ internal class ConnectedScreenState(
             emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             postAuthor = if (isPost) postAuthor(data, name) else null,
+            reposterAvatar = timelineAvatarUrl(app.config.apiBaseUrl, obj("avatar_url" to data["reposter_avatar_url"],
+                "avatar" to data["reposter_avatar"]), users[data.text("reposter_actor").removePrefix("local:")]),
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
         ), previewService)
     }

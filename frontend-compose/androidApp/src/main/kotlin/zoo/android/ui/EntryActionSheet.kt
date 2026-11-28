@@ -45,7 +45,7 @@ internal fun EntryActionSheet(
                 SheetAction(UiIcon.Delete, "削除", colors) { action(EntryOperation.Delete, "") }
             }
             if (entry.canReact) SheetAction(UiIcon.Emoji, "リアクション", colors, entry.operationStatus[EntryOperation.React] != EntryOperationStatus.Sending) { action(EntryOperation.React, "") }
-            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿", colors, entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending) {
+            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート", colors, entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending) {
                 action(EntryOperation.Repost, "")
             }
             SheetAction(UiIcon.Copy, "本文をコピー", colors) {

@@ -141,12 +141,23 @@ internal fun timelineMediaKind(mimeType: String): TimelineMediaKind? = when (mim
 }
 
 @Composable
-internal fun RepostAttribution(actor: String, colors: AndroidColors) {
-    Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        UiGlyph(UiIcon.Repost, colors.secondary, AndroidControlSize.metadataIcon)
-        Text("${actor}さんが再投稿", color = colors.secondary, fontSize = 12.sp,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+internal fun RepostAttribution(actor: String, avatar: String?, colors: AndroidColors) {
+    Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        UiGlyph(UiIcon.Repost, colors.renote, 16.dp)
+        val bitmap = timelineIcon(avatar)
+        Box(Modifier.size(18.dp).clip(CircleShape).background(colors.renote.copy(alpha = .12f)),
+            contentAlignment = Alignment.Center) {
+            if (bitmap == null) UiGlyph(UiIcon.Person, colors.renote, 14.dp)
+            else Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+        val label = androidx.compose.ui.text.buildAnnotatedString {
+            pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
+            append(actor)
+            pop()
+            append("さんがリノート")
+        }
+        Text(label, color = colors.renote, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
