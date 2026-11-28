@@ -193,7 +193,6 @@ internal class ConnectedScreenState(
         private set
     private var postDetailRevision by mutableIntStateOf(-1)
     val postPending: Boolean get() = postDetailRevision != postRevision
-    private var notifyUnavailablePost = false
     var postReloadRequest by mutableIntStateOf(0)
         private set
     var postLoadFailed by mutableStateOf(false)
@@ -596,7 +595,7 @@ internal class ConnectedScreenState(
         } catch (failure: Exception) {
             if (isCurrent()) {
                 if (failure is ApiException && failure.status in setOf(403, 404)) {
-                    closeUnavailablePost(id)
+                    closeUnavailablePost(id, failure.status)
                     return
                 }
             }
@@ -613,8 +612,12 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun closeUnavailablePost(id: String) {
-        if (notifyUnavailablePost) app.toast = app.t("home.postUnavailable")
+    private fun closeUnavailablePost(id: String, status: Int? = null) {
+        app.toast = app.t(when (status) {
+            403 -> "common.errors.forbidden"
+            404 -> "common.errors.notFound"
+            else -> "home.postUnavailable"
+        })
         discardPost(id)
         closePost()
         home.refresh(retain = true)
@@ -1130,7 +1133,7 @@ internal class ConnectedScreenState(
             is AndroidUiAction.OpenChannelSettings -> if (action.id == channelId) overlay = "channel-settings"
             is AndroidUiAction.OpenThread -> if (channel != null) app.thread = action.id
             is AndroidUiAction.OpenNotification -> {
-                if (action.path.startsWith("post:")) openPost(action.path.removePrefix("post:"), notifyUnavailable = true)
+                if (action.path.startsWith("post:")) openPost(action.path.removePrefix("post:"))
                 else platform.navigate(action.path)
             }
             is AndroidUiAction.RespondFollow -> if (followResponses[action.activity] in listOf(null, "再試行できます")) request {
@@ -1596,7 +1599,7 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun openPost(id: String, focusReply: Boolean = false, notifyUnavailable: Boolean = false) {
+    private fun openPost(id: String, focusReply: Boolean = false) {
         val source = overlay
         if (source == "post" && openedPostId == id) {
             if (focusReply) replyFocusRequest++
@@ -1609,7 +1612,6 @@ internal class ConnectedScreenState(
         rememberFeedOrigin(source)
         clearPost()
         openedPostId = id
-        notifyUnavailablePost = notifyUnavailable
         val cached = app.cachedHomeDetail("post:$id")
         val cachedRoot = cached.firstOrNull { it.nested("post").ifEmpty { it }.text("id") == id }
         postDetail = if (known == null) cached else {
