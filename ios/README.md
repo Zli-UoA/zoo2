@@ -280,12 +280,54 @@ Keychainへ保存し、退出成功後に削除します。通信に失敗した
 
 絵文字短縮名のデータにはEmojibaseを使用し、Web版と同じ[ライセンス原文](Sources/Resources/Emojibase-LICENSE.txt)をアプリに同梱します。
 
+## TestFlightへの自動配布
+
+配布元は `Zli-UoA/zoo2` の `release-ios` です。`main` を `release-ios` へマージして更新すると、
+Xcode Cloudで `ios/Zoo.xcodeproj` の `Zoo` スキームをReleaseアーカイブし、内部グループ「zli」へ配布します。
+開始条件はブランチの更新なので、`release-ios` への直接pushでも配布が始まります。
+`main` の更新だけでは配布しません。PR・タグ・定期実行の開始条件は追加しません。
+
+Xcode Cloudの設定はApple側で管理します。接続・保存しただけでは、このリポジトリの未反映の変更は使われません。
+`ios/ci_scripts/ci_post_clone.sh` を `main` に取り込み、その `main` を `release-ios` へマージしてから配布します。
+
+| 設定 | 値 |
+| --- | --- |
+| ワークフロー | release-iosから内部テスト配信 |
+| リポジトリ | `https://github.com/Zli-UoA/zoo2.git` |
+| プロジェクト | `ios/Zoo.xcodeproj` |
+| 自動開始 | Branch Changesの `release-ios` のみ。ファイルパスによる絞り込みなし |
+| 手動開始の対象 | `release-ios` のみ |
+| アーカイブ | iOS、`Zoo`、Release、TestFlight内部テスト用 |
+| 完了後の処理 | TestFlightの内部グループ「zli」へ配布 |
+| ビルド番号 | Xcode Cloudが採番。既存の同じアプリバージョンの番号より大きい値を使用 |
+
+2026-11-29に上記のワークフローを保存し、自動開始・手動開始とも `release-ios` のみで、
+配布先が内部グループ「zli」であることを確認しました。TestFlightには1.0（30）があるため、Cloudの次のビルド番号を31へ変更しました。
+スクリプトはローカルで実行し、Rust 1.99.0による両iOSターゲットのXCFramework生成と、
+Xcode 27.2でのアプリ・通知拡張・通話表示拡張・WatchアプリのReleaseアーカイブ（署名なし）が成功しています。
+Cloud上の署名・アップロード・配布は、スクリプトの反映後に確認します。
+検証したMacにはNixがないため、`nix develop .#ios` の起動確認は未実施です。
+
+clone後のスクリプトは、`rust-toolchain.toml` の固定版RustとiOS向けターゲットをrustupで用意し、
+既存の `ios/Scripts/build-crypto-xcframework.sh` で `ZooCrypto` を生成します。
+Xcode Cloudは管理者権限を使えないため、Nixのインストールは行いません。
+ローカルの `nix develop .#ios` でも同じRustとターゲット、およびrustupを利用できます。
+追跡済みのXcodeプロジェクトと `Package.resolved` を使い、Cloud側では再生成しません。
+署名とアップロードはXcode Cloudが行うため、GitHub Actionsへの署名鍵・APIキー登録は不要です。
+
+配布先の確認はApp Store ConnectのTestFlightで行います。アーカイブ成功だけでは配布完了としません。
+輸出コンプライアンスの確認待ちなどで止まった場合は、Apple側の表示を確認して必要な手続きを行います。
+暗号化の申告を省くために `ITSAppUsesNonExemptEncryption` を変更しません。
+
+仕様はAppleの[カスタムビルドスクリプト](https://developer.apple.com/documentation/xcode/writing-custom-build-scripts)、
+[依存の準備](https://developer.apple.com/documentation/xcode/making-dependencies-available-to-xcode-cloud)、
+[TestFlightへの配布](https://developer.apple.com/documentation/xcode/distributing-your-xcode-cloud-builds-through-testflight)を参照してください。
+
 ## 移行元でのTestFlight配布記録
 
 以下のXcode Cloudの記録は移行元の `Zli-UoA/zoo2-ios` に対するものです。
-コードの取り込みだけでは接続先は変わりません。zoo2から配布するには、App Store Connectで
-接続リポジトリと `ios/Zoo.xcodeproj`、配布対象のブランチを設定し、配布を確認する必要があります。
-移行先にはXcode Cloudの製品接続用manifestを含めていません。
+コードの取り込みだけでは接続先は変わらず、移行時点ではzoo2への接続は未設定でした。
+2026-11-29に追加したzoo2用の設定は、前節を参照してください。同日にXcodeが生成した製品接続用manifestも追加しています。
 移行元のXcode Cloud設定の変更や配布は行っていません。
 
 2026-11-21に移行元のXcode Cloudの配布起点を`release`へ変更しました。
@@ -312,7 +354,7 @@ git merge-base --is-ancestor 67bda878fb012bdc829fa8de6d1aef4816c62773 HEAD
 移行元のIssue・PR、未マージのブランチ、GitHub Secrets・Variables、Xcode Cloudの接続設定は
 この取り込みの対象に含めていません。移行元リポジトリはそのまま残しています。
 IssueテンプレートとPRのチェックはzoo2の共通設定を使います。
-iOS専用のGitHub Actions、`Scripts/IssueWebhook`、`Scripts/TestFlight`、Xcode Cloudの製品接続用manifestは移行先から削除しました。
+iOS専用のGitHub Actions、`Scripts/IssueWebhook`、`Scripts/TestFlight`、Xcode Cloudの製品接続用manifestは、移行時に移行先から削除しました。
 削除前のコードは元のコミット履歴に残っています。移行元のActions・常駐自動化は変更していません。
 
 ## 検証
