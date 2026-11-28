@@ -20,8 +20,6 @@ struct RootView: View {
                         .frame(maxWidth: .infinity)
                         .padding(24)
                         .frame(minHeight: geometry.size.height)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("login-content")
                     }
                     .accessibilityIdentifier("login-screen")
                 }

@@ -35,15 +35,15 @@ struct OwnDevicesView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("own-device-\(device.device_id)")
                 }
+                if loading && devices.isEmpty {
+                    ProgressView("端末を読み込み中…").frame(maxWidth: .infinity)
+                }
             } footer: {
                 Text("端末を削除しても、その端末の鍵が使えなくなるだけで、失効ではありません。端末をなくした、盗まれたなどの場合は、下の「失効する」で鍵を作り直してください。")
             }
             if e2ee.revocation != nil {
                 Section { Button("失効する…", role: .destructive) { revoking = true }.accessibilityIdentifier("revocation-open") }
             }
-        }
-        .overlay {
-            if loading && devices.isEmpty { ProgressView("端末を読み込み中…") }
         }
         .sheet(isPresented: $revoking, onDismiss: { Task { await load() } }) {
             if let revocation = e2ee.revocation { RevocationView(e2ee: e2ee, revocation: revocation, devices: devices) }

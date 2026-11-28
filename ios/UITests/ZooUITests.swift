@@ -1078,11 +1078,11 @@ final class ZooUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["login"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["login"].isEnabled)
-        let content = app.otherElements["login-content"]
         let viewport = app.scrollViews["login-screen"]
-        XCTAssertEqual(content.frame.midX, viewport.frame.midX, accuracy: 2)
         let heading = app.staticTexts["ようこそ Zoo へ"]
         let login = app.buttons["login"]
+        XCTAssertEqual(heading.frame.midX, viewport.frame.midX, accuracy: 2)
+        XCTAssertEqual(login.frame.midX, viewport.frame.midX, accuracy: 2)
         XCTAssertGreaterThan(heading.frame.minY, viewport.frame.minY + viewport.frame.height / 4)
         XCTAssertLessThan(login.frame.maxY, viewport.frame.maxY - viewport.frame.height / 4)
         capture(app, name: "中央に配置したログイン画面")
