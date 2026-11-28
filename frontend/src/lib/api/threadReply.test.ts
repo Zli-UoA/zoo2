@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { type AuthGenerations } from "../auth";
 import { ApiError, type ApiClient, type ApiEnvelope } from "./client";
 import { isThreadBusyError, postThreadReply } from "./threadReply";
 
@@ -21,13 +22,23 @@ function busyError(retryAfter?: number, bodyRetryAfter?: number): ApiError {
 function clientReturning(results: unknown[]): {
   client: ApiClient;
   post: ReturnType<typeof vi.fn>;
+  generations: AuthGenerations;
 } {
   const post = vi.fn(async (_path: string, _body?: unknown, _options?: unknown) => {
     const result = results.shift();
     if (result instanceof Error) throw result;
     return result as ApiEnvelope<unknown>;
   });
-  return { client: { post } as unknown as ApiClient, post };
+  const generations: AuthGenerations = {
+    authSessionGeneration: 1,
+    authRequestGeneration: 1,
+    tokenProviderGeneration: 1,
+  };
+  return {
+    client: { post, getAuthGenerations: () => ({ ...generations }) } as unknown as ApiClient,
+    post,
+    generations,
+  };
 }
 
 const ok: ApiEnvelope<{ id: string }> = { data: { id: "m1" }, txid: "100" };
@@ -120,4 +131,24 @@ describe("postThreadReply", () => {
     expect(post.mock.calls[0]?.[2]).toEqual({ signal });
     expect(post.mock.calls[1]?.[2]).toEqual({ signal });
   });
+
+  it.each(["authSessionGeneration", "authRequestGeneration", "tokenProviderGeneration"] as const)(
+    "does not resend the old body when %s changes during the wait",
+    async (field) => {
+      const { client, post, generations } = clientReturning([busyError(5), ok]);
+      const body = { id: "m1", content: "hello", parent_id: "root" };
+
+      await expect(
+        postThreadReply(client, body, {
+          delay: async () => {
+            // 待機中にログアウト／セッションリセット／アカウント切替が起きたことを再現する。
+            generations[field] += 1;
+          },
+        }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(post.mock.calls[0]).toEqual(["/api/messages", body]);
+    },
+  );
 });

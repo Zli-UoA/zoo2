@@ -3,8 +3,10 @@ import {
   getAuthRequestGeneration,
   getAuthSessionGeneration,
   getTokenProviderGeneration,
+  currentAuthGenerations,
   notifyAuthorized,
   notifyUnauthorized,
+  type AuthGenerations,
   type AuthorizedHandler,
   type TokenProvider,
   type UnauthorizedHandler,
@@ -149,6 +151,8 @@ export function sendKeepaliveRequest(
 export interface ApiClient {
   /** Uses this client's most recently resolved auth headers without asynchronous token refresh. */
   keepalive?(path: string, body: unknown): Promise<void>;
+  /** 現在の認証世代。待機中にセッションが切り替わったかを判定するために使う。 */
+  getAuthGenerations?(): AuthGenerations;
   request<T>(path: string, options?: RequestOptions): Promise<T>;
   requestWithTx<T>(path: string, options?: RequestOptions): Promise<ApiEnvelope<T>>;
   get<T>(path: string, options?: Omit<RequestOptions, "method" | "body">): Promise<T>;
@@ -307,6 +311,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       lastAuthHeaders
         ? sendKeepaliveRequest(joinUrl(baseUrl, path), body, lastAuthHeaders, doFetch)
         : Promise.reject(new Error("No resolved authentication for keepalive request")),
+    getAuthGenerations: currentAuthGenerations,
     request,
     requestWithTx,
     get: (path, requestOptions) => request(path, { ...requestOptions, method: "GET" }),

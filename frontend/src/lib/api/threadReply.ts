@@ -1,3 +1,4 @@
+import { authGenerationsChanged, currentAuthGenerations, type AuthGenerations } from "../auth";
 import { ApiError, type ApiClient, type ApiEnvelope, type RequestOptions } from "./client";
 
 /** 最初の試行に加えて、同じ本文と id で再送する回数の上限。 */
@@ -54,6 +55,8 @@ export interface ThreadReplyRetryOptions extends RequestOptions {
  *
  * 503 `THREAD_BUSY` はルート行のロック取得に失敗しただけで、投稿も通知も残らない。
  * 指定秒数待ってから**同じ body（同じ id・同じ本文・同じ暗号文）**で再送する。
+ * ただし待機中に認証世代が変わった（ログアウト／セッションリセットなど）ときは再送せず
+ * `AbortError` を投げ、古いセッションの本文が送られないようにする。
  * 上限を超えたら最後の `ApiError` をそのまま投げ、呼び出し側の既存のエラー表示に委ねる。
  */
 export async function postThreadReply<T>(
@@ -64,6 +67,12 @@ export async function postThreadReply<T>(
   const { delay = defaultDelay, maxRetries = THREAD_BUSY_RETRY_LIMIT, ...requestOptions } = options;
   // オプションが無いときは既存と同じ 2 引数で呼ぶ（他の UI のリクエスト形状を変えない）。
   const hasRequestOptions = Object.keys(requestOptions).length > 0;
+  // 初回送信前の世代を固定する。client.post 内のチェックは呼び出し時点の世代しか見ないため、
+  // 待機中にログアウト／セッションリセットが起きると古い本文が新しいセッションで送られてしまう。
+  // テスト用のスタブなどがメソッドを持たないときは auth の共通カウンタを直接読む。
+  const readGenerations = (): AuthGenerations =>
+    client.getAuthGenerations ? client.getAuthGenerations() : currentAuthGenerations();
+  const sentGenerations = readGenerations();
   let retries = 0;
   for (;;) {
     try {
@@ -72,8 +81,12 @@ export async function postThreadReply<T>(
         : await client.post<T>("/api/messages", body);
     } catch (error) {
       if (!isThreadBusyError(error) || retries >= maxRetries) throw error;
-      retries += 1;
       await delay(retryAfterSeconds(error) * 1000);
+      // 待機中に認証世代が変わっていれば、古いセッションの本文は再送しない。
+      if (authGenerationsChanged(sentGenerations, readGenerations())) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      retries += 1;
     }
   }
 }
