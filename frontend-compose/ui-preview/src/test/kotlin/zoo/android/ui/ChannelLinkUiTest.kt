@@ -166,6 +166,7 @@ class ChannelLinkCardTest {
             ui.waitForIdle()
             val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/android-ui").apply { mkdirs() }
             val file = File(directory, "channel-link-${if (dark) "dark" else "light"}.png")
+            ui.recordControlBounds(file.nameWithoutExtension)
             ui.runOnIdle {
                 // `captureToImage` は Robolectric で待ち切れないので、ほかの画面テストと同じく View を描く。
                 val view = ui.activity.findViewById<View>(android.R.id.content)

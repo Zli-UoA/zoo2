@@ -7,7 +7,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
@@ -20,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
@@ -108,15 +106,9 @@ internal fun IncomingCallAction(label: String, icon: UiIcon, fill: Color, colors
 @Composable
 internal fun CallPortrait(call: AndroidScreen.Call, colors: AndroidColors, size: Dp) {
     val modifier = Modifier.size(size).clip(CircleShape).testTag("call-avatar")
-    val avatar = call.avatar
-    when {
-        avatar != null -> Image(avatar, contentDescription = null, modifier, contentScale = ContentScale.Crop)
-        call.hasUser -> Box(modifier.background(colors.headerLight), contentAlignment = Alignment.Center) {
-            Text(call.caller.take(1), color = colors.foreground, fontSize = (size.value * .36f).sp,
-                fontWeight = AndroidWeights.userName)
-        }
-        else -> ZooBadge(colors, modifier)
-    }
+    if (call.avatar != null || call.hasUser) UserAvatar(call.caller, call.avatar, modifier,
+        colors.headerLight, colors.foreground, (size.value * .36f).sp, AndroidWeights.userName)
+    else ZooBadge(colors, modifier)
 }
 
 @Composable

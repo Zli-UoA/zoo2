@@ -12,7 +12,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -32,9 +31,14 @@ internal fun SignInRoute(
     error: String,
     retry: (() -> Unit)?,
     cancelRestore: (() -> Unit)?,
+    restorationStage: LoginStage = LoginStage.SavedSession,
     restoreDiagnostics: String,
     connect: suspend (LoginConnection, (LoginStage) -> Unit) -> Unit,
 ) {
+    if (restoring) {
+        RestorationPage(dark, restorationStage.label, cancelRestore)
+        return
+    }
     val context = LocalContext.current
     val preferences = remember(context) { context.getSharedPreferences("connection", Context.MODE_PRIVATE) }
     var server by rememberSaveable { mutableStateOf(preferences.getString("base", "https://zli.chat").orEmpty()) }
@@ -86,30 +90,26 @@ internal fun SignInRoute(
         }
     }
     AndroidShell(null, dark, {}) { colors ->
-        if (editing && !restoring && !busy) {
+        if (editing && !busy) {
             PageHeader("接続先の設定", colors, onBack = { editing = false })
             Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text("Zoo サーバー URL") }, singleLine = true)
-                OutlinedTextField(issuer, { issuer = it }, Modifier.fillMaxWidth(), label = { Text("OIDC issuer") }, singleLine = true)
-                OutlinedTextField(client, { client = it }, Modifier.fillMaxWidth(), label = { Text("Android 用 public client ID") }, singleLine = true)
-                OutlinedTextField(resource, { resource = it }, Modifier.fillMaxWidth(), label = { Text("Resource / audience") }, singleLine = true)
+                LabeledField("Zoo サーバー URL", server, colors) { server = it }
+                LabeledField("OIDC issuer", issuer, colors) { issuer = it }
+                LabeledField("Android 用 public client ID", client, colors) { client = it }
+                LabeledField("Resource / audience", resource, colors) { resource = it }
                 (signInError.ifBlank { error }).takeIf(String::isNotEmpty)?.let { Text(it, color = colors.foreground) }
                 if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
                     style = TextActionStyle.Plain) { showDiagnostics = true }
                 TextAction(if (signInError == wifiSignInMessage) "それでも試す" else "ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
             }
         } else {
-            val pending = restoring || busy
+            val pending = busy
             val description = if (pending) "" else signInError.ifBlank { error }.ifBlank {
                 "ブラウザーで認証を完了すると、Zooに戻ります。"
             }
             BrandPage("Zoo", description, colors, loading = pending) {
-                if (restoring) {
-                    TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
-                        cancelRestore?.invoke()
-                    }
-                } else if (busy) {
+                if (busy) {
                     TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Plain) { loginJob?.cancel() }
                 } else {
                     if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,

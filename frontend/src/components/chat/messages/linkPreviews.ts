@@ -1,23 +1,23 @@
 import { parse, type MfmNode } from "mfm-js";
 import { messageTextSegments } from "./messageFormat";
 
+function previewHref(raw: string): string | undefined {
+  if (!raw || raw.length > 4096) return;
+  try {
+    const url = new URL(raw);
+    if (/^https?:$/.test(url.protocol) && !url.username && !url.password) return url.href;
+  } catch {
+    // Incomplete URLs remain text.
+  }
+}
+
 /** Match visible MFM links, excluding code, plain text and silent links. */
 export function previewUrls(content: string, excludeUrl?: string): string[] {
   const urls = new Set<string>();
+  const excluded = previewHref(excludeUrl ?? "");
   function add(raw: string) {
-    try {
-      const url = new URL(raw);
-      if (
-        /^https?:$/.test(url.protocol) &&
-        !url.username &&
-        !url.password &&
-        raw.length <= 4096 &&
-        url.href !== excludeUrl
-      )
-        urls.add(url.href);
-    } catch {
-      /* Incomplete URLs remain text. */
-    }
+    const href = previewHref(raw);
+    if (href && href !== excluded) urls.add(href);
   }
   function walk(nodes: MfmNode[]) {
     for (const node of nodes) {

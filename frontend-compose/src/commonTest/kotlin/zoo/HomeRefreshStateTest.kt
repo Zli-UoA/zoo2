@@ -164,6 +164,44 @@ class HomeRefreshStateTest {
         } finally { feed.close(); app.close(); http.close() }
     }
 
+    @Test
+    fun aNewSessionCanReadItsPublicHeadBeforeTheFirstNetworkResponse() = runTest {
+        val disk = mutableMapOf<String, String>()
+        val platform = object : Platform by TestPlatform() {
+            override suspend fun readCache(key: String) = disk[key]
+            override suspend fun writeCache(key: String, value: String) { disk[key] = value }
+            override suspend fun removeCache(key: String) { disk.remove(key) }
+        }
+        val cache = StartupTimeline(platform)
+        val public = obj("id" to "open", "visibility" to "public", "content" to "受付を開始")
+        val privatePost = obj("id" to "private", "visibility" to "followers", "content" to "非公開")
+        val version = cache.invalidate()
+        cache.replace(version, "home", listOf(public, privatePost))
+        val response = CompletableDeferred<Unit>()
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { response.await(); respond("[]") }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            platform, http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            assertTrue(cache.read("local").isEmpty())
+            feed.restoreSelection()
+            feed.refresh(retain = true)
+            runCurrent()
+            assertEquals(listOf(public), feed.posts)
+            assertTrue(feed.showingSavedHead)
+            response.complete(Unit)
+            runCurrent()
+            assertTrue(feed.posts.isEmpty())
+            assertFalse(feed.showingSavedHead)
+            assertTrue(cache.read("home").isEmpty())
+        } finally { feed.close(); http.close() }
+    }
+
     private class TestPlatform : Platform {
         override suspend fun headers() = emptyMap<String, String>()
         override suspend fun readCache(key: String): String? = null

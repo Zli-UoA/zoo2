@@ -20,8 +20,27 @@ private fun Row.channelReadPosition() = ChannelReadPosition(
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
     internal val homeTimelines = HomeTimelineCache()
+    internal val startupTimeline = StartupTimeline(repo.platform)
+
+    internal fun clearStartupTimeline() {
+        val version = startupTimeline.invalidate()
+        scope.launch { startupTimeline.replace(version, "", emptyList()) }
+    }
+
+    var navigationCacheRevision by mutableIntStateOf(0)
+        private set
+
+    fun clearNavigationCache() {
+        homeTimelines.clear()
+        clearStartupTimeline()
+        val limit = repo.navigationCacheLimit
+        repo.navigationCacheLimit = 0
+        repo.navigationCacheLimit = limit
+        navigationCacheRevision++
+    }
 
     fun setNavigationCacheLimit(limit: Int) {
+        if (limit == 0) clearStartupTimeline()
         homeTimelines.limit = limit.coerceIn(0, 16)
         repo.navigationCacheLimit = limit
     }
@@ -521,6 +540,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         sensitiveAttachmentIds: List<String> = emptyList(),
         /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
         encryptedAttachments: List<JsonObject> = emptyList(),
+        messageId: String = platform.uuid(),
+        onAccepted: (() -> Unit)? = null,
     ): Boolean {
         try { encryptedChannels.remember() }
         catch (failure: CancellationException) { throw failure }
@@ -537,7 +558,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             }
             return try {
                 val users = repo.users.rows.value.map { it.text("id") to it.text("user_name") }
-                encryption.send(channel, platform.uuid(), parent, content, encryptedMentions(content, users), encryptedAttachments)
+                encryption.send(channel, messageId, parent, content, encryptedMentions(content, users), encryptedAttachments)
                 true
             } catch (failure: CancellationException) { throw failure }
             catch (failure: Exception) {
@@ -576,7 +597,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 }
             }
         }
-        val id = platform.uuid()
+        val id = messageId
         val row = buildJsonObject {
             put("id", id)
             put("channel_id", channel)
@@ -597,7 +618,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
-            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row, onAccepted = onAccepted)
             // 移行中、未移行の子スレッドへの返信はサーバーで最上位の親へ正規化される。
             // 開いているスレッドを確定した親へ移し、送った返信が画面から外れないようにする。
             val resolved = ((result as? JsonObject)?.get("data") as? JsonObject)

@@ -83,6 +83,7 @@ class EmojiPickerSearchSampleTest {
     }
 
     private fun capture(name: String) {
+        ui.recordControlBounds(name)
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
