@@ -78,30 +78,11 @@ internal fun DirectoryPage(
 ) {
     PageHeader(title, colors, onBack = back)
     Column(Modifier.fillMaxSize().padding(vertical = 16.dp)) {
-        BasicTextField(
-            query, search, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).background(colors.inputSurface, CircleShape).padding(14.dp),
-            singleLine = true, textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-            cursorBrush = SolidColor(colors.inputText),
-            decorationBox = { field ->
-                Box {
-                    if (query.isEmpty()) Text("検索", color = colors.inputHint)
-                    field()
-                }
-            },
-        )
+        SearchInput(query, search, "検索", colors, Modifier.padding(horizontal = 16.dp))
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
             items(results, key = { it.id }) { item ->
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                        .clickable(enabled = item.unavailable == null, role = Role.Button) { select(item.id) }.padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                        Text(item.title, color = colors.foreground, fontSize = 16.sp,
-                            fontWeight = if (item.isUserName) AndroidWeights.userName else AndroidWeights.body)
-                        item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
-                    }
+                LabeledRow(item.title, item.detail, colors, Modifier.clickable(enabled = item.unavailable == null, role = Role.Button) { select(item.id) },
+                    titleWeight = if (item.isUserName) AndroidWeights.userName else AndroidWeights.body) {
                     val selected = item.selected
                     if (item.unavailable != null) Text(item.unavailable, color = colors.secondary, fontSize = 13.sp)
                     else if (selected == null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)

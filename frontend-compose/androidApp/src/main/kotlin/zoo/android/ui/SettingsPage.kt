@@ -60,19 +60,12 @@ internal fun SettingsPage(
                         is SettingsEntry.Destination -> Modifier.clickable(role = Role.Button) { open(entry.id) }
                         is SettingsEntry.Toggle -> Modifier.toggleable(entry.enabled, role = Role.Switch) { toggle(entry.id, it) }
                     }
-                    Row(
-                        Modifier.fillMaxWidth().then(action).heightIn(min = AndroidControlSize.target).padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(entry.title, color = colors.foreground, fontSize = 16.sp)
-                            if (entry is SettingsEntry.Choice && entry.description != null)
-                                Text(entry.description, color = colors.secondary, fontSize = 13.sp)
-                            if (entry is SettingsEntry.Destination && entry.value != null) {
-                                Text(entry.value, color = colors.secondary, fontSize = 13.sp)
-                            }
-                        }
+                    val detail = when (entry) {
+                        is SettingsEntry.Choice -> entry.description
+                        is SettingsEntry.Destination -> entry.value
+                        else -> null
+                    }
+                    LabeledRow(entry.title, detail, colors, action) {
                         when (entry) {
                             is SettingsEntry.Information -> Unit
                             is SettingsEntry.Choice -> if (entry.selected) UiGlyph(UiIcon.Check, colors.foreground, iconSize = AndroidControlSize.inlineIcon)
