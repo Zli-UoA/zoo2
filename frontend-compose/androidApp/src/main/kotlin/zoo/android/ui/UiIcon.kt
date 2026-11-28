@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 
 internal object AndroidControlSize {
     val target = 48.dp
+    val timelineAvatar = 36.dp
     val inputEdgeInset = 4.dp
     val inputHandleHeight = 24.dp
     val inputExpandThreshold = 72.dp

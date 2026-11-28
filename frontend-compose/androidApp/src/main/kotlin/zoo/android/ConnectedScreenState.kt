@@ -404,6 +404,7 @@ internal class ConnectedScreenState(
             reposterAvatar = timelineAvatarUrl(app.config.apiBaseUrl, obj("avatar_url" to data["reposter_avatar_url"],
                 "avatar" to data["reposter_avatar"]), users[data.text("reposter_actor").removePrefix("local:")]),
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
+            authorId = data.text("user_id"), createdAt = createdAt, edited = !isPost && data.present("updated_at"),
         ), previewService)
     }
 
@@ -1218,7 +1219,7 @@ internal class ConnectedScreenState(
                 is AndroidScreen.Bubble -> bubble.edit(action.text)
                 else -> drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(text = action.text)
             }
-            is AndroidUiAction.UseInputTool -> inputTool(action.tool, screen, channelId, draftKey, rows)
+            is AndroidUiAction.UseInputTool -> inputTool(action.tool, screen, channel, draftKey, rows)
             is AndroidUiAction.OpenPost -> openPost(action.id)
             AndroidUiAction.RetryPost -> postReloadRequest++
             AndroidUiAction.RetryProfile -> profileReloadRequest++
@@ -1490,7 +1491,7 @@ internal class ConnectedScreenState(
         return if (newestFirst) pending.asReversed() + confirmed else confirmed + pending
     }
 
-    private fun queueSend(homePost: Boolean, channelId: String, key: String) {
+    private fun queueSend(homePost: Boolean, channelId: String, key: String, sensitiveChannel: Boolean) {
         if (!platform.env.online) return
         val destination = if (homePost) "/home" else key
         val files = if (homePost) postFiles else channelFiles[key]
@@ -1503,8 +1504,29 @@ internal class ConnectedScreenState(
         val visibility = postVisibility
         val federate = federatePost && federationAvailable
         val id = platform.uuid()
-        val entry = TimelineItem(id, "", listOf(text, sent.joinToString("、") { it.name })
-            .filter { it.isNotBlank() }.joinToString("\n"), "", delivery = "送信中…")
+        val authorId = app.config.userId
+        val author = app.repo.users.rows.value.firstOrNull { it.text("id") == authorId }
+        val encrypted = !homePost && app.isEncryptedChannel(channelId)
+        val row = obj(
+            "id" to id, "user_id" to authorId, "content" to text, "created_at" to platform.now(),
+            "visibility" to visibility.takeIf { homePost },
+        )
+        val attachments = sent.zip(uploaded) { draft, upload ->
+            obj("id" to upload.text("id"), "file_name" to draft.name,
+                "content_type" to draft.type.takeUnless { encrypted }, "is_sensitive" to (draft.sensitive || sensitiveChannel),
+                "width" to draft.bitmap?.width, "height" to draft.bitmap?.height)
+        }
+        val localImages = sent.zip(uploaded).associate { (draft, upload) -> upload.text("id") to draft.bitmap }
+        val preview = entry(row, mapOf(authorId to (author ?: obj("display_name" to app.t("members.you")))),
+            attachments, allowPreview = !encrypted)
+        val entry = preview.copy(
+            delivery = EntryDelivery.Sending, editable = false, canReact = false, canRepost = false,
+            media = preview.media.map { it.copy(localImage = localImages[it.key]) },
+            quote = quoted?.let {
+                TimelineQuote("", it.id, it.author, it.body, it.media, it.emoji, avatar = it.avatar,
+                    local = true, handle = it.postHeader?.handle)
+            },
+        )
         val releaseSubmission = files?.takeIf { sent.isNotEmpty() }?.retainForSubmission()
         val pending = Outgoing(destination, entry)
         outgoing.add(pending)
@@ -1535,13 +1557,13 @@ internal class ConnectedScreenState(
                 }
                 files?.release(sent)
                 val index = outgoing.indexOf(pending)
-                if (serverAccepted && index >= 0) outgoing[index] = pending.copy(entry = entry.copy(delivery = "送信済み"))
+                if (serverAccepted && index >= 0) outgoing[index] = pending.copy(entry = entry.copy(delivery = EntryDelivery.AwaitingSync))
                 else outgoing.remove(pending)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 val index = outgoing.indexOf(pending)
                 if (index < 0) files?.release(sent)
-                else outgoing[index] = pending.copy(onConfirmed = { files?.release(sent) }, entry = entry.copy(delivery = "送信を確認できませんでした",
+                else outgoing[index] = pending.copy(onConfirmed = { files?.release(sent) }, entry = entry.copy(delivery = EntryDelivery.Failed,
                     recoverDraft = {
                         val current = if (homePost) postDraft else drafts[key]?.text.orEmpty()
                         if (current.isNotEmpty() || (homePost && quoteDraft != null) || !files?.items.isNullOrEmpty()) app.toast = "編集中の下書きを先に送信してください"
@@ -1559,14 +1581,16 @@ internal class ConnectedScreenState(
                     }))
             } finally {
                 releaseSubmission?.invoke()
-                if (outgoing.none { it.destination == destination && it.entry.delivery == "送信中…" }) sendLocks.remove(destination)
+                if (outgoing.none { it.destination == destination && it.entry.delivery == EntryDelivery.Sending }) sendLocks.remove(destination)
             }
         }
     }
 
-    private fun inputTool(tool: InputTool, screen: AndroidScreen, channelId: String, key: String, rows: List<Row>) {
+    private fun inputTool(tool: InputTool, screen: AndroidScreen, channel: Row?, key: String, rows: List<Row>) {
+        val channelId = channel?.text("id").orEmpty()
         if (tool == InputTool.Send && (screen is AndroidScreen.NewPost || screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread)) {
-            queueSend(screen is AndroidScreen.NewPost, channelId, key)
+            val homePost = screen is AndroidScreen.NewPost
+            queueSend(homePost, channelId, key, sensitiveChannel = !homePost && channel?.flag("is_nsfw") == true)
             return
         }
         when (tool) {

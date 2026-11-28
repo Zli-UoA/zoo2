@@ -65,7 +65,8 @@
 | フォロー処理中 | [ライト](images/android-design/rebuild/profile-follow-pending-light.png) | [ダーク](images/android-design/rebuild/profile-follow-pending-dark.png) |
 | 引用リノートの作成 | [ライト](images/android-design/rebuild/quote-renote-light.png) | [ダーク](images/android-design/rebuild/quote-renote-dark.png) |
 | チャンネルのリアクション・選択済み | [ライト](images/android-design/rebuild/reaction-channel-light-after.png) | [ダーク](images/android-design/rebuild/reaction-channel-dark-after.png) |
-| チャンネルのリアクション・既存 | [ライト](images/android-design/rebuild/reaction-channel-light-before.png) | [ダーク](images/android-design/rebuild/reaction-channel-dark-before.png) |
+| チャンネルの連投と既存のリアクション | [ライト](images/android-design/rebuild/reaction-channel-light-before.png) | [ダーク](images/android-design/rebuild/reaction-channel-dark-before.png) |
+| チャンネルの投稿を長押ししてリアクションを追加 | [ライト](images/android-design/rebuild/channel-reaction-menu-light.png) | [ダーク](images/android-design/rebuild/channel-reaction-menu-dark.png) |
 | ホームのリアクション・選択済み | [ライト](images/android-design/rebuild/reaction-home-light-after.png) | [ダーク](images/android-design/rebuild/reaction-home-dark-after.png) |
 | ホームのリアクション・既存 | [ライト](images/android-design/rebuild/reaction-home-light-before.png) | [ダーク](images/android-design/rebuild/reaction-home-dark-before.png) |
 | ホームのリアクション・追加前 | [ライト](images/android-design/rebuild/reaction-home-light-empty.png) | [ダーク](images/android-design/rebuild/reaction-home-dark-empty.png) |
@@ -74,6 +75,8 @@
 | 検索条件の選択 | [ライト](images/android-design/rebuild/search-filter-sheet-light.png) | [ダーク](images/android-design/rebuild/search-filter-sheet-dark.png) |
 | 検索条件を適用 | [ライト](images/android-design/rebuild/search-filtered-light.png) | [ダーク](images/android-design/rebuild/search-filtered-dark.png) |
 | ホームで送信中 | [ライト](images/android-design/rebuild/sending-home-light.png) | [ダーク](images/android-design/rebuild/sending-home-dark.png) |
+| チャンネルで連投を送信中 | [ライト](images/android-design/rebuild/sending-channel-light.png) | [ダーク](images/android-design/rebuild/sending-channel-dark.png) |
+| チャンネルの編集済み投稿 | [ライト](images/android-design/rebuild/edited-channel-light.png) | [ダーク](images/android-design/rebuild/edited-channel-dark.png) |
 | 共有内容と送信先 | [ライト](images/android-design/rebuild/share-destination-light.png) | [ダーク](images/android-design/rebuild/share-destination-dark.png) |
 | 共有先200件 | [一覧](images/android-design/rebuild/share-many-destinations.png) · [末尾](images/android-design/rebuild/share-list-end.png) · [同名のDMを検索](images/android-design/rebuild/share-destination-results.png) | |
 | 共有された投稿へのリンク | [ライト](images/android-design/rebuild/shared-post-link-light.png) | [ダーク](images/android-design/rebuild/shared-post-link-dark.png) |

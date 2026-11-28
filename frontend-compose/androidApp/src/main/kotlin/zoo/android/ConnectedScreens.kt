@@ -281,10 +281,14 @@ internal fun ConnectedScreens(
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
     val localDay by rememberConversationDay(context)
-    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, localDay, session) {
+    val conversationWindow = remember(messages, conversationEntries, rowsById, encrypted, session) {
+        withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t)
+    }
+    val conversationWithOutgoing = if (channelId != null && currentThread == null)
+        state.withOutgoing(channelId, conversationWindow) else conversationWindow
+    val conversationMessages = remember(conversationWithOutgoing, unreadId, env.locale, localDay, session) {
         withConversationDividers(
-            withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
-            rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
+            conversationWithOutgoing, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
         )
     }
     val focusRow = focusMessage?.let(rowsById::get)
@@ -624,7 +628,7 @@ internal fun ConnectedScreens(
         channel != null && currentThread != null -> AndroidScreen.OpeningConversation(
             "thread:$currentThread", session.t("threads.title"), env.online, threadLoadFailed) { threadRetry++ }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
-            state.withOutgoing(channelId.orEmpty(), conversationMessages), state.input(channelId.orEmpty(), canPost,
+            conversationMessages, state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
