@@ -1004,6 +1004,56 @@ class RepositoryTest {
     }
 
     @Test
+    fun foregroundRecoveryKeepsPartialNotificationCatchUpPrivate() = runTest {
+        val finishCatchUp = CompletableDeferred<Unit>()
+        var waitingForReadUpdate = false
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["handle"] == null ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        parameters["live"] == "true" -> awaitCancellation()
+                        parameters["offset"] == "1_0" -> respond(
+                            """[{"key":"notice","value":{"id":"notice","is_read":false},"headers":{"operation":"insert"}}]""",
+                            headers = protocolHeaders(offset = "2_0"),
+                        )
+                        parameters["offset"] == "2_0" -> {
+                            waitingForReadUpdate = true
+                            finishCatchUp.await()
+                            respond(
+                                """[{"key":"notice","value":{"is_read":true},"headers":{"operation":"update"}},{"headers":{"control":"up-to-date"}}]""",
+                                headers = protocolHeaders(offset = "3_0", cursor = "2"),
+                            )
+                        }
+                        else -> awaitCancellation()
+                    }
+                }
+            }
+        }
+        val table = SyncedTable("notifications", config, FakePlatform(), http, backgroundScope, streamOptions = options)
+        try {
+            runCurrent()
+            assertEquals(emptyList(), table.synchronizedRows.value)
+
+            table.refresh(reconnect = true)
+            runCurrent()
+            assertTrue(waitingForReadUpdate)
+            assertEquals(emptyList(), table.synchronizedRows.value)
+
+            finishCatchUp.complete(Unit)
+            runCurrent()
+            val notification = assertNotNull(table.synchronizedRows.value).single()
+            assertTrue(notification.flag("is_read"))
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
     fun foregroundRecoveryPublishesSharedRowsWhenElectricSuppressesACachedControlMessage() = runTest {
         var invalidate = false
         val liveUpdate = CompletableDeferred<Unit>()

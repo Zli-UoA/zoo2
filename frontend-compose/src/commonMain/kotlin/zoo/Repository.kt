@@ -581,7 +581,7 @@ class SyncedTable(
                         if (onDemand) {
                             if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
                             if (upToDate || (accepting.value && changed)) acceptTxids()
-                        } else if (materialized.isUpToDate || (changed && !refetchPending && source.isUpToDate)) {
+                        } else if (materialized.isUpToDate) {
                             acceptSnapshot(materialized.currentRows)
                             acceptTxids()
                         }
