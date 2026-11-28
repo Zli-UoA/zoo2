@@ -1228,7 +1228,7 @@ private fun PostActions(
         Modifier.fillMaxWidth().height(AndroidControlSize.postToolbarHeight),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
+        UiIconButton(UiIcon.Reply, "返信", colors.secondary,
             { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.postHeader?.audience != null,
             iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート",

@@ -48,7 +48,7 @@ internal fun EntryActionSheet(
             if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート", colors, entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending) {
                 action(EntryOperation.Repost, "")
             }
-            if (entry.canQuoteRenote) SheetAction(UiIcon.Create, "引用リノート", colors) { action(EntryOperation.QuoteRenote, "") }
+            if (entry.canQuoteRenote) SheetAction(UiIcon.QuoteRenote, "引用リノート", colors) { action(EntryOperation.QuoteRenote, "") }
             SheetAction(UiIcon.Copy, "本文をコピー", colors) {
                 scope.launch {
                     clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, entry.body)))
@@ -79,7 +79,7 @@ internal fun RenoteSheet(entry: TimelineItem, colors: AndroidColors, dismiss: ()
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = colors.background) {
         Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             SheetAction(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート", colors) { choose(EntryOperation.Repost) }
-            SheetAction(UiIcon.Create, "引用リノート", colors) { choose(EntryOperation.QuoteRenote) }
+            SheetAction(UiIcon.QuoteRenote, "引用リノート", colors) { choose(EntryOperation.QuoteRenote) }
         }
     }
 }
