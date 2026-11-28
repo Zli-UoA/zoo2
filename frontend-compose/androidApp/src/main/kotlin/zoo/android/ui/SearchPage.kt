@@ -154,7 +154,7 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                 LazyColumn(
                     Modifier.fillMaxSize().testTag("global-search-results"),
                     scroll,
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
                     items(state.results, key = { it.key }) { item ->
                         SearchResult(item, colors, highlight,
@@ -211,7 +211,7 @@ private fun SearchResult(
         Modifier.fillMaxWidth().testTag("global-search-result")
             .clickable(role = Role.Button, onClick = open)
             .semantics(mergeDescendants = true) {}
-            .padding(vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TimelineAvatar(item.author, item.avatar, colors)

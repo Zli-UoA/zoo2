@@ -89,7 +89,7 @@ internal fun NotificationPage(
         if (foreground && !appendFailed && lastVisible != null && nextCursor != null) nextPage()
     }
     val viewed by rememberUpdatedState(onViewed)
-    LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp)) {
+    LazyColumn(state = scroll, modifier = Modifier.fillMaxSize()) {
         items(items, key = { it.id }) { item ->
             val shouldRead = foreground && item.unread && item.id in visible
             LaunchedEffect(item.id, shouldRead, item.unreadIds) {
@@ -104,7 +104,7 @@ internal fun NotificationPage(
                     .then(if (target != null) Modifier.clickable { viewed(item.id); onOpen(target) } else Modifier)
                     .background(if (item.unread) colors.suggestionSelected.copy(alpha = .5f)
                         else Color.Transparent, RoundedCornerShape(8.dp))
-                    .padding(vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Box(Modifier.size(42.dp)) {

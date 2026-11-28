@@ -635,10 +635,10 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
     PageHeader(androidLabel("channels.title", "チャンネル"), colors) { ChannelMenuButton(colors, dispatch) }
     val scroll = rememberLazyListState()
     val visibleScroll = if (screen.sections.any { it.channels.isNotEmpty() }) scroll else rememberLazyListState()
-    LazyColumn(state = visibleScroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    LazyColumn(state = visibleScroll, contentPadding = PaddingValues(vertical = 8.dp)) {
         screen.sections.forEach { section ->
             item {
-                Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(section.label, Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp,
                         fontWeight = AndroidWeights.label)
                     val dm = section.label == "ダイレクトメッセージ"
@@ -653,7 +653,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
-                        .semantics { if (channel.unread) stateDescription = "未読" },
+                        .semantics { if (channel.unread) stateDescription = "未読" }.padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
