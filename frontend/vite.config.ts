@@ -54,10 +54,7 @@ const config = defineConfig({
   },
   fmt: {},
   lint: {
-    jsPlugins: [
-      { name: "vite-plus", specifier: "vite-plus/oxlint-plugin" },
-      "@shadcn/lint",
-    ],
+    jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }, "@shadcn/lint"],
     settings: {
       shadcn: {
         // UI は相対 import も多く、components.json の alias だけでは認識できない。
@@ -128,14 +125,11 @@ const config = defineConfig({
       ],
       "shadcn/no-raw-colors": [
         "warn",
-        { message: 'Use a theme color from {{file}}: {{suggestions|a declared token}}.' },
+        { message: "Use a theme color from {{file}}: {{suggestions|a declared token}}." },
       ],
       "shadcn/no-arbitrary-values": ["warn", { allow: ["layout"] }],
       "shadcn/no-inline-styles": "warn",
-      "shadcn/no-unknown-classes": [
-        "warn",
-        { allow: ["mfm-math", "mfm-search", "toaster"] },
-      ],
+      "shadcn/no-unknown-classes": ["warn", { allow: ["mfm-math", "mfm-search", "toaster"] }],
       "shadcn/require-static-classes": "warn",
     },
     overrides: [
@@ -150,12 +144,7 @@ const config = defineConfig({
       },
       {
         // テスト／Story の固定サイズや style はハーネスなので対象外。
-        files: [
-          "**/*.browser.test.tsx",
-          "**/*.stories.tsx",
-          "src/test/vrt/**",
-          "e2e/**",
-        ],
+        files: ["**/*.browser.test.tsx", "**/*.stories.tsx", "src/test/vrt/**", "e2e/**"],
         rules: {
           "shadcn/no-restyle": "off",
           "shadcn/no-arbitrary-values": "off",

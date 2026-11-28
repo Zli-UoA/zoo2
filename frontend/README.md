@@ -193,11 +193,11 @@ pnpm sync:emojibase
 
 `pnpm check`（または `pnpm lint`）は、Oxlint 経由で `@shadcn/lint` の 6 ルールも実行します。設定は `vite.config.ts` の `lint` ブロックにあります。
 
-| ルール | 目的 |
-| --- | --- |
-| `shadcn/no-restyle` | `className` で UI コンポーネントの色・形を上書きしない |
-| `shadcn/no-raw-colors` | テーマに宣言した色トークンを使う |
-| `shadcn/no-arbitrary-values` | 任意値よりテーマのスケールを使う |
+| ルール                       | 目的                                                   |
+| ---------------------------- | ------------------------------------------------------ |
+| `shadcn/no-restyle`          | `className` で UI コンポーネントの色・形を上書きしない |
+| `shadcn/no-raw-colors`       | テーマに宣言した色トークンを使う                       |
+| `shadcn/no-arbitrary-values` | 任意値よりテーマのスケールを使う                       |
 
 ほかに `no-inline-styles` / `no-unknown-classes` / `require-static-classes` も有効です。エラーには「何を使うべきか」が表示されます。
 
