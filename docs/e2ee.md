@@ -2180,7 +2180,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 - 【決定】暗号の輸出コンプライアンス：配布地域は日本だけ。2026-11-29に App Store Connect で「標準的な暗号化アルゴリズムを利用」「フランスでの配信予定なし」と回答し、書類のアップロードは不要との判定を確認した。フランスでの配信予定がないことは配布者に確認済み。同じ申告設定で TestFlight 1.0（30）を内部グループ「zli」へ配布し、「テスト中」を確認した。
   - この結果に合わせ、`ios/project.yml` と生成済みの `ios/Zoo.xcodeproj` の Debug・Release で `ITSAppUsesNonExemptEncryption` を `NO` にする。これにより、承認コードのない `YES` の設定でアップロードが拒否されることを防ぐ。
   - `NO` は書類提出が不要な暗号利用の申告を表す。リンクする `zoo-crypto`（vodozemac、AES-256-GCM・CBC・CTR、HMAC-SHA256、HKDF）や E2EE の暗号機能は引き続き使用する。
-  - 配布地域や暗号の実装・依存を変えるときは、App Store Connect の質問で申告内容を再確認する。Apple が書類を求めて `ITSEncryptionExportComplianceCode` を発行した場合は、そのコードを設定する。米国の輸出分類（EAR）は配布者が判定する。
+  - 配布地域や暗号の実装・依存を変えるときは、App Store Connect の質問で申告内容を再確認する。再確認で非免除と判定され、Apple が書類の承認後に `ITSEncryptionExportComplianceCode` を発行した場合は、`ios/project.yml` の `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption` を `YES` に変更し、Zoo ターゲットの `info.properties` に承認コードを設定する。XcodeGen でプロジェクトを再生成し、生成された `ios/Zoo.xcodeproj` なども同じ変更に含める。Release ビルドの `Info.plist` で `ITSAppUsesNonExemptEncryption` が Boolean の `true`、`ITSEncryptionExportComplianceCode` が発行されたコードになっていることを確認してから配布する。米国の輸出分類（EAR）は配布者が判定する。
 - 動作は `ios/Tests/CryptoBindingTests.swift` で確認する（端末の鍵を作り、保存鍵で保存して戻す）。
 
 ### 乱数
