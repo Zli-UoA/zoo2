@@ -69,6 +69,8 @@ final class PreviewChatClient: ChatClient {
     private var callInvitations: [CallInvitation] = []
     private var callInvitationsChanged: AsyncStream<[CallInvitation]>.Continuation?
     private var pinsChanged: AsyncStream<Void>.Continuation?
+    private var notificationLevels: [String: ChannelNotificationLevel] = [:]
+    private var notificationSettingsChanged: AsyncStream<Void>.Continuation?
     private var failNextCallInvite = ProcessInfo.processInfo.arguments.contains("--uitesting-call-invite-failure")
     private var allChannels: [Channel] = [
         Channel(id: channelID, channel_name: "一般", description: "日々の話題やお知らせを共有しましょう。", is_private: false, is_dm: false),
@@ -306,6 +308,30 @@ final class PreviewChatClient: ChatClient {
     }
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await people().map { ChannelMembership(channel_id: channelID, user_id: $0.id) }
+    }
+    func channelNotificationSettings(id: String) async throws -> ChannelNotificationSettings {
+        ChannelNotificationSettings(level: notificationLevels[id] ?? .mentions)
+    }
+    func setChannelNotificationSettings(id: String, level: ChannelNotificationLevel) async throws -> Envelope<ChannelNotificationSettings> {
+        notificationLevels[id] = level
+        notificationSettingsChanged?.yield(())
+        return Envelope(data: ChannelNotificationSettings(level: level), txid: nil)
+    }
+    func observeChannelNotificationSettings(receive: @MainActor (ChannelNotificationSnapshot) -> Void) async throws {
+        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        notificationSettingsChanged = changes.continuation
+        defer { changes.continuation.finish(); notificationSettingsChanged = nil }
+        func publish(fresh: Bool = false) {
+            receive(ChannelNotificationSnapshot(rows: notificationLevels.map {
+                ChannelNotificationSetting(user_id: currentUser.id, channel_id: $0.key, notification_level: $0.value)
+            }, freshSnapshot: fresh))
+        }
+        publish(fresh: true)
+        for await _ in changes.stream {
+            try Task.checkCancellation()
+            publish()
+        }
+        throw CancellationError()
     }
     func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-read-retry"), !failedReadOnce {
@@ -586,8 +612,10 @@ final class PreviewChatClient: ChatClient {
                                             actor: .init(display_name: colleague.name, user_name: colleague.user_name, avatar_url: nil),
                                             message: allMessages.first(where: { $0.id == Self.messageID }).map { .init(content: $0.content) },
                                             reactions: [])
+        let kind = ProcessInfo.processInfo.arguments.contains("--uitesting-channel-message-notice") ? "channel_message" :
+            ProcessInfo.processInfo.arguments.contains("--uitesting-reply-notice") ? "reply" : "mention"
         return [ChannelNotice(id: Self.channelNoticeID, user_id: currentUser.id, actor_id: colleague.id,
-                              channel_id: Self.channelID, message_id: Self.messageID, notification_type: "mention",
+                              channel_id: Self.channelID, message_id: Self.messageID, notification_type: kind,
                               created_at: "2026-11-18T09:00:00Z", is_read: readNotices.contains(Self.channelNoticeID), display: display)]
     }
 

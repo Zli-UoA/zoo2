@@ -170,6 +170,25 @@ struct NativeChatClient: ChatClient {
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await shapes.snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
     }
+    func channelNotificationSettings(id: String) async throws -> ChannelNotificationSettings {
+        try await api.get("api/channels/\(try segment(id))/notification-settings")
+    }
+    func setChannelNotificationSettings(id: String, level: ChannelNotificationLevel) async throws -> Envelope<ChannelNotificationSettings> {
+        let data = try await api.data("api/channels/\(try segment(id))/notification-settings", method: "PATCH",
+                                      body: ["level": .string(level.rawValue)])
+        return try JSONDecoder().decode(Envelope<ChannelNotificationSettings>.self, from: data)
+    }
+    func observeChannelNotificationSettings(receive: @MainActor (ChannelNotificationSnapshot) -> Void) async throws {
+        var transactionIDs: Set<UInt64> = []
+        var freshSnapshot = false
+        try await shapes.observe("api/shapes/channel_notification_settings", query: [:], as: ChannelNotificationSetting.self,
+                                 restoreCached: false, transactions: { ids, fresh in
+            transactionIDs = ids
+            freshSnapshot = fresh
+        }) { rows in
+            receive(ChannelNotificationSnapshot(rows: rows, transactionIDs: transactionIDs, freshSnapshot: freshSnapshot))
+        }
+    }
     func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
         let id = try segment(channelID)
         if sync?.isRevoked(id) == true { _ = try await channel(id: id) }

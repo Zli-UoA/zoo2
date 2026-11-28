@@ -57,6 +57,7 @@ final class WorkspaceStore {
     private(set) var user: Person
     let client: any ChatClient
     let inbox: InboxStore
+    let channelNotifications: ChannelNotifications
     let threads: ChannelThreads
     let search: GlobalSearchStore
     let calls: CallStore
@@ -164,11 +165,13 @@ final class WorkspaceStore {
         self.calls = calls ?? CallStore(client: client, userID: user.id)
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
+        channelNotifications = ChannelNotifications(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
         search = GlobalSearchStore(client: client)
         self.calls.onWillStart = { [weak self] in self?.videoPlayback.stop() }
         self.calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
+        channelNotifications.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         search.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
@@ -859,6 +862,7 @@ final class WorkspaceStore {
         images.close()
         calls.shutdown()
         inbox.shutdown()
+        channelNotifications.shutdown()
         threads.shutdown()
         search.shutdown()
         pinnedChannelIDs = []; pinsError = nil; channelMembers = [:]; memberErrors = [:]
