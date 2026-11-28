@@ -1129,6 +1129,19 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testDirectoryRetryShowsLoading() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-retry"]
+        app.launch()
+        let error = app.staticTexts["操作に失敗しました（503）。チャンネルを取得できませんでした。"]
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        app.swipeDown()
+        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(error.exists)
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
+    }
+
+    @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
                                  threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, attachments: Bool = false,
                                  pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,

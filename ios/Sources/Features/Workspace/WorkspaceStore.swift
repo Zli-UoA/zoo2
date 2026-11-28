@@ -275,6 +275,10 @@ final class WorkspaceStore {
                     joinedChannelIDs = Set(cached.readStates.map(\.channel_id))
                     hasLoaded = true
                     onPeopleChanged?()
+                } else if let cachedPeople = try await client.cachedPeople(), active, !hasLoaded, !Task.isCancelled,
+                          channelGeneration == epoch {
+                    people = Dictionary(cachedPeople.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                    onPeopleChanged?()
                 }
             } catch { report(error) }
         }

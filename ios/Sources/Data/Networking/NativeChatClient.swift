@@ -113,6 +113,10 @@ struct NativeChatClient: ChatClient {
         return CachedWorkspace(channels: channels, people: people, readStates: states)
     }
 
+    func cachedPeople() async throws -> [Person]? {
+        try await sync?.load("workspace:people", as: [Person].self)
+    }
+
     func cachedGet<T: Codable & Sendable>(_ path: String, query: [String: String] = [:],
                                          channelID: String? = nil, allowCached: Bool = true,
                                          allowOfflineFallback: Bool = true) async throws -> T {
