@@ -960,7 +960,7 @@ export const ActionBar: Story = {
       within(group)
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
+    ).toEqual(["返信 0", "リノート 0", "リアクション 0", "投稿の操作"]);
     await expect(group.querySelector("time")).toBeNull();
     await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
@@ -1028,7 +1028,7 @@ export const PrivateReply: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("button", { name: "リポスト 0" })).toBeDisabled();
+    await expect(await canvas.findByRole("button", { name: "リノート 0" })).toBeDisabled();
     await userEvent.click(canvas.getByRole("button", { name: "返信 0" }));
     const form = await visibleDialog("近況を投稿");
     await userEvent.click(form.getByRole("button", { name: "公開範囲: フォロワー限定" }));
@@ -1069,11 +1069,11 @@ export const Repost: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "リポスト 0" }));
-    await expect(await canvas.findByText("Aliceさんがリポスト")).toBeVisible();
-    const buttons = await canvas.findAllByRole("button", { name: "リポストを取り消す 1" });
+    await userEvent.click(await canvas.findByRole("button", { name: "リノート 0" }));
+    await expect(await canvas.findByText("Aliceさんがリノート")).toBeVisible();
+    const buttons = await canvas.findAllByRole("button", { name: "リノートを取り消す 1" });
     await userEvent.click(buttons[0]);
-    await waitFor(() => expect(canvas.queryByText("Aliceさんがリポスト")).not.toBeInTheDocument());
+    await waitFor(() => expect(canvas.queryByText("Aliceさんがリノート")).not.toBeInTheDocument());
   }),
 };
 
