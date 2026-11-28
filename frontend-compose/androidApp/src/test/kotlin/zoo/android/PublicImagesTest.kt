@@ -3,6 +3,7 @@ package zoo.android
 import io.ktor.client.*
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
@@ -71,7 +72,7 @@ class PublicImagesTest {
             assertEquals(6, requests)
         } finally { http.close() }
     }
-    @Test fun routesEachDedicatedImageRedirectBeforeConnecting() = runTest {
+    @Test fun routesEachDedicatedImageRedirectBeforeConnecting() = runBlocking {
         val workspace = "https://zoo.example/image"
         val start = "https://emoji.zli.works/image"
         val cdn = "https://emoji.zliusercontent.com/image"
