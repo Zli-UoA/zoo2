@@ -105,8 +105,8 @@ struct NativeChatClient: ChatClient {
         let version = sync.revocationVersion(for: "workspace:channels")
         let knownRevision = sync.knownChannelsRevision
         guard let channels = try await sync.load("workspace:channels", as: [Channel].self),
-              let people = try await sync.load("workspace:people", as: [Person].self) else { return nil }
-        let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) ?? []
+              let people = try await sync.load("workspace:people", as: [Person].self),
+              let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) else { return nil }
         try sync.checkRevocationVersion(version)
         try sync.checkKnownChannelsRevision(knownRevision)
         sync.rememberChannels(channels)

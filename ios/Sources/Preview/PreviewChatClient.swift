@@ -416,10 +416,19 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channels() async throws -> [Channel] {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-error") {
+            throw ZooError.rejected(503, "チャンネルを取得できませんでした。")
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-loading") {
             try await Task.sleep(for: .seconds(86_400))
         }
         return allChannels
+    }
+    func cachedWorkspace() async throws -> CachedWorkspace? {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-cache-loading") {
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        return nil
     }
     func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage {
         let replies = Dictionary(grouping: allMessages.filter { $0.parent_id != nil && $0.deleted_at == nil }, by: \.parent_id)

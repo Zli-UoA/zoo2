@@ -32,7 +32,7 @@ struct ConversationDirectory: View {
                 Label(error, systemImage: "wifi.exclamationmark")
             }
             let channels = visible
-            if channels.isEmpty && (workspace.hasLoaded || !workspace.loading) {
+            if channels.isEmpty && workspace.hasLoaded {
                 Group {
                     if !search.isEmpty { ContentUnavailableView.search(text: search) }
                     else if unreadOnly { ContentUnavailableView("未読の会話はありません", systemImage: "checkmark.circle") }
@@ -65,7 +65,7 @@ struct ConversationDirectory: View {
             }
         }
         .overlay {
-            if !workspace.hasLoaded && workspace.loading {
+            if !workspace.hasLoaded && workspace.error == nil {
                 ProgressView("読み込み中…")
                     .accessibilityIdentifier("directory-loading")
             }
