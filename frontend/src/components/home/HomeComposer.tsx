@@ -278,9 +278,9 @@ export function HomeComposer({
           ? {
               image_ids: images.map((image) => image.id!),
               image_descriptions: Object.fromEntries(
-                images
-                  .filter((image) => image.description?.trim())
-                  .map((image) => [image.id!, image.description]),
+                images.flatMap((image) =>
+                  image.description?.trim() ? [[image.id!, image.description]] : [],
+                ),
               ),
               sensitive_image_ids: images
                 .filter((image) => image.is_sensitive)

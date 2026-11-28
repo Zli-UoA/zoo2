@@ -140,12 +140,12 @@ export const HomePostContent = memo(function HomePostContent({
     quote && content.endsWith(`\n\nRE: <${quote.uri}>`)
       ? content.slice(0, -`\n\nRE: <${quote.uri}>`.length)
       : quote && content.endsWith(`<${quote.uri}>`)
-      ? content === `<${quote.uri}>`
-        ? ""
-        : content.endsWith(`\n\n<${quote.uri}>`)
-          ? content.slice(0, -`\n\n<${quote.uri}>`.length)
-          : content
-      : content;
+        ? content === `<${quote.uri}>`
+          ? ""
+          : content.endsWith(`\n\n<${quote.uri}>`)
+            ? content.slice(0, -`\n\n<${quote.uri}>`.length)
+            : content
+        : content;
   return (
     <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
       {body.trim() ? <ActivityPubContent text={body} emojis={emojis} /> : null}
