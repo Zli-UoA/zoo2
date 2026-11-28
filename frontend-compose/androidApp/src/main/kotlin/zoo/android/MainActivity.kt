@@ -350,15 +350,16 @@ class MainActivity : ComponentActivity() {
                 var disposed = false
                 val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                 var network = connectivity.activeInternetNetwork()
-                fun updateNetworkStatus(returning: Boolean = false) {
+                fun updateNetworkStatus(returning: Boolean = false, unblockedNetwork: android.net.Network? = null) {
                     val nextNetwork = connectivity.activeInternetNetwork()
                     val networkChanged = nextNetwork != null && network != nextNetwork
+                    val reconnect = returning || networkChanged || (unblockedNetwork != null && unblockedNetwork == nextNetwork)
                     val wasOnline = platform.env.online
                     network = nextNetwork
-                    if (returning || networkChanged) current.transport.reconnect()
+                    if (reconnect) current.transport.reconnect()
                     platform.online(nextNetwork != null)
-                    current.session.update(platform.env, reconnect = returning || networkChanged)
-                    if (nextNetwork != null && (returning || networkChanged || !wasOnline)) {
+                    current.session.update(platform.env, reconnect = reconnect)
+                    if (nextNetwork != null && (reconnect || !wasOnline)) {
                         current.shapeReconnects.update { it + 1 }
                         current.phone.refreshInvites()
                     }
@@ -371,9 +372,9 @@ class MainActivity : ComponentActivity() {
                         current.push.refresh()
                     }
                 }
-                val callback = DefaultNetworkCallback {
+                val callback = DefaultNetworkCallback { unblockedNetwork ->
                     runOnUiThread {
-                        if (!disposed) updateNetworkStatus()
+                        if (!disposed) updateNetworkStatus(unblockedNetwork = unblockedNetwork)
                     }
                 }
                 connectivity.registerDefaultNetworkCallback(callback)

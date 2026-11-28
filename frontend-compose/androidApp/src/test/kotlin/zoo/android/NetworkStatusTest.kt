@@ -115,6 +115,32 @@ class NetworkStatusTest {
 
     @Test
     @Config(sdk = [35], manifest = Config.NONE)
+    fun unblockingAStillReportedDefaultNetworkSignalsAnotherReconnectOnce() {
+        val connectivity = RuntimeEnvironment.getApplication().getSystemService(ConnectivityManager::class.java)
+        val manager = shadowOf(connectivity)
+        val network = assertNotNull(connectivity.activeNetwork)
+        val capabilities = NetworkCapabilities()
+        shadowOf(capabilities).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        manager.setNetworkCapabilities(network, capabilities)
+        val reconnects = mutableListOf<Network>()
+        val callback = DefaultNetworkCallback { unblocked ->
+            connectivity.activeInternetNetwork()?.takeIf { it == unblocked }?.let(reconnects::add)
+        }
+        callback.onBlockedStatusChanged(network, false)
+        callback.onBlockedStatusChanged(network, true)
+        assertEquals(network, connectivity.activeInternetNetwork())
+        callback.onBlockedStatusChanged(network, false)
+        callback.onBlockedStatusChanged(network, false)
+        assertEquals(listOf(network), reconnects)
+
+        callback.onBlockedStatusChanged(network, true)
+        callback.onLost(network)
+        callback.onBlockedStatusChanged(network, false)
+        assertEquals(listOf(network), reconnects)
+    }
+
+    @Test
+    @Config(sdk = [35], manifest = Config.NONE)
     fun unblockingTheSameDefaultNetworkRefreshesConnectivityWithoutAnAvailableEvent() {
         val connectivity = RuntimeEnvironment.getApplication()
             .getSystemService(ConnectivityManager::class.java)
