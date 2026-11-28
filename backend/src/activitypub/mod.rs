@@ -169,6 +169,14 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         note["@context"] = json!([CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash","sensitive":"as:sensitive"}]);
     }
     if let Some(uri) = post["quote_uri"].as_str() {
+        let source = quotes::fallback_text(string(post, "content")?, uri);
+        note["source"]["content"] = json!(source);
+        note["_misskey_content"] = json!(source);
+        let href = html_escape::encode_double_quoted_attribute(uri);
+        let label = html_escape::encode_text(uri);
+        note["content"] = json!(format!(
+            r#"{content}<br><br>RE: <a href="{href}">{label}</a>"#
+        ));
         note["quoteUrl"] = json!(uri);
         note["_misskey_quote"] = json!(uri);
         note["@context"][1]["quoteUrl"] = json!("as:quoteUrl");

@@ -2482,6 +2482,42 @@ async fn quote_renote_roundtrips_home_and_federated_note() -> anyhow::Result<()>
     .await?;
     assert_eq!(note["quoteUrl"], post["quote"]["uri"]);
     assert_eq!(note["_misskey_quote"], note["quoteUrl"]);
+    let uri = post["quote"]["uri"].as_str().unwrap();
+    assert!(
+        note["content"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("href=\"{uri}\""))
+    );
+    assert_eq!(
+        note["source"]["content"],
+        format!("行きます！\n\nRE: <{uri}>")
+    );
+    let (status, profile) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{user}/profile"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let public_quote = profile["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == quoted["id"])
+        .unwrap();
+    assert_eq!(public_quote["content"], note["source"]["content"]);
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(json!({"content":"コメント","apub":true,"visibility":"public","quote_post_id":""})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let quoted_id = quoted["id"].as_str().unwrap();
     let (status, _) = request(
         &app,

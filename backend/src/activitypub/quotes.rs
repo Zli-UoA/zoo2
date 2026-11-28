@@ -139,6 +139,11 @@ pub(crate) fn valid_quote_uri(uri: &str) -> bool {
     emoji::note_quote_uri(&json!({"quoteUrl": uri})).is_some()
 }
 
+/// A portable link for readers without structured quote support. Only used for output.
+pub(super) fn fallback_text(comment: &str, uri: &str) -> String {
+    format!("{comment}\n\nRE: <{uri}>")
+}
+
 pub(crate) async fn decorate(
     tx: &mut toasty::Transaction<'_>,
     user: &str,

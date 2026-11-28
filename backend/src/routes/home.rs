@@ -133,6 +133,9 @@ async fn create(
         ));
     }
     let quote_uri = if let Some(id) = &body.quote_post_id {
+        if !valid_entry_id(id) {
+            return Err(AppError::BadRequest("Invalid quote post ID".into()));
+        }
         let Json(original) = detail(State(state.clone()), user.clone(), Path(id.clone())).await?;
         if original["apub"] != true
             || !matches!(original["visibility"].as_str(), Some("public" | "unlisted"))
@@ -534,13 +537,11 @@ async fn list(
     tx.commit().await?;
     Ok(Json(rows))
 }
+fn valid_entry_id(id: &str) -> bool {
+    !id.trim().is_empty() && id.len() <= 2048 && !id.contains('\0')
+}
 fn validate_entries(entries: &[String]) -> Result<(), AppError> {
-    if entries.is_empty()
-        || entries.len() > 100
-        || entries
-            .iter()
-            .any(|id| id.is_empty() || id.len() > 2048 || id.contains('\0'))
-    {
+    if entries.is_empty() || entries.len() > 100 || entries.iter().any(|id| !valid_entry_id(id)) {
         return Err(AppError::BadRequest("Invalid timeline entries".into()));
     }
     Ok(())
