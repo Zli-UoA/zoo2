@@ -916,16 +916,29 @@ internal fun ConnectedScreens(
         }
     }
     state.confirmingEntry?.takeIf { it.operation == EntryOperation.Delete }?.let { action ->
+        val status = state.operationStatus(action)
+        val sending = status == EntryOperationStatus.Sending
         AlertDialog(
-            onDismissRequest = { state.confirmingEntry = null },
+            onDismissRequest = { if (!sending) state.confirmingEntry = null },
             title = { Text("削除しますか？") },
-            text = { Text(action.item.body, maxLines = 3) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(action.item.body, maxLines = 3)
+                    when (status) {
+                        EntryOperationStatus.Sending -> Text("削除中…")
+                        EntryOperationStatus.Offline -> Text("接続してから再試行してください")
+                        EntryOperationStatus.Denied -> Text("この投稿を削除する権限がありません")
+                        EntryOperationStatus.Failed -> Text("削除できませんでした。再試行できます")
+                        null -> Unit
+                    }
+                }
+            },
             confirmButton = {
-                DialogAction("削除", UiIcon.Delete) {
+                DialogAction("削除", UiIcon.Delete, enabled = !sending) {
                     state.confirmDelete(screen is AndroidScreen.Home || screen is AndroidScreen.Post || screen is AndroidScreen.Profile)
                 }
             },
-            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.confirmingEntry = null } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close, enabled = !sending) { state.confirmingEntry = null } },
         )
     }
     state.attachmentAction?.let { action ->

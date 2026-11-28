@@ -1133,12 +1133,16 @@ private fun Timeline(
                                 }
                                 if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                                 entry.operationStatus.forEach { (operation, status) ->
-                                    val name = if (operation == EntryOperation.React) "リアクション" else "再投稿"
+                                    val name = when (operation) {
+                                        EntryOperation.React -> "リアクション"
+                                        EntryOperation.Delete -> "削除"
+                                        else -> "再投稿"
+                                    }
                                     val label = when (status) {
                                         EntryOperationStatus.Sending -> "${name}を反映中…"
                                         EntryOperationStatus.Offline -> "${name}を変更するには接続してください"
-                                        EntryOperationStatus.Denied -> "${name}を変更する権限がありません"
-                                        EntryOperationStatus.Failed -> "${name}を変更できませんでした"
+                                        EntryOperationStatus.Denied -> "${name}の権限がありません"
+                                        EntryOperationStatus.Failed -> "${name}に失敗しました"
                                     }
                                     Text(label, color = colors.secondary, fontSize = 13.sp,
                                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })

@@ -407,9 +407,11 @@ internal class ConnectedScreenState(
 
     private val operationStates = mutableStateMapOf<Pair<String, EntryOperation>, EntryOperationStatus>()
 
+    fun operationStatus(action: AndroidUiAction.ActOnEntry) = operationStates[action.item.id to action.operation]
+
     fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
         val status = buildMap {
-            for (operation in listOf(EntryOperation.React, EntryOperation.Repost)) {
+            for (operation in listOf(EntryOperation.React, EntryOperation.Repost, EntryOperation.Delete)) {
                 operationStates[entry.id to operation]?.let { put(operation, it) }
             }
         }
@@ -524,10 +526,10 @@ internal class ConnectedScreenState(
     fun confirmDelete(post: Boolean) {
         val action = confirmingEntry?.takeIf { it.operation == EntryOperation.Delete && it.item.editable } ?: return
         val deletedChannelId = app.channelId
-        request {
+        changeEntry(action) {
             val endpoint = if (post) "home" else "messages"
             app.api.request("/api/$endpoint/${action.item.id.encodeURLParameter()}", "DELETE")
-            confirmingEntry = null
+            if (confirmingEntry == action) confirmingEntry = null
             if (!post) {
                 searchPreviewLinks.removeMessage(action.item.id)
                 deletedChannelId?.let { app.globalSearch.removeDeletedMessage(it, action.item.id) }

@@ -965,7 +965,7 @@ class AndroidSamplesTest {
         ui.onNodeWithContentDescription("再投稿").assertIsNotEnabled()
         ui.onNodeWithContentDescription("リアクションを追加").assertIsEnabled()
         ui.runOnIdle { status = EntryOperationStatus.Denied }
-        ui.onNodeWithText("再投稿を変更する権限がありません").assertIsDisplayed()
+        ui.onNodeWithText("再投稿の権限がありません").assertIsDisplayed()
         ui.onNodeWithContentDescription("再投稿").performClick()
         ui.runOnIdle { check(actions.filterIsInstance<AndroidUiAction.ActOnEntry>().single().operation == EntryOperation.Repost) }
     }
