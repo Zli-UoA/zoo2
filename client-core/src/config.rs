@@ -120,6 +120,20 @@ fn read_file_config(path: &std::path::Path) -> Result<FileConfig> {
     }
 }
 
+/// 秘密を送ってよい接続先か。HTTPS と、この端末の中で閉じるループバックの HTTP。
+pub(crate) fn is_secure_transport(url: &url::Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => match url.host() {
+            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
     let pick = |key: &str, fallback: Option<String>| {
         env.get(key)
@@ -133,7 +147,7 @@ fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) 
         .unwrap_or_else(|| DEFAULT_API_BASE_URL.to_string())
         .trim_end_matches('/')
         .to_string();
-    url::Url::parse(&api_base_url)
+    let api_url = url::Url::parse(&api_base_url)
         .with_context(|| format!("api_base_url が URL ではありません: {api_base_url}"))?;
 
     let dev_user = pick("ZOO_DEV_USER", file.dev_user);
@@ -157,6 +171,21 @@ fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) 
                 .unwrap_or_else(|| DEFAULT_SCOPE.to_string()),
         }),
     };
+
+    // ログインで得たトークンは、経路上で読める平文の HTTP には送らない。
+    if let AuthConfig::Oidc(oidc) = &auth {
+        if !is_secure_transport(&api_url) {
+            bail!(
+                "api_base_url は https:// にしてください (http:// はこの端末の中の localhost などに限ります): {api_base_url}"
+            );
+        }
+        if !url::Url::parse(&oidc.issuer).is_ok_and(|issuer| is_secure_transport(&issuer)) {
+            bail!(
+                "oidc_issuer は https:// にしてください (http:// はこの端末の中の localhost などに限ります): {}",
+                oidc.issuer
+            );
+        }
+    }
 
     let check_updates = match pick("ZOO_CHECK_UPDATES", None) {
         Some(value) => match value.to_ascii_lowercase().as_str() {
@@ -247,6 +276,36 @@ mod tests {
                 scope: DEFAULT_SCOPE.into(),
             })
         );
+    }
+
+    #[test]
+    fn login_requires_https_except_on_this_machine() {
+        for (url, accepted) in [
+            ("https://zoo.example", true),
+            ("http://localhost:8000", true),
+            ("http://127.0.0.1:8000", true),
+            ("http://[::1]:8000", true),
+            ("http://zoo.example", false),
+            ("http://10.0.0.1:8000", false),
+            ("ftp://zoo.example", false),
+        ] {
+            let config = resolve(FileConfig::default(), &env(&[("ZOO_API_BASE_URL", url)]));
+            assert_eq!(config.is_ok(), accepted, "{url}");
+        }
+        for (issuer, accepted) in [
+            ("https://account.example/api/auth", true),
+            ("http://127.0.0.1:8080/api/auth", true),
+            ("http://account.example/api/auth", false),
+        ] {
+            let config = resolve(FileConfig::default(), &env(&[("ZOO_OIDC_ISSUER", issuer)]));
+            assert_eq!(config.is_ok(), accepted, "{issuer}");
+        }
+        // 開発用の `X-Dev-User` の接続は、トークンを送らないので HTTP でもよい。
+        let dev = env(&[
+            ("ZOO_API_BASE_URL", "http://10.0.0.1:8000"),
+            ("ZOO_DEV_USER", "00000000-0000-0000-0000-000000000001"),
+        ]);
+        assert!(resolve(FileConfig::default(), &dev).is_ok());
     }
 
     #[test]

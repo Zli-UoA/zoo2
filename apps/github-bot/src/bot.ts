@@ -15,6 +15,8 @@ import {
   repoName,
   resource,
   ruleFor,
+  capLines,
+  plainMfm,
   text,
   type Config,
   type Json,
@@ -305,7 +307,7 @@ export class GitHubBot {
             }
             const mentions = await this.mentions(notice.mentions);
             // Verified Zoo mentions are appended after untrusted GitHub text is escaped.
-            const withMentions = `${text(notice.body, 3400)}${mentions ? `\n${mentions}` : ""}`;
+            const withMentions = `${plainMfm(text(notice.body, 3400))}${mentions ? `\n${mentions}` : ""}`;
             await this.publishMessage(
               {
                 id: child,
@@ -627,14 +629,17 @@ export class GitHubBot {
             const pulls = await this.github.pages(repo, "/pulls?state=open");
             for (const pr of pulls.filter((p: Json) => p.requested_reviewers?.length))
               lines.push(
-                `${this.github.displayName(repo)} #${pr.number} ${text(pr.title, 160)}\n${resource({ repo: this.github.displayName(repo), kind: "pull", number: String(pr.number) })} ${await this.mentions(pr.requested_reviewers.map((r: Json) => r.login))}`,
+                `${this.github.displayName(repo)} #${pr.number} ${plainMfm(text(pr.title, 160))}\n${resource({ repo: this.github.displayName(repo), kind: "pull", number: String(pr.number) })} ${await this.mentions(pr.requested_reviewers.map((r: Json) => r.login))}`,
               );
           }
         if (lines.length)
           await this.zoo.postMessage({
             id: keyedId(this.config.encryptionKey, `reminder:${channel}:${day}`),
             channel_id: channel,
-            content: `レビュー依頼リマインダー (${config.zone})\n${Array.from(lines.join("\n")).slice(0, 3500).join("")}`,
+            content: `レビュー依頼リマインダー (${config.zone})\n${capLines(
+              lines.flatMap((line) => line.split("\n")),
+              3500,
+            )}`,
           });
         this.store.set(`reminder-sent:${channel}`, day);
       } catch (error) {

@@ -54,8 +54,8 @@ const cases = [
   ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
   // 重いジョブだけ、public でも CI_LARGE_RUNNER で heavy に切り替えられる。
-  ['public with CI_LARGE_RUNNER sends only large jobs to heavy', {payload: {repository: {private: false}}, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
-  ['public with CI_LARGE_RUNNER does not need the status token', {payload: {repository: {private: false}}, token: false, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
+  ['public with CI_LARGE_RUNNER sends only large jobs to heavy', {payload: {repository: {private: false}}, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 6, jobs: 0}}, H, H],
+  ['public with CI_LARGE_RUNNER does not need the status token', {payload: {repository: {private: false}}, token: false, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 6, jobs: 0}}, H, H],
   ['public with another CI_LARGE_RUNNER stays hosted', {payload: {repository: {private: false}}, large: 'zli-k8s', warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
   ['fork PR ignores CI_LARGE_RUNNER', {event: 'pull_request', payload: {...pull('someone/repo'), repository: {private: false}}, large: 'zli-k8s-heavy'}, H, H],
   ['merge group ignores CI_LARGE_RUNNER', {event: 'merge_group', payload: {repository: {private: false}}, large: 'zli-k8s-heavy'}, H, H],
@@ -65,14 +65,15 @@ const cases = [
     const base = {payload: pub, large: 'zli-k8s-heavy'};
     const job = (status, label = 'zli-k8s-heavy') => ({status, labels: [label]});
     return [
-      ['heavy idle: no heavy jobs', {...base, largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
-      ['heavy has a free runner: one running job', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['heavy idle: no heavy jobs', {...base, largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 6, jobs: 0}}, H, H],
+      ['heavy has a free runner: one running job', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 6, jobs: 1}}, H, H],
+      ['central PR CI consumes heavy capacity', {...base, largeExpected: H, heavyRuns: {'pr-ci.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('queued')]}, heavyCalls: {runs: 6, jobs: 1}}, H, H],
       ['heavy full: two running jobs go to hosted', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 4, jobs: 4}}, H, H],
       ['a full queued run is counted when the second listing fails', {...base, largeExpected: H, heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued'), job('queued')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['an incomplete listing warns when the queued run is below capacity', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 1}}, H, H],
-      ['the latest run can finish during confirmation', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, finishedRun: '2', heavyCalls: {runs: 4, jobs: 4}}, H, H],
-      ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [...Array.from({length: 100}, () => job('completed')), job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      ['the latest run can finish during confirmation', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, finishedRun: '2', heavyCalls: {runs: 6, jobs: 4}}, H, H],
+      ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [...Array.from({length: 100}, () => job('completed')), job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 6, jobs: 4}}, H, H],
       // 後続ページの取得が失敗しても、取得済みのページの run を確認する。2件が分かれば Hosted、分からなければ警告して heavy のまま。
       ['a failing second page still checks the runs already fetched: full means hosted', {...base, largeExpected: H, heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, ...Array.from({length: 99}, (_, i) => ({id: 100 + i}))]}, heavyJobs: {1: [job('queued'), job('queued')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['a failing second page with many fetched runs runs out of budget and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, ...Array.from({length: 99}, (_, i) => ({id: 100 + i}))]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 28}}, H, H],
@@ -81,10 +82,10 @@ const cases = [
       ['the refreshed earlier runs alone fill heavy even if the current run cannot be refreshed', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, {id: 2}]}, jobSequence: {1: [[job('queued')], [job('queued'), job('queued')]], 2: [[job('queued')], 'error']}, heavyCalls: {runs: 2, jobs: 3}}, H, H],
       ['a run moving out of queued is counted', {...base, largeExpected: H, movingRun: true, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['a padded runner label is rejected', {...base, large: 'zli-k8s-heavy ', largeExpected: H, warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
-      ['other labels and finished jobs are not counted', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress', 'ubuntu-latest'), job('completed'), job('waiting'), job('queued', 'zli-k8s')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
-      ['the current run is not counted', {...base, runId: 1, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 4, jobs: 0}}, H, H],
+      ['other labels and finished jobs are not counted', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress', 'ubuntu-latest'), job('completed'), job('waiting'), job('queued', 'zli-k8s')]}, heavyCalls: {runs: 6, jobs: 1}}, H, H],
+      ['the current run is not counted', {...base, runId: 1, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 6, jobs: 0}}, H, H],
       ['unreadable heavy usage keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: true, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
-      ['a run listed as in_progress and queued is counted once', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['a run listed as in_progress and queued is counted once', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 6, jobs: 1}}, H, H],
       ['callers that do not use large-runs-on do not read heavy usage', {...base, largeCaller: false, largeExpected: H}, H, H],
       ['slow heavy usage times out and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyHang: 200, heavyTimeout: true, warning: 'Heavy runner usage unavailable (timeout); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
       // リクエストの総数（ページを含む）が予算（30）を超えると、heavy の使用状況は不明として、heavy のままにする。
@@ -219,6 +220,7 @@ const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", 
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve", "gate"], "pr-review-relay.yaml": ["relay"], "select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"],
   "ci-desktop-tauri.yaml": ["check"],
+  "ci-frontend.yaml": ["browser-test"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
@@ -367,7 +369,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = (file === 'ci-frontend.yaml' && ['check', 'build', 'browser-test'].includes(id)) ||
+      const large = (file === 'ci-frontend.yaml' && ['check', 'build'].includes(id)) ||
         (file === 'ci-backend.yaml' && id === 'check');
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
@@ -505,4 +507,3 @@ test('the selector needs no permissions, so reusable-workflow callers need no ch
   assert.match(script, /authorization: `Bearer \$\{process\.env\.ACTIONS_READ_TOKEN\}`/);
   assert.doesNotMatch(script, /getOctokit\(/);
 });
-

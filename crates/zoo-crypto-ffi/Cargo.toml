@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT"
-description = "zoo-crypto の UniFFI バインディング（Android の Kotlin から使う）"
+description = "zoo-crypto の UniFFI バインディング（Android の Kotlin と iOS の Swift から使う）"
 repository = "https://github.com/Zli-UoA/zoo2"
 
 # コアの crates/zoo-crypto とは別のクレートにして、コアに UniFFI の依存を入れない
@@ -12,11 +12,12 @@ repository = "https://github.com/Zli-UoA/zoo2"
 [lib]
 name = "zoo_crypto_ffi"
 # cdylib は Android の各 ABI の .so と、単体テストで JNA が読むホストの .so。
+# staticlib は iOS の XCFramework に入れる .a（ios/Scripts/build-crypto-xcframework.sh）。
 # lib は Rust のテスト（tests/）から使う。
-crate-type = ["cdylib", "lib"]
+crate-type = ["cdylib", "staticlib", "lib"]
 
 [[bin]]
-# Kotlin のバインディングを、ビルドした .so から作る（`--library` モード）。
+# Kotlin・Swift のバインディングを、ビルドした .so・.a から作る（`--library` モード）。
 # 版がライブラリーの uniffi と必ず一致するように、別のツールを入れずにこのクレートで持つ。
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
@@ -37,7 +38,7 @@ zoo-crypto = { path = "../zoo-crypto" }
 serde_json = "1"
 
 [profile.release]
-# Android の APK に入れる .so を小さくする。
+# Android の APK に入れる .so と iOS の .a を小さくする。
 lto = true
 codegen-units = 1
 strip = "symbols"

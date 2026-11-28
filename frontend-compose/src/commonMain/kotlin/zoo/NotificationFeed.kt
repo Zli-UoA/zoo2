@@ -2,10 +2,6 @@ package zoo
 
 import kotlinx.serialization.json.*
 
-/** This inbox excludes missed-call rows handled by the Android call experience. */
-internal fun androidNotificationRows(rows: List<Row>): List<Row> =
-    rows.filterNot { it.text("notification_type") == "missed_call" }
-
 fun notificationGroups(rows: List<Row>): List<List<Row>> =
     rows
         .sortedWith(

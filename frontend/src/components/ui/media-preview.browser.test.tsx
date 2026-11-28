@@ -1,11 +1,23 @@
 import type { ReactNode } from "react";
 import { render as renderComponent, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import pdfUrl from "../../../.storybook/fixtures/media.pdf?url";
 import { MediaPreview } from "./media-preview";
 import "../../styles.css";
+import { resetDesktopForTest } from "../../lib/desktop";
+import { resetDesktopDownloadsForTest } from "../../lib/desktopDownloads";
+import { afterEach } from "vite-plus/test";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  resetDesktopForTest();
+  resetDesktopDownloadsForTest();
+});
+
 import { LocaleProvider } from "../i18n/LocaleProvider";
 
 const render = (element: ReactNode) => renderComponent(<LocaleProvider>{element}</LocaleProvider>);

@@ -76,128 +76,29 @@ pub fn parse_channel_link(value: &str, app_base_url: &str) -> Option<LinkTarget>
     })
 }
 
-/// 本文の中の、記法を解釈しない部分（コードブロック、インラインコード、`<plain>`）かどうかで分ける。
-/// コードブロックは [`crate::mfm`] の表示と同じく、```` ``` ```` で始まる行で開閉し、閉じていなければ
-/// 末尾まで続く。
-fn segments(content: &str) -> Vec<(bool, &str)> {
-    let mut result = Vec::new();
-    let mut in_code = false;
-    // コードブロックでない行が続いている部分の先頭。
-    let mut text = 0;
-    let mut at = 0;
-    for line in content.split_inclusive('\n') {
-        let fence = line.trim_start().starts_with("```");
-        if fence || in_code {
-            result.extend(inline_segments(&content[text..at]));
-            result.push((true, line));
-            text = at + line.len();
-            in_code ^= fence;
-        }
-        at += line.len();
-    }
-    result.extend(inline_segments(&content[text..]));
-    result
+/// 本文の表示（[`crate::mfm`]）でリンクになる部分を、出てくる順に返す。埋め込みと移動は、表示で
+/// 決まった行き先をそのまま使う（装飾の記号などを行き先に含めないため）。
+fn link_spans(content: &str) -> impl Iterator<Item = crate::mfm::Span> {
+    crate::mfm::parse(content, None)
+        .into_iter()
+        .flat_map(|line| line.spans)
+        .filter(|span| span.href.is_some())
 }
 
-/// コードブロックの外を、インラインコードと `<plain>` かどうかで分ける。
-fn inline_segments(content: &str) -> Vec<(bool, &str)> {
-    let mut result = Vec::new();
-    let mut start = 0;
-    let mut at = 0;
-    while at < content.len() {
-        let rest = &content[at..];
-        let literal = [("```", "```"), ("<plain>", "</plain>"), ("`", "`")]
-            .into_iter()
-            .find(|(open, _)| rest.starts_with(open))
-            .and_then(|(open, close)| {
-                let end = rest[open.len()..].find(close)?;
-                if open == "`" && rest[1..1 + end].contains('\n') {
-                    return None;
-                }
-                Some(open.len() + end + close.len())
-            });
-        match literal {
-            Some(length) => {
-                if start < at {
-                    result.push((false, &content[start..at]));
-                }
-                result.push((true, &content[at..at + length]));
-                at += length;
-                start = at;
-            }
-            None => at += rest.chars().next().map_or(1, char::len_utf8),
-        }
-    }
-    if start < content.len() {
-        result.push((false, &content[start..]));
-    }
-    result
-}
-
-/// `[文字](URL)` と `?[文字](URL)` を、`replace(文字, silent)` の結果に置き換える。
-fn replace_markdown_links(text: &str, replace: impl Fn(&str, &str, bool) -> String) -> String {
-    let mut result = String::new();
-    let mut at = 0;
-    while at < text.len() {
-        let rest = &text[at..];
-        let silent = rest.starts_with("?[");
-        let open = if silent { 2 } else { 1 };
-        let link = (silent || rest.starts_with('['))
-            .then(|| {
-                let label_end = open + rest[open..].find("](")?;
-                let label = &rest[open..label_end];
-                let url_start = label_end + 2;
-                let url = &rest[url_start..url_start + rest[url_start..].find(')')?];
-                let valid = (url.starts_with("https://") || url.starts_with("http://"))
-                    && !url.contains(char::is_whitespace)
-                    && !label.contains(['\n', '[']);
-                valid.then(|| (label, url, url_start + url.len() + 1))
-            })
-            .flatten();
-        match link {
-            Some((label, url, length)) => {
-                result.push_str(&replace(label, url, silent));
-                at += length;
-            }
-            None => {
-                let ch = rest.chars().next().expect("at は文字境界");
-                result.push(ch);
-                at += ch.len_utf8();
-            }
-        }
-    }
-    result
-}
-
-/// 本文に出てくる順の URL（重複を除く）。コードと `<plain>` の中は除く。
+/// 本文に出てくる順の URL（重複を除く）。コードや `<plain>` の中など、表示でリンクにならないものは
+/// 含まない。
 fn urls(content: &str, include_silent: bool) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
-    for (literal, part) in segments(content) {
-        if literal {
+    for span in link_spans(content).filter(|span| include_silent || !span.silent) {
+        // `[文字](URL )` の行き先の後ろの空白は除く。
+        let Some(url) = span.href.as_deref().map(str::trim_end) else {
             continue;
-        }
-        // `[文字](URL)` は行き先だけを残す（文字に書いた URL は行き先ではない）。
-        let visible = replace_markdown_links(part, |_, url, silent| {
-            if silent && !include_silent {
-                " ".to_owned()
-            } else {
-                format!(" {url} ")
-            }
-        });
-        let mut rest = visible.as_str();
-        while let Some(index) = rest.find("http") {
-            let candidate = &rest[index..];
-            let Some(url) = crate::mfm::leading_url(candidate) else {
-                rest = &candidate["http".len()..];
-                continue;
-            };
-            if Url::parse(url).is_ok_and(|url| {
-                url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
-            }) && !result.iter().any(|seen| seen == url)
-            {
-                result.push(url.to_owned());
-            }
-            rest = &candidate[url.len()..];
+        };
+        if Url::parse(url).is_ok_and(|url| {
+            url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
+        }) && !result.iter().any(|seen| seen == url)
+        {
+            result.push(url.to_owned());
         }
     }
     result
@@ -260,11 +161,9 @@ pub fn fetch_targets(
 
 /// URL の文字そのものを書いたアプリ内リンク（短い表示にするもの）。
 pub fn bare_links(content: &str, app_base_url: &str) -> Vec<(String, LinkTarget)> {
-    crate::mfm::parse(content, None)
-        .into_iter()
-        .flat_map(|line| line.spans)
+    link_spans(content)
         .filter_map(|span| {
-            let url = span.href.filter(|href| *href == span.content)?;
+            let url = span.href.filter(|_| span.bare)?;
             let target = parse_channel_link(&url, app_base_url)?;
             Some((url, target))
         })
@@ -274,25 +173,19 @@ pub fn bare_links(content: &str, app_base_url: &str) -> Vec<(String, LinkTarget)
 /// 本文を、埋め込みに出す短い素の文字列にする。装飾・リンク・コードの記法を外し、改行や連続する空白を
 /// 1 つにまとめ、長いときは切って `…` を付ける。
 pub fn excerpt(content: &str) -> String {
-    // `[文字](URL)` は文字だけにする（MFM の解析は URL を後ろに添えるため）。
-    let source: String = segments(content)
-        .into_iter()
-        .map(|(literal, part)| {
-            if literal {
-                part.to_owned()
-            } else {
-                replace_markdown_links(part, |label, _, _| label.to_owned())
-            }
-        })
-        .collect();
     let mut text = String::new();
-    for line in crate::mfm::parse(&source, None) {
+    // `[文字](URL)` は文字だけにする。
+    for line in crate::mfm::parse_without_link_urls(content) {
         for (index, span) in line.spans.iter().enumerate() {
             // 引用の行の先頭の縦線は出さない。
             if index == 0 && span.content == "│ " && span.style.tone == crate::mfm::Tone::Quote {
                 continue;
             }
-            text.push_str(&span.content);
+            if span.href.is_some() && !span.bare {
+                text.push_str(&crate::mfm::inline_text(&span.content));
+            } else {
+                text.push_str(&span.content);
+            }
         }
         text.push(' ');
     }
@@ -671,6 +564,142 @@ mod tests {
         assert!(ids("  ```rs\nhttps://zli.chat/channels/a\n本文```").is_empty());
         assert_eq!(ids("```\nx\n```\nhttps://zli.chat/channels/c"), ["c"]);
         assert_eq!(excerpt("前\n```\n**コード**"), "前 **コード**");
+        // 文字に URL を書いた `[文字](URL)` は、短くする対象ではない。
+        assert!(
+            bare_links(
+                "[https://zli.chat/channels/b](https://zli.chat/channels/b)",
+                APP
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn markdown_links_open_the_destination_shown_in_the_body() {
+        // 本文の表示と同じ行き先にする。URL の文字だけを書いたときの切り方（日本語で終わる）は使わない。
+        let content = "[資料](https://zli.chat/channels/c1?label=資料&message=m1)";
+        let target = LinkTarget {
+            channel_id: "c1".into(),
+            message_id: Some("m1".into()),
+            thread_id: None,
+        };
+        for links in [app_links(content, APP), embedded_links(content, APP)] {
+            assert_eq!(links.len(), 1, "{links:?}");
+            assert_eq!(links[0].1, target);
+            let shown = crate::mfm::parse(content, None).remove(0).spans.remove(0);
+            assert_eq!(shown.href.as_deref(), Some(links[0].0.as_str()));
+        }
+    }
+
+    #[test]
+    fn destinations_follow_the_decorations_of_the_body() {
+        let url = "https://zli.chat/channels/c1?message=m1";
+        // 装飾の閉じ記号は、行き先に含めない。
+        for content in [
+            format!("~~{url}~~"),
+            format!("<s>{url}</s>"),
+            format!("**~~{url}~~**"),
+            format!("$[x2 {url}]"),
+        ] {
+            for links in [
+                app_links(&content, APP),
+                embedded_links(&content, APP),
+                bare_links(&content, APP),
+            ] {
+                assert_eq!(links.len(), 1, "{content}: {links:?}");
+                assert_eq!(links[0].0, url, "{content}");
+                assert_eq!(links[0].1.message_id.as_deref(), Some("m1"));
+            }
+        }
+        // 表示でリンクにならないものは、行き先にもしない。
+        for content in [
+            format!("\\({url}\\)"),
+            format!("<plain>\n{url}\n</plain>"),
+            format!("本文<plain>\n{url}</plain>"),
+        ] {
+            assert!(app_links(&content, APP).is_empty(), "{content}");
+            assert!(bare_links(&content, APP).is_empty(), "{content}");
+        }
+        // 行をまたぐ `<plain>` の中のコードブロックの行は、文字になる。
+        for content in [
+            format!("<plain>\n{url}\n```\n</plain>"),
+            format!("<plain>\n```\n{url}\n</plain>"),
+        ] {
+            assert!(app_links(&content, APP).is_empty(), "{content}");
+            assert!(bare_links(&content, APP).is_empty(), "{content}");
+        }
+        // リンクのラベルの `<plain>` は開始タグではない。
+        let content = format!("[<plain>]({url})\n<plain>例</plain>");
+        for links in [app_links(&content, APP), embedded_links(&content, APP)] {
+            assert_eq!(links.len(), 1, "{content}: {links:?}");
+            assert_eq!(links[0].0, url);
+        }
+        assert_eq!(excerpt(&content), "<plain> 例");
+        // 行をまたぐ `<plain>` の前後のリンクは残る。コードの中の `<plain>` は文字になる。
+        for content in [
+            format!("{url}<plain>\n```\n</plain>"),
+            format!("<plain>\n```\n</plain>\n{url}"),
+            format!("```\n<plain>\n```\n{url}\n</plain>"),
+            format!("`<plain>`\n{url}\n</plain>"),
+        ] {
+            let links = app_links(&content, APP);
+            assert_eq!(links.len(), 1, "{content}: {links:?}");
+            assert_eq!(links[0].0, url, "{content}");
+        }
+    }
+
+    #[test]
+    fn long_unclosed_markup_is_scanned_in_linear_time() {
+        // 閉じ記号のない記法を上限近くまで並べた本文でも、すぐに調べ終える。
+        let started = std::time::Instant::now();
+        let brackets = "[".repeat(40_000);
+        for content in [
+            brackets.clone(),
+            format!("{brackets}](https://a)"),
+            "[](https://a".repeat(3_000),
+            format!("{} )", "[](https://a".repeat(3_000)),
+            "https://a(".repeat(4_000),
+            "https://a[".repeat(4_000),
+            "<plain>".repeat(5_000),
+            "<plain>\n</plain>".repeat(3_000),
+            "[](https://a ".repeat(3_000),
+            format!("{} x)", "[](https://a".repeat(3_000)),
+            format!("{}{}x)", "[](https://a".repeat(3_000), " ".repeat(20_000)),
+            format!("{}{}x)", "[](https://a ".repeat(3_000), " ".repeat(20_000)),
+        ] {
+            app_links(&content, APP);
+            embedded_links(&content, APP);
+            excerpt(&content);
+            crate::mfm::parse(&content, None);
+        }
+        // 2 乗の時間がかかると、これを大きく超える。
+        assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn many_labels_sharing_one_link_candidate_are_scanned_once() {
+        // 多くの `[` が、同じ `]` と成り立たない行き先に続く。`[` ごとに同じ範囲を調べると、
+        // 時間内に終わらない。
+        let labels = "[".repeat(400_000);
+        let started = std::time::Instant::now();
+        // リンクの抽出も要約も、この解析を使う。
+        for rest in ["](https://a", "](https://a b)", "](https://a[](b)"] {
+            crate::mfm::parse(&format!("{labels}{rest}"), None);
+        }
+        // 2 乗の時間がかかると、これを超える。
+        assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn markdown_links_keep_their_rules() {
+        let urls = |content: &str| urls(content, true);
+        assert_eq!(urls("[a]b](https://x.test/1)"), ["https://x.test/1"]);
+        assert_eq!(urls("[[a](https://x.test/2)"), ["https://x.test/2"]);
+        assert_eq!(
+            urls("[a](https://x.test/3 ) [b](https://x.test/4)"),
+            ["https://x.test/3", "https://x.test/4"]
+        );
+        assert_eq!(app_links("[](https://zli.chat/channels/a", APP).len(), 1);
     }
 
     #[test]
@@ -705,6 +734,17 @@ mod tests {
                  <plain>**本文**</plain>\n> 引用\n<center>中央</center> $[x2 大きい] `a` @bob"
             ),
             "太字 リンク https://example.com code **本文** 引用 中央 大きい a @bob"
+        );
+        assert_eq!(
+            excerpt("[**太い**リンク](https://example.com/x)"),
+            "太いリンク"
+        );
+        // 閉じ忘れたリンクの後ろの本文は消えない。
+        assert_eq!(
+            excerpt(
+                "手順は[旧版](https://example.test/old を使わず、[新版](https://example.test/new) を参照"
+            ),
+            "手順は[旧版](https://example.test/old を使わず、新版 を参照"
         );
         assert_eq!(excerpt(" \n "), "");
         assert_eq!(excerpt(&"あ".repeat(300)), format!("{}…", "あ".repeat(200)));

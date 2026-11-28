@@ -7,6 +7,13 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PublicImagesTest {
+    @Test fun reportsHttpFailure() = runTest {
+        val http = HttpClient(MockEngine { respond("", HttpStatusCode.GatewayTimeout) })
+        try {
+            assertEquals(504, assertFailsWith<ImageHttpFailure> { loadPublicImage(http, "https://proxy.example/image") }.status)
+        } finally { http.close() }
+    }
+
     @Test fun queryOnlyRedirectKeepsTheImagePath() = runTest {
         val urls = mutableListOf<String>()
         val http = HttpClient(MockEngine { request ->
@@ -64,4 +71,18 @@ class PublicImagesTest {
             assertEquals(6, requests)
         } finally { http.close() }
     }
+    @Test fun doesNotFollowMediaProxyRedirectToTheOriginalHost() = runTest {
+        val urls = mutableListOf<String>()
+        val http = HttpClient(MockEngine { request ->
+            urls += request.url.toString()
+            respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, "https://external.example/image"))
+        }) { followRedirects = false }
+        try {
+            assertFailsWith<IllegalArgumentException> {
+                loadPublicImage(http, "https://proxy.example/image", restrictOrigin = true)
+            }
+            assertEquals(listOf("https://proxy.example/image"), urls)
+        } finally { http.close() }
+    }
+
 }

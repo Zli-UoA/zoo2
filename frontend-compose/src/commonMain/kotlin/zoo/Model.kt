@@ -17,6 +17,14 @@ fun Row.present(key: String): Boolean =
 fun rowKey(row: Row): String =
     row.text("id").ifEmpty { "${row.text("user_id")}:${row.text("channel_id")}" }
 
+/** 通知設定 Shape (`channel_notification_settings`) の 1 行。本人の行だけが届く。 */
+fun Row.notificationLevel(): String? =
+    text("notification_level").takeIf { it in setOf("all", "mentions", "mute") }
+
+/** チャンネルの通知レベル。設定行が届いていなければ null（現在値不明）。 */
+fun channelNotificationLevel(settings: List<Row>, channelId: String): String? =
+    settings.firstOrNull { it.text("channel_id") == channelId }?.notificationLevel()
+
 fun author(row: Row): String =
     row.text("display_name").ifEmpty { row.text("user_name") }.ifEmpty { row.text("user_id") }
 
@@ -70,6 +78,17 @@ interface Platform {
 
     suspend fun image(url: String): ByteArray? = null
 
+    suspend fun refreshImage(url: String): ByteArray? = image(url)
+    suspend fun attachmentImage(url: String, cacheKey: String? = null, retry: Boolean = false): ByteArray? =
+        if (retry) refreshImage(url) else image(url)
+
+    suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? = null
+    suspend fun discardUndecodableImage(url: String, attachmentKey: String?, bytes: ByteArray) {}
+
+    suspend fun removeAttachmentImages(id: String) {}
+
+    suspend fun allowAttachmentImages(id: String) {}
+
     suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray? = null
 
     suspend fun headers(): Map<String, String>
@@ -81,6 +100,9 @@ interface Platform {
     suspend fun readCache(key: String): String?
 
     suspend fun writeCache(key: String, value: String)
+
+    /** 同期キャッシュを 1 件消す。キーごとに消せない保存先では何もしない。 */
+    suspend fun removeCache(key: String) {}
 
     fun uuid(): String
 

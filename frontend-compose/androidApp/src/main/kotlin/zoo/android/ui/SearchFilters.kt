@@ -11,17 +11,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LocalTextStyle
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,12 +24,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.paneTitle
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,6 +95,20 @@ internal fun SearchFilterRow(
         }
         FilterToggle(androidLabel("globalSearch.filters.noBots", "ボットを除く"), state.noBots, colors) {
             dispatch(AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.NoBots))
+        }
+    }
+    if (state.from.isNotEmpty() || state.inChannels.isNotEmpty()) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (field in listOf(SearchFilterField.From, SearchFilterField.In)) {
+                val ids = if (field == SearchFilterField.From) state.from else state.inChannels
+                val options = if (field == SearchFilterField.From) state.people else state.channels
+                ids.forEach { id ->
+                    val label = options.find { it.id == id }?.label ?: id
+                    TextAction(label, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) {
+                        dispatch(AndroidUiAction.SelectSearchFilter(field, ids - id))
+                    }
+                }
+            }
         }
     }
     when (open) {
@@ -178,20 +184,10 @@ private fun TypeChip(type: GlobalSearchType, colors: AndroidColors, select: (Glo
             Column(Modifier.selectableGroup()) {
                 for (kind in GlobalSearchType.entries) {
                     val chosen = kind == type
-                    DropdownMenuItem(
-                        text = {
-                            Text(androidLabel(kind.labelKey, kind.fallback), color = colors.foreground,
-                                fontWeight = if (chosen) AndroidWeights.emphasis else AndroidWeights.label)
-                        },
-                        // The chosen kind keeps its check; the others keep the same indent.
-                        leadingIcon = {
-                            Box(Modifier.size(AndroidControlSize.inlineIcon)) {
-                                if (chosen) UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon)
-                            }
-                        },
-                        onClick = { expanded = false; if (!chosen) select(kind) },
-                        modifier = Modifier.semantics { selected = chosen; role = Role.RadioButton },
-                    )
+                    MenuOption(androidLabel(kind.labelKey, kind.fallback), colors, chosen = chosen) {
+                        expanded = false
+                        if (!chosen) select(kind)
+                    }
                 }
             }
         }
@@ -226,38 +222,10 @@ private fun SearchFilterSheet(
         (matches.filter { it.id in chosen } + matches.filterNot { it.id in chosen }).take(SHOWN)
     }
     val full = selected.size >= MAX_SEARCH_FILTER_IDS
-    ModalBottomSheet(
-        onDismissRequest = dismiss,
-        modifier = Modifier.semantics { paneTitle = title },
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        sheetMaxWidth = Dp.Unspecified,
-        containerColor = colors.background,
-        contentColor = colors.foreground,
-    ) {
+    ActionSheet(colors, dismiss, Modifier.semantics { paneTitle = title }, skipPartial = true, maxWidth = Dp.Unspecified) {
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).imePadding().padding(horizontal = 16.dp)) {
             Text(title, color = colors.foreground, fontSize = 17.sp, fontWeight = AndroidWeights.emphasis)
-            BasicTextField(
-                query, { query = it },
-                Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("search-filter-field")
-                    .semantics { contentDescription = hint },
-                singleLine = true,
-                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 15.sp),
-                cursorBrush = SolidColor(colors.inputText),
-                decorationBox = { field ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                            .background(colors.inputSurface, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        UiGlyph(UiIcon.Search, colors.inputHint, AndroidControlSize.inlineIcon)
-                        Box(Modifier.weight(1f)) {
-                            if (query.isEmpty()) Text(hint, color = colors.inputHint, fontSize = 15.sp)
-                            field()
-                        }
-                    }
-                },
-            )
+            SearchInput(query, { query = it }, hint, colors, Modifier.padding(vertical = 8.dp).testTag("search-filter-field"))
             if (full) Text(
                 androidLabel("globalSearch.filters.max", "選べるのは {{count}} 件までです")
                     .replace("{{count}}", MAX_SEARCH_FILTER_IDS.toString()),
@@ -285,10 +253,8 @@ private fun SearchFilterSheet(
                                     UiGlyph(UiIcon.Lock, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                                 SearchFilterMark.Channel ->
                                     UiGlyph(UiIcon.Channels, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
-                                SearchFilterMark.Initial -> Box(Modifier.size(28.dp).background(colors.quietSurface, CircleShape),
-                                    contentAlignment = Alignment.Center) {
-                                    Text(option.label.take(1), color = colors.secondary, fontSize = 12.sp)
-                                }
+                                SearchFilterMark.Initial -> UserAvatar(option.label, null, Modifier.size(28.dp),
+                                    colors.quietSurface, colors.secondary, 12.sp)
                             }
                         }
                         Text(option.label, Modifier.weight(1f, fill = false), color = colors.foreground, fontSize = 15.sp,

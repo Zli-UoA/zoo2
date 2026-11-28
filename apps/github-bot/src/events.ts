@@ -1,4 +1,4 @@
-import { text, resource, type Json, type Target } from "./types.ts";
+import { capLines, plainMfm, text, resource, type Json, type Target } from "./types.ts";
 export interface Notice {
   target: Target;
   feature: string;
@@ -219,24 +219,27 @@ export function summary(target: Target, s: Json): string {
     .join(", ");
   const assignees = (s.assignees ?? []).map((a: Json) => text(a.login, 80)).join(", ");
   const reviewers = (s.requested_reviewers ?? []).map((a: Json) => text(a.login, 80)).join(", ");
-  return Array.from(
-    [
+  // GitHub 由来の行は <plain> で囲み、MFM として解釈させない。囲んだあとで途中から切ると
+  // 閉じタグが落ちるので、長さの上限は行単位で守る。URL の行と件数の行だけは信頼できる。
+  const lines = [
+    plainMfm(
       `${text(target.repo, 160)} · ${target.kind} ${["issue", "pull", "discussion"].includes(target.kind) ? "#" : ""}${text(target.number, 100)} · ${text(state, 100)}`,
-      text(title, 500),
-      resource(target),
-      text(s.body ?? s.latest?.description ?? s.description, 900),
-      labels ? `Labels: ${labels}` : "",
-      assignees ? `Assignees: ${assignees}` : "",
-      reviewers ? `Review requested: ${reviewers}` : "",
-      s.reviews ? `Reviews: ${text(s.reviews.join(" / "), 350)}` : "",
-      typeof s.comments === "number"
-        ? `Comments: ${s.comments}${typeof s.review_comments === "number" ? ` / Review comments: ${s.review_comments}` : ""}`
-        : "",
-      s.checkSummary ? `Checks: ${text(s.checkSummary, 500)}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  )
-    .slice(0, 3800)
-    .join("");
+    ),
+    // タイトルは 1 行で表示する。改行を残すと、行ごとの囲みで長さが増え、URL の行が入らなくなる。
+    plainMfm(text(title, 500).replace(/\s*\n\s*/g, " ")),
+    resource(target),
+    plainMfm(text(s.body ?? s.latest?.description ?? s.description, 900)),
+    labels ? plainMfm(`Labels: ${labels}`) : "",
+    assignees ? plainMfm(`Assignees: ${assignees}`) : "",
+    reviewers ? plainMfm(`Review requested: ${reviewers}`) : "",
+    s.reviews ? plainMfm(`Reviews: ${text(s.reviews.join(" / "), 350)}`) : "",
+    typeof s.comments === "number"
+      ? `Comments: ${s.comments}${typeof s.review_comments === "number" ? ` / Review comments: ${s.review_comments}` : ""}`
+      : "",
+    s.checkSummary ? plainMfm(`Checks: ${text(s.checkSummary, 500)}`) : "",
+  ].filter(Boolean);
+  return capLines(
+    lines.flatMap((line) => line.split("\n")),
+    3800,
+  );
 }

@@ -16,3 +16,4 @@ pub mod notify;
 pub mod rows;
 pub mod shape;
 pub mod store;
+pub mod text;

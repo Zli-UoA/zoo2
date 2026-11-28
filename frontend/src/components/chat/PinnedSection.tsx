@@ -258,7 +258,7 @@ export function PinnedSection({
   if (!pins.available) {
     return null;
   }
-  if (loading && pinnedChannels.length === 0 && !pins.error) {
+  if (loading && !pins.error) {
     return null;
   }
   if (pinnedChannels.length === 0 && !pins.error) {

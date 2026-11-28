@@ -1,10 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { createApiClient, type ApiClient } from "../api/client";
+import { ApiError, createApiClient, type ApiClient } from "../api/client";
 import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED } from "./threads";
-import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
+import type {
+  ChannelNotificationSettingRow,
+  ChannelRow,
+  ChannelUserRow,
+  MessageRow,
+} from "./types";
 import {
+  createChannelNotificationSettingsWrites,
   createChannelUserWrites,
   createChannelWrites,
   createMessageWrites,
@@ -16,9 +22,12 @@ const TXID = "4242";
 const CURRENT_USER = "u1";
 
 function makeClient() {
-  const post = vi.fn(async () => ({ data: {}, txid: TXID }));
-  const patch = vi.fn(async () => ({ data: {}, txid: TXID }));
-  const del = vi.fn(async () => ({ data: {}, txid: TXID }));
+  const post = vi.fn(async (_path?: string, _body?: unknown, _options?: unknown) => ({
+    data: {},
+    txid: TXID,
+  }));
+  const patch = vi.fn(async (_path?: string, _body?: unknown) => ({ data: {}, txid: TXID }));
+  const del = vi.fn(async (_path?: string, _options?: unknown) => ({ data: {}, txid: TXID }));
   return { client: { post, patch, delete: del } as unknown as ApiClient, post, patch, del };
 }
 
@@ -79,6 +88,12 @@ const membership: ChannelUserRow = {
   joined_at: "2026-01-01 00:00:00.000",
 };
 
+const setting: ChannelNotificationSettingRow = {
+  user_id: "u1",
+  channel_id: "c1",
+  notification_level: "mentions",
+};
+
 describe("message writes", () => {
   it("POSTs the message and awaits the numeric txid", async () => {
     const { client, post } = makeClient();
@@ -118,6 +133,63 @@ describe("message writes", () => {
       content: "hello",
       parent_id: "m1",
     });
+  });
+
+  it("reposts a busy reply with the same id and body, then completes", async () => {
+    const { client, post } = makeClient();
+    const busy = new ApiError(
+      503,
+      "busy",
+      { error: "busy", code: "THREAD_BUSY", retry_after: 5 },
+      { path: "/api/messages", method: "POST" },
+      5,
+    );
+    post.mockRejectedValueOnce(busy).mockResolvedValueOnce({ data: {}, txid: TXID });
+    const delays: number[] = [];
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+      replyRetryDelay: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    const { collection, awaitTxId } = makeCollection();
+    const reply = { ...message, id: "m2", parent_id: "m1" };
+    const body = { id: "m2", channel_id: "c1", content: "hello", parent_id: "m1" };
+
+    await writes.onInsert(params(collection, [insertMutation(reply)]));
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenNthCalledWith(1, "/api/messages", body);
+    expect(post).toHaveBeenNthCalledWith(2, "/api/messages", body);
+    expect(delays).toHaveLength(1);
+    expect(delays[0]).toBeGreaterThanOrEqual(5000);
+    expect(delays[0]).toBeLessThan(5500);
+    expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+  });
+
+  it("gives up after the retry limit and propagates the 503 to the error display", async () => {
+    const { client, post } = makeClient();
+    const busy = new ApiError(
+      503,
+      "busy",
+      { error: "busy", code: "THREAD_BUSY", retry_after: 5 },
+      { path: "/api/messages", method: "POST" },
+      5,
+    );
+    post.mockRejectedValue(busy);
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+      replyRetryDelay: async () => undefined,
+    });
+    const { collection } = makeCollection();
+    const reply = { ...message, id: "m2", parent_id: "m1" };
+
+    await expect(writes.onInsert(params(collection, [insertMutation(reply)]))).rejects.toBe(busy);
+    expect(post).toHaveBeenCalledTimes(3);
   });
 
   it("sends attachment_ids from insert metadata", async () => {
@@ -554,6 +626,95 @@ describe("channel_user writes", () => {
     currentUserId = CURRENT_USER;
     await writes.onDelete(params(collection, [deleteMutation(membership)]));
     expect(post).toHaveBeenCalledWith("/api/channels/c1/leave");
+  });
+});
+
+describe("channel notification settings writes", () => {
+  function notificationSettingsMutation(changes: Partial<ChannelNotificationSettingRow>) {
+    return {
+      ...updateMutation(setting, changes),
+      metadata: { action: "notificationLevel" },
+    };
+  }
+
+  it("PATCHes the notification level and waits for the settings shape update", async () => {
+    const { client, patch } = makeClient();
+    const { collection, awaitTxId, awaitMatch } = makeCollection();
+    const writes = createChannelNotificationSettingsWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+
+    await writes.onUpdate(
+      params(collection, [notificationSettingsMutation({ notification_level: "all" })]),
+    );
+
+    expect(patch).toHaveBeenCalledWith("/api/channels/c1/notification-settings", { level: "all" });
+    expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+    expect(awaitMatch).not.toHaveBeenCalled();
+  });
+
+  it("matches only my row with the selected level in awaitMatch mode", async () => {
+    const { client } = makeClient();
+    const { collection, awaitMatch } = makeCollection();
+    const writes = createChannelNotificationSettingsWrites({
+      client,
+      txidMode: "awaitMatch",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+
+    await writes.onUpdate(
+      params(collection, [notificationSettingsMutation({ notification_level: "mute" })]),
+    );
+
+    const matcher = awaitMatch.mock.calls[0][0] as (message: unknown) => boolean;
+    const message = (level: string, userId = CURRENT_USER) => ({
+      key: `${userId}:c1`,
+      headers: { operation: "update" },
+      value: { ...setting, user_id: userId, notification_level: level },
+    });
+    expect(matcher(message("mute"))).toBe(true);
+    expect(matcher(message("mentions"))).toBe(false);
+    expect(matcher(message("mute", "u2"))).toBe(false);
+    expect(matcher({ ...message("mute"), headers: { operation: "insert" } })).toBe(false);
+  });
+
+  it("refuses another member's row and unexpected updates so the optimistic state rolls back", async () => {
+    const { client, patch } = makeClient();
+    const { collection } = makeCollection();
+    const writes = createChannelNotificationSettingsWrites({
+      client,
+      txidMode: "skip",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+
+    await expect(
+      writes.onUpdate(
+        params(collection, [
+          {
+            ...updateMutation({ ...setting, user_id: "u2" }, { notification_level: "mute" }),
+            metadata: { action: "notificationLevel" },
+          },
+        ]),
+      ),
+    ).rejects.toThrow(/own notification settings/);
+
+    await expect(
+      writes.onUpdate(
+        params(collection, [
+          {
+            ...updateMutation(setting, { user_id: "u2", notification_level: "mute" }),
+            metadata: { action: "notificationLevel" },
+          },
+        ]),
+      ),
+    ).rejects.toThrow(/own notification settings/);
+
+    await expect(
+      writes.onUpdate(params(collection, [notificationSettingsMutation({})])),
+    ).rejects.toThrow(/Only notification_level/);
+    expect(patch).not.toHaveBeenCalled();
   });
 });
 

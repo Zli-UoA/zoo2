@@ -33,7 +33,7 @@ use zoo2_client_core::{
     http::{Credentials, HttpError},
 };
 use zoo2_client_types::{
-    api::Me,
+    api::{ChannelNotificationSettings, Me, NotificationLevel},
     ipc::{
         BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, Linked, LinkedMessage,
         LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION,
@@ -181,7 +181,8 @@ struct Session {
     store: Store,
     /// (a) 本文のリンクが指すメッセージの取得。
     links: LinkedCache,
-    link_events: mpsc::UnboundedSender<LinkedEvent>,
+    /// 取得の結果と、届けた購読の番号。
+    link_events: mpsc::UnboundedSender<(u64, LinkedEvent)>,
     /// 画面の近くのリンク先を入れ替えたとき、時刻の予定を立て直してもらう合図。
     links_changed: Arc<Notify>,
 }
@@ -211,7 +212,7 @@ impl Core {
             app,
             ui,
             config: config.map_err(|err| format!("{err:#}")),
-            http: reqwest::Client::new(),
+            http: zoo2_client_core::http::client(),
             no_redirect_http: build_no_redirect_http_client(),
             browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),
@@ -304,6 +305,32 @@ impl Core {
         }
         *current = settings;
         Ok(())
+    }
+
+    /// チャンネルごとの通知レベル。共有の `ApiClient` で 1 回だけ取得する。
+    pub async fn channel_notification_settings(
+        &self,
+        channel_id: &str,
+    ) -> Result<ChannelNotificationSettings, IpcError> {
+        self.api()
+            .await?
+            .get_channel_notification_settings(channel_id)
+            .await
+            .map_err(to_ipc)
+    }
+
+    /// レベルを変える。Shape でも新しい値が届くが、画面を待たせないため応答で返す。
+    pub async fn set_channel_notification_level(
+        &self,
+        channel_id: &str,
+        level: NotificationLevel,
+    ) -> Result<ChannelNotificationSettings, IpcError> {
+        self.api()
+            .await?
+            .set_channel_notification_level(channel_id, level)
+            .await
+            .map_err(to_ipc)?;
+        Ok(ChannelNotificationSettings { level })
     }
 
     fn token_path(&self) -> Result<std::path::PathBuf> {
@@ -442,6 +469,7 @@ impl Core {
                 ShapeId::Channels,
                 ShapeId::Users,
                 ShapeId::ChannelUsers,
+                ShapeId::ChannelNotificationSettings,
                 ShapeId::Notifications,
             ]);
         }
@@ -506,11 +534,11 @@ impl Core {
     fn spawn_link_loop(
         self: &Arc<Self>,
         generation: u64,
-        mut receiver: mpsc::UnboundedReceiver<LinkedEvent>,
+        mut receiver: mpsc::UnboundedReceiver<(u64, LinkedEvent)>,
         changed: Arc<Notify>,
     ) -> JoinHandle<()> {
         enum Wake {
-            Event(LinkedEvent),
+            Event(u64, LinkedEvent),
             Changed,
             Deadline,
         }
@@ -522,7 +550,7 @@ impl Core {
                 let at = tokio::time::Instant::from_std(deadline.unwrap_or_else(Instant::now));
                 let wake = tokio::select! {
                     event = receiver.recv() => match event {
-                        Some(event) => Wake::Event(event),
+                        Some((subscription, event)) => Wake::Event(subscription, event),
                         None => return,
                     },
                     () = changed.notified() => Wake::Changed,
@@ -537,8 +565,8 @@ impl Core {
                 };
                 let now = Instant::now();
                 match wake {
-                    Wake::Event(event) => {
-                        let keys = session.links.apply(event);
+                    Wake::Event(subscription, event) => {
+                        let keys = session.links.apply(subscription, event);
                         core.emit_links(&session.links, &keys, now);
                     }
                     Wake::Deadline => {
@@ -557,20 +585,21 @@ impl Core {
     fn link_fetcher(
         &self,
         session: &Session,
-    ) -> impl FnMut(String, mpsc::UnboundedReceiver<String>) -> JoinHandle<()> + use<> {
+    ) -> impl FnMut(String, u64, mpsc::UnboundedReceiver<Vec<String>>) -> JoinHandle<()> + use<>
+    {
         let http = self.http.clone();
         let base = self.api_base_url().unwrap_or_default().to_string();
         let credentials = session.credentials.clone();
         let events = session.link_events.clone();
-        move |channel_id, ids| {
+        move |channel_id, subscription, requests| {
             let events = events.clone();
             electric::spawn_linked(
                 http.clone(),
                 &base,
                 credentials.clone(),
                 channel_id,
-                ids,
-                move |event| events.send(event).is_ok(),
+                requests,
+                move |event| events.send((subscription, event)).is_ok(),
             )
         }
     }
@@ -1250,7 +1279,7 @@ impl Core {
     }
 
     /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
-    /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
+    /// `sign_out_and_revoke` するので、コマンドが持っている `ApiClient` で進行中だった更新が
     /// 後から終わっても、`token.json` は作り直されない。
     ///
     /// 待っている E2EE の再認証も取り消す (ループバックの待ち受けも閉じる)。ログアウトと 401 の
@@ -1297,7 +1326,8 @@ impl Core {
 
     async fn finish_end_session(&self, ending: EndingSession) -> Result<()> {
         if let Some(tokens) = ending.tokens {
-            tokens.sign_out().await?;
+            // refresh token は IdP に失効を要求してから、保存済みのトークンを消す。
+            tokens.sign_out_and_revoke().await?;
         } else if let Some((path, expected)) = ending.fallback {
             tokio::task::spawn_blocking(move || {
                 token::delete_if_unchanged(&path, expected.as_ref())

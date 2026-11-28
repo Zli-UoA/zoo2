@@ -30,6 +30,24 @@ export const Image: Story = {
     height: 480,
   },
 };
+const thumbnailUrl =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+export const Thumbnail: Story = {
+  args: { ...Image.args, thumbnailSrc: thumbnailUrl },
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("img", { name: "sample.png" })).toHaveAttribute(
+      "src",
+      thumbnailUrl,
+    );
+    await userEvent.click(canvas.getByRole("button", { name: /sample\.png/ }));
+    const dialog = await within(canvasElement.ownerDocument.body).findByRole("dialog");
+    await expect(within(dialog).getByRole("img", { name: "sample.png" })).toHaveAttribute(
+      "src",
+      Image.args!.src,
+    );
+  },
+};
 export const PDF: Story = {
   args: { src: pdfUrl, name: "sample.pdf", contentType: "application/pdf" },
 };

@@ -14,8 +14,8 @@ test('source and test additions or edits select tests through imports', () => {
   }
 });
 
-test('main, merge queue and manual runs always run the complete suite', () => {
-  for (const name of ['push', 'merge_group', 'workflow_dispatch', undefined]) {
+test('push and manual runs always run the complete suite', () => {
+  for (const name of ['push', 'workflow_dispatch', undefined]) {
     assert.equal(selectTests(name, event, changes).mode, 'full');
   }
 });
@@ -92,21 +92,72 @@ test('fetch failure runs all tests, and test failures or signals remain failures
 });
 
 test('main does not fetch history and a selected test failure is not retried', () => {
-  for (const eventName of ['push', 'pull_request']) {
+  for (const [eventName, payload] of [
+    ['push', event],
+    ['pull_request', event],
+    ['merge_group', { merge_group: { base_sha: base } }],
+    ['merge_group', event],
+  ]) {
+    const selective = eventName === 'pull_request' || !!payload.merge_group;
     let runs = 0;
     const code = runTests({
-      project: 'browser', eventName, event, log() {},
+      project: 'browser', eventName, event: payload, log() {},
       git(command, args) {
-        assert.equal(eventName, 'pull_request');
+        assert.ok(selective);
+        assert.ok(args.some(arg => arg === base || arg === `${base}^{commit}`));
         return args[0] === 'diff' ? 'M\0frontend/src/lib/time.ts\0' : '';
       },
       run(command, args) {
         runs++;
-        assert.equal(args.includes('related'), eventName === 'pull_request');
+        assert.equal(args.includes('related'), selective);
         return { status: 1 };
       },
     });
     assert.equal(code, 1);
     assert.equal(runs, 1);
+  }
+});
+
+test('unrelated Android and translation changes do not widen Vitest dependency selection', () => {
+  const selected = selectTests('pull_request', event, [
+    ...changes,
+    { status: 'M', path: 'frontend/src/lib/i18n/locales/ja.json' },
+    { status: 'M', path: 'frontend-compose/androidApp/src/main/kotlin/zoo/android/Settings.kt' },
+    { status: 'M', path: 'frontend/README.md' },
+  ]);
+  assert.equal(selected.mode, 'related');
+  assert.deepEqual(selected.files, ['src/lib/time.ts']);
+});
+
+test('Web changes retain related Vitest selection alongside standalone Playwright and proxy inputs', () => {
+  const selected = selectTests('pull_request', event, [
+    ...changes,
+    { status: 'M', path: 'frontend/src/lib/e2ee/setupController.ts' },
+    { status: 'M', path: 'frontend/e2e/layout.spec.ts' },
+    { status: 'M', path: 'infra/proxy/routes.yaml' },
+  ]);
+  assert.equal(selected.mode, 'related');
+  assert.deepEqual(selected.files, ['src/lib/time.ts', 'src/lib/e2ee/setupController.ts']);
+});
+
+test('Storybook settings broaden VRT and Storybook without expanding unit or browser', () => {
+  const mixed = [...changes, { status: 'M', path: 'frontend/.storybook/vitest.setup.ts' }];
+  for (const project of ['unit', 'browser']) {
+    assert.equal(selectTests('pull_request', event, mixed, project).mode, 'related');
+  }
+  for (const project of ['vrt', 'storybook']) {
+    assert.equal(selectTests('pull_request', event, mixed, project).mode, 'full');
+  }
+});
+
+test('shared fixtures remain inputs to Vitest even outside src', () => {
+  for (const [project, path] of [
+    ['unit', 'frontend/.storybook/fixtures/sample.eml'],
+    ['unit', 'frontend/.storybook/fixtures.ts'],
+    ['browser', 'frontend/.storybook/fixtures.ts'],
+    ['browser', 'frontend/.storybook/fixtures/sample.eml'],
+    ['unit', 'frontend/e2e/mock-idp.ts'],
+  ]) {
+    assert.equal(selectTests('pull_request', event, [...changes, { status: 'M', path }], project).mode, 'full');
   }
 });

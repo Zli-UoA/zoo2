@@ -1,15 +1,16 @@
 //! 本文のアプリ内リンクの表示（docs/mfm.md の「チャンネル・メッセージのリンクの表示」）。リンク先の
 //! 取得は `client-core` の `electric::LinkedCache`。
 
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
 use zoo2_client_core::{
-    links::{LinkState, LinkTarget, MessagePreview, PreviewBody},
+    links::{self, LinkState, LinkTarget, MessagePreview, PreviewBody},
     store::Store,
+    text::sanitize_display,
 };
 
 use super::timeline::{DIM, local};
@@ -35,6 +36,68 @@ pub struct DrawCache {
     pub views: RefCell<HashMap<LinkTarget, LinkView>>,
 }
 
+/// 1 つの本文を調べて分かる、アプリ内リンク。
+#[derive(Debug, Default)]
+pub struct Parsed {
+    /// 本文のアプリ内リンクのすべて。
+    pub all: Vec<(String, LinkTarget)>,
+    /// 投稿の下に埋め込むもの。
+    pub embedded: Vec<(String, LinkTarget)>,
+    /// 取得するもの。
+    pub targets: Vec<LinkTarget>,
+}
+
+/// 本文ごとの [`Parsed`]。タイムラインは描画のたびに読み込んだ全部の投稿を組み立てるので、描画を
+/// またいで覚え、同じ本文を調べ直さない。接続先は変わらないものとする。
+///
+/// 直前の描画で使った本文だけを次の描画へ引き継ぐので、覚える量は読み込んでいる本文の分で収まり、
+/// 履歴がどれだけ長くても、調べるのは新しく出た本文だけになる。
+#[derive(Default)]
+pub struct ParsedLinks {
+    /// いまの描画の番号。
+    frame: u64,
+    /// 本文ごとの、最後に使った描画の番号と結果。
+    entries: RefCell<HashMap<String, (u64, Arc<Parsed>)>>,
+}
+
+impl ParsedLinks {
+    /// 描画を始めるときに呼び、直前の描画で使わなかった本文を捨てる。直前の描画で本文を 1 つも
+    /// 使っていなければ、そのまま残す。
+    pub fn next_frame(&mut self) {
+        let frame = self.frame;
+        let entries = self.entries.get_mut();
+        if entries.values().any(|(used, _)| *used == frame) {
+            entries.retain(|_, (used, _)| *used == frame);
+            self.frame += 1;
+        }
+    }
+
+    pub fn get(&self, body: &str, app_base_url: &str) -> Arc<Parsed> {
+        if let Some((used, parsed)) = self.entries.borrow_mut().get_mut(body) {
+            *used = self.frame;
+            return parsed.clone();
+        }
+        let parsed = Arc::new(parse(body, app_base_url));
+        self.entries
+            .borrow_mut()
+            .insert(body.to_owned(), (self.frame, parsed.clone()));
+        parsed
+    }
+}
+
+fn parse(body: &str, app_base_url: &str) -> Parsed {
+    let all = links::app_links(body, app_base_url);
+    if all.is_empty() {
+        return Parsed::default();
+    }
+    let embedded = links::embedded_links(body, app_base_url);
+    Parsed {
+        targets: links::fetch_targets(body, app_base_url, &embedded, &all),
+        all,
+        embedded,
+    }
+}
+
 /// 1 つの本文のアプリ内リンクの表示と、取得の対象。
 #[derive(Debug, Clone, Default)]
 pub struct BodyLinks {
@@ -50,7 +113,7 @@ pub fn channel_name(channel: &Channel) -> String {
     if channel.is_dm {
         "ダイレクトメッセージ".to_owned()
     } else {
-        format!("#{}", channel.channel_name)
+        format!("#{}", sanitize_display(&channel.channel_name))
     }
 }
 
@@ -148,6 +211,31 @@ pub fn view(state: &LinkState<'_>, store: &Store) -> LinkView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_bodies_are_kept_while_draws_use_them() {
+        let mut cache = ParsedLinks::default();
+        let get = |cache: &ParsedLinks, body: &str| cache.get(body, "https://zli.chat");
+        let bodies: Vec<String> = (0..50_000).map(|n| n.to_string()).collect();
+        let first: Vec<_> = bodies.iter().map(|body| get(&cache, body)).collect();
+        // 毎回同じ本文を使う長い履歴は、件数によらず調べ直さない。
+        for _ in 0..2 {
+            cache.next_frame();
+            for (body, parsed) in bodies.iter().zip(&first) {
+                assert!(Arc::ptr_eq(parsed, &get(&cache, body)));
+            }
+        }
+        cache.next_frame();
+        get(&cache, "0");
+        cache.next_frame();
+        // 直前の描画で使わなかった本文は捨てる。
+        assert_eq!(cache.entries.borrow().len(), 1);
+        // 本文を使わない描画をはさんでも、残した本文は調べ直さない。
+        cache.next_frame();
+        cache.next_frame();
+        assert!(Arc::ptr_eq(&first[0], &get(&cache, "0")));
+        assert!(!Arc::ptr_eq(&first[1], &get(&cache, "1")));
+    }
 
     #[test]
     fn views_do_not_reveal_unavailable_destinations() {

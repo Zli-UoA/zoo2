@@ -308,6 +308,7 @@ function usePinnedChannelsState(): {
       }
       // 書き込みの応答や競合の本文でサーバーの状態を採用できたなら、取得の失敗は解消済み。
       setLoadError(null);
+      setLoading(false);
       const sorted = sortPins(nextPins);
       versionRef.current = nextVersion;
       serverReady.current = true;
@@ -407,6 +408,10 @@ function usePinnedChannelsState(): {
     if (!livePins || !currentUserId || liveSignature === null) {
       return;
     }
+    // 同期前の空配列で初回取得を完了扱いにしない。保存済みのピンは先に表示する。
+    if (live.isLoading && !(live.isPersistedReady && livePins.length > 0)) {
+      return;
+    }
     if (liveSignature === lastLiveSignature.current) {
       return;
     }
@@ -425,7 +430,7 @@ function usePinnedChannelsState(): {
       void fetchAuthoritativeRef.current();
     }, 250);
     return () => clearTimeout(timer);
-  }, [currentUserId, livePins, liveSignature, pending]);
+  }, [currentUserId, livePins, liveSignature, live.isLoading, live.isPersistedReady, pending]);
 
   const fail = useCallback(
     (cause: unknown, fallbackSuffix?: "conflict" | "reorderConflict") => {

@@ -6,9 +6,10 @@ pub use crate::accounts::AccountProfiles;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    api::NotificationLevel,
     rows::{
-        Attachment, CallInvite, Channel, ChannelUser, FromRow, Message, Notification, Reaction,
-        User, UserPinnedChannel,
+        Attachment, CallInvite, Channel, ChannelNotificationSettingRow, ChannelUser, FromRow,
+        Message, Notification, Reaction, User, UserPinnedChannel,
     },
     shape::{Batch, Change, ShapeId},
 };
@@ -23,6 +24,12 @@ pub struct Store {
     channel_keys: HashMap<String, String>,
     user_keys: HashMap<String, String>,
     channel_users: HashMap<String, ChannelUser>,
+    /// (channel_id, user_id) から Shape のキーへの索引。
+    channel_user_keys: HashMap<(String, String), String>,
+    /// 自分の通知設定だけを配る Shape。他人の設定は届かない。
+    notification_settings: HashMap<String, ChannelNotificationSettingRow>,
+    /// (channel_id, user_id) から Shape のキーへの索引。
+    notification_setting_keys: HashMap<(String, String), String>,
     messages: HashMap<String, HashMap<String, Message>>,
     /// チャンネルごとの、メッセージの ID からシェイプのキーを引く索引。
     message_keys: HashMap<String, HashMap<String, String>>,
@@ -61,6 +68,12 @@ impl Store {
             ShapeId::Users => apply_rows(&mut self.users, batch.reset, batch.changes, &mut invalid),
             ShapeId::ChannelUsers => apply_rows(
                 &mut self.channel_users,
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
+            ShapeId::ChannelNotificationSettings => apply_rows(
+                &mut self.notification_settings,
                 batch.reset,
                 batch.changes,
                 &mut invalid,
@@ -120,6 +133,20 @@ impl Store {
         match id {
             ShapeId::Channels => self.channel_keys = index(&self.channels, |c| &c.id),
             ShapeId::Users => self.user_keys = index(&self.users, |u| &u.id),
+            ShapeId::ChannelUsers => {
+                self.channel_user_keys = self
+                    .channel_users
+                    .iter()
+                    .map(|(key, row)| ((row.channel_id.clone(), row.user_id.clone()), key.clone()))
+                    .collect();
+            }
+            ShapeId::ChannelNotificationSettings => {
+                self.notification_setting_keys = self
+                    .notification_settings
+                    .iter()
+                    .map(|(key, row)| ((row.channel_id.clone(), row.user_id.clone()), key.clone()))
+                    .collect();
+            }
             ShapeId::Notifications => {
                 self.notification_keys = index(&self.notifications, |n| &n.id)
             }
@@ -222,9 +249,11 @@ impl Store {
     /// 表示名。`display_name`、`user_name`、id の順に使う (frontend の `messageFormat.ts` と同じ)。
     pub fn display_name(&self, user_id: &str) -> String {
         match self.user(user_id) {
-            Some(user) if !user.display_name.is_empty() => user.display_name.clone(),
-            Some(user) => user.user_name.clone(),
-            None => user_id.to_string(),
+            Some(user) if !user.display_name.is_empty() => {
+                crate::text::sanitize_display(&user.display_name).into_owned()
+            }
+            Some(user) => crate::text::sanitize_display(&user.user_name).into_owned(),
+            None => crate::text::sanitize_display(user_id).into_owned(),
         }
     }
 
@@ -232,6 +261,33 @@ impl Store {
         self.channel_users
             .values()
             .any(|member| member.channel_id == channel_id && member.user_id == user_id)
+    }
+
+    /// あるユーザーのチャンネル参加行。
+    pub fn channel_user(&self, channel_id: &str, user_id: &str) -> Option<&ChannelUser> {
+        self.channel_users.get(
+            self.channel_user_keys
+                .get(&(channel_id.into(), user_id.into()))?,
+        )
+    }
+
+    /// 通知設定の行。メンバー一覧には設定列を配らないので、ここだけから設定を読む。
+    pub fn notification_setting(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Option<&ChannelNotificationSettingRow> {
+        self.notification_settings.get(
+            self.notification_setting_keys
+                .get(&(channel_id.into(), user_id.into()))?,
+        )
+    }
+
+    /// 通知レベル。設定行がまだ届いていない・古いスキーマなら `mentions`。
+    pub fn notification_level(&self, channel_id: &str, user_id: &str) -> NotificationLevel {
+        self.notification_setting(channel_id, user_id)
+            .and_then(|row| NotificationLevel::parse(&row.notification_level))
+            .unwrap_or_default()
     }
 
     /// チャンネルに参加しているユーザー一覧。
@@ -310,7 +366,7 @@ impl Store {
     /// 一覧に出す名前。DM は `dm:<id>:<id>` という内部名なので、自分以外の参加者の名前にする。
     pub fn channel_label(&self, channel: &Channel, me: &str) -> String {
         if !channel.is_dm {
-            return format!("#{}", channel.channel_name);
+            return format!("#{}", crate::text::sanitize_display(&channel.channel_name));
         }
         let mut names: Vec<String> = self
             .channel_users
@@ -837,5 +893,49 @@ mod tests {
         );
         assert!(store.notification("n1").is_none());
         assert!(store.notification("n2").is_some());
+    }
+
+    #[test]
+    fn reads_notification_level_from_the_own_settings_shape() {
+        let mut store = Store::default();
+        // メンバー一覧に設定列が混ざっても読まない。正本は本人だけの Shape の行。
+        store.apply(
+            &ShapeId::ChannelUsers,
+            batch(vec![
+                upsert(
+                    "a",
+                    json!({ "user_id": "me", "channel_id": "c1", "notification_level": "mute" }),
+                ),
+                upsert("b", json!({ "user_id": "other", "channel_id": "c1" })),
+            ]),
+        );
+        store.apply(
+            &ShapeId::ChannelNotificationSettings,
+            batch(vec![
+                upsert(
+                    "s1",
+                    json!({ "user_id": "me", "channel_id": "c1", "notification_level": "all" }),
+                ),
+                upsert("s2", json!({ "user_id": "me", "channel_id": "c2" })),
+            ]),
+        );
+        assert_eq!(store.notification_level("c1", "me"), NotificationLevel::All);
+        assert_eq!(
+            store.notification_level("c2", "me"),
+            NotificationLevel::Mentions
+        );
+        assert_eq!(
+            store.notification_level("c3", "me"),
+            NotificationLevel::Mentions
+        );
+        // 他人の設定は Shape が配らないので、メンバー行からも読まない。
+        assert_eq!(
+            store.notification_level("c1", "other"),
+            NotificationLevel::Mentions
+        );
+        assert!(store.channel_user("c1", "me").is_some());
+        assert!(store.channel_user("c9", "me").is_none());
+        assert!(store.notification_setting("c1", "me").is_some());
+        assert!(store.notification_setting("c1", "other").is_none());
     }
 }

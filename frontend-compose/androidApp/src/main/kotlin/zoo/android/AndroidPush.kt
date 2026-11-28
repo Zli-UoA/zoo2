@@ -57,12 +57,14 @@ internal class PushBinding(private val context: Context) {
     }
 
     private fun retireCurrent() {
+        prefs.getString("binding", null)?.let { pushImageDirectory(context, it).deleteRecursively() }
         val base = prefs.getString("base", null) ?: return
         val user = prefs.getString("user", null) ?: return
         prefs.getString("endpoint", null)?.let { deferRemoval(base, user, it) }
     }
 
     fun bind(base: String, user: String): String = synchronized(lock) {
+        context.cacheDir.resolve("push-images").deleteRecursively()
         if (prefs.getString("base", null) == base && prefs.getString("user", null) == user) {
             prefs.getString("binding", null)?.let { return@synchronized it }
         }
@@ -230,8 +232,6 @@ internal class AndroidPushRegistration(
     private val binding = store.bind(app.repo.config.apiBaseUrl, app.repo.config.userId)
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
-    private var projectId: String? = null
-    private var supportsDmCalls = false
     private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
         app.api.request("/api/push/subscriptions", method,
             if (method == "POST") obj("transport" to "fcm", "endpoint" to endpoint) else obj("endpoint" to endpoint))
@@ -244,20 +244,21 @@ internal class AndroidPushRegistration(
         }
     }
     private val worker = app.scope.launch {
+        var pushConfig: Row? = null
         for (ignored in updates) {
             try {
-                if (!app.env.online || !notificationsAllowed(context)) continue
+                if (!app.env.online) continue
+                val config = pushConfig ?: app.api.request("/api/push/config") as? Row ?: continue
+                val projectId = config.text("fcmProjectId")
+                if (projectId.isEmpty()) continue
+                pushConfig = config
+                if (!notificationsAllowed(context)) continue
                 val firebase = FirebaseApp.initializeApp(context) ?: continue
-                if (projectId == null) {
-                    val config = app.api.request("/api/push/config") as? Row ?: continue
-                    projectId = config.text("fcmProjectId").takeIf { it.isNotEmpty() }
-                    supportsDmCalls = config.flag("fcmDmCalls")
-                }
-                if (projectId == null || projectId != firebase.options.projectId) continue
+                if (projectId != firebase.options.projectId) continue
                 val messaging = FirebaseMessaging.getInstance()
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
-                registration.refresh(token, supportsDmCalls)
+                registration.refresh(token, config.flag("fcmDmCalls"))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -291,7 +292,11 @@ internal class AndroidPushRegistration(
     }
 
     fun open(intent: Intent, dismissed: (String) -> Unit = {}): Boolean {
-        if (intent.action != OPEN_ACTION || !store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) return false
+        if (intent.action != OPEN_ACTION) return false
+        if (!store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) {
+            app.toast = "この通知を受け取ったときのログイン情報が変わりました。通知一覧を確認してください"
+            return true
+        }
         val path = pushDestination(intent.getStringExtra("path")) ?: return false
         app.navigate(path)
         intent.getStringExtra("tag")?.takeIf { it.startsWith("zoo:${app.config.userId}:") }?.let {
@@ -332,6 +337,8 @@ internal fun clearNotifications(context: Context, user: String) {
         .forEach { manager.cancel(it.tag, it.id) }
 }
 
+private fun pushImageDirectory(context: Context, binding: String) = context.cacheDir.resolve("push-images/$binding")
+
 /** Data-only delivery also runs while no Activity or Session is present. */
 class ZooMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) { AndroidPushRegistration.tokenChanged() }
@@ -340,6 +347,7 @@ class ZooMessagingService : FirebaseMessagingService() {
         // 暗号化チャンネルの通知は、端末の暗号ストアで復号できたら本文を置き換える（#510）。
         val posted = showPushNotification(this, message.data, decryptPushBody(this, message.data)) ?: return
         if (posted.avatarUrl == null && posted.imageUrl == null) return
+        val base = PushBinding(this).base(posted.binding) ?: return
         runBlocking {
             val client = HttpClient(OkHttp) {
                 followRedirects = false
@@ -347,9 +355,31 @@ class ZooMessagingService : FirebaseMessagingService() {
                 install(HttpTimeout) { requestTimeoutMillis = 3_000 }
             }
             try {
-                enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
-                    val bytes = loadPublicImage(client, url, limit = 4 * 1024 * 1024)
-                    withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                pushImageDirectory(this@ZooMessagingService, posted.binding).deleteRecursively()
+                val proxy = AndroidMediaProxy(this@ZooMessagingService, base)
+                val images = synchronized(PushBinding.lock) {
+                    if (!PushBinding(this@ZooMessagingService).matches(posted.binding, posted.user)) {
+                        return@runBlocking
+                    }
+                    val legacy = accountCacheDirectory(this@ZooMessagingService, base, posted.user)
+                    AndroidImageCache(accountImageDirectory(this@ZooMessagingService, base, posted.user),
+                        maxBytes = readImageCacheSize(this@ZooMessagingService, legacy.name) * BytesPerMiB,
+                        timeoutMillis = 3_000, legacyDirectory = legacy.resolve("images"))
+                }
+                images.use {
+                    enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
+                        val bytes = proxy.image(url, client, images, limit = 4 * 1024 * 1024, push = true)
+                        try {
+                            withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            normalizedImageSource(base, url)?.toString()?.let { source ->
+                                images.discardUndecodableImage(source, null, bytes)
+                            }
+                            throw failure
+                        }
+                    }
                 }
             } finally {
                 client.close()
@@ -395,7 +425,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
         val base = store.base(binding) ?: return@synchronized null
         val path = pushDestination(data["url"]) ?: return@synchronized null
         val kind = data["notificationType"]
-        if (kind !in setOf("mention", "dm", "reply", "reaction")) return@synchronized null
+        if (kind !in setOf("mention", "dm", "reply", "reaction", "channel_message")) return@synchronized null
         val id = data["tag"]?.removePrefix("zoo-")?.takeIf(::isCanonicalUuid) ?: return@synchronized null
         val tag = notificationTag(user, id)
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -425,11 +455,9 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
             } catch (_: SecurityException) { }
             return@synchronized null
         }
-        val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
-        if (manager.getNotificationChannel("zoo.$channel") == null) {
-            manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
-                if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
-        }
+        val delivery = deliveryChannel(kind.orEmpty())
+        val channel = delivery.id
+        delivery.register(context, manager)
         val intent = store.openIntent(user, id, path) ?: return@synchronized null
         val body = decryptedBody ?: data["body"].orEmpty().take(2000)
         val timestamp = System.currentTimeMillis()
@@ -460,7 +488,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
                 })
                 .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
-                .setCategory(Notification.CATEGORY_MESSAGE).build()
+                .setCategory(if (kind == "reaction") Notification.CATEGORY_SOCIAL else Notification.CATEGORY_MESSAGE).build()
         }
         try {
             manager.notify(tag, 0, posted.build(null, null))

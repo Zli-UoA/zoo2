@@ -5,7 +5,7 @@ import { Textarea } from "../../ui/textarea";
 import { Button } from "../../ui/button";
 import { SettingsSection } from "../../ui/control-panel";
 import { inputClassName } from "../../ui/input-styles";
-import { useUsers } from "../../../hooks/useRealtime";
+import { useAllUsers } from "../../../hooks/useRealtime";
 import type { SectionProps } from "./AppConsole";
 import {
   APP_SCOPES,
@@ -99,7 +99,7 @@ function updateManifest(props: SectionProps, change: (manifest: AppManifest) => 
 export function BasicSection(props: SectionProps) {
   const { t } = useTranslation();
   const { detail, draft, setDraft } = props;
-  const people = useUsers().data ?? [];
+  const people = useAllUsers().data ?? [];
   const field = (key: "name" | "description" | "icon_url" | "bot_username") => ({
     value: draft[key],
     onChange: (event: { target: { value: string } }) =>

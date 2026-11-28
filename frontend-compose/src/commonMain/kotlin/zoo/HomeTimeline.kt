@@ -80,28 +80,51 @@ class HomeTimeline(
         app.homeTimelines.save(cacheKey, HomeTimelineSnapshot(posts, hasMore, index, offset, checkedAt))
     }
 
+    var showingSavedHead by mutableStateOf(false)
+        private set
+    private var attemptedDiskRestore = false
     private var selectionChanged = false
     suspend fun restoreSelection() {
         val saved = readHomePreference(app, settingsKey)
         if (!selectionChanged) timeline = saved.takeIf { it in listOf("home", "local", "social") } ?: "home"
+        if (!attemptedDiskRestore && postId == null && actorId == null && app.homeTimelines.limit > 0 && posts.isEmpty()) {
+            attemptedDiskRestore = true
+            val selected = timeline
+            val generationAtRead = generation
+            val cached = app.startupTimeline.read(selected)
+            if (generation == generationAtRead && timeline == selected && posts.isEmpty() && cached.isNotEmpty() &&
+                app.homeTimelines.limit > 0) {
+                posts = cached
+                showingSavedHead = true
+                loading = false
+            }
+        }
     }
 
     fun select(value: String) {
         if (timeline == value) return
+        if (posts.isNotEmpty()) save()
         timeline = value
         selectionChanged = true
+        showingSavedHead = false
         scope.launch { writeHomePreference(app, settingsKey, value) }
         deferred = false
         generation++
         refreshJob?.cancel()
         olderJob?.cancel()
         posts = emptyList()
+        checkedAt = 0L
+        validatedIds = emptySet()
+        pendingHead = false
+        hasMore = false
+        viewportError = false
         loading = true
         loadingOlder = false
         olderError = false
         visibleIds = emptyList()
         atTop = true
-        refresh()
+        restore()
+        refresh(retain = posts.isNotEmpty())
     }
 
     fun refresh(retain: Boolean = false, includeHead: Boolean = true) {
@@ -147,8 +170,18 @@ class HomeTimeline(
                         posts = if (retain && postId == null)
                             mergeHomeWindow(posts, head, if (complete) posts.map(::key) else if (checkedSuccessfully) check else emptyList(), checked, fetchHead && atTop || complete)
                         else head
-                        if (fetchHead && (!retain || complete || posts.size <= 50)) hasMore = !complete && postId == null && head.size == 50
+                        if (posts.isEmpty()) app.homeTimelines.removeEntry(cacheKey)
+                        if (fetchHead && (!retain || complete || posts.size <= 50)) {
+                            hasMore = !complete && postId == null && head.size == 50
+                            if (!hasMore) olderError = false
+                        }
                         if (fetchHead && headApplied) {
+                            showingSavedHead = false
+                            if (actorId == null && postId == null && app.homeTimelines.limit > 0) {
+                                val selected = timeline
+                                val versionToSave = app.startupTimeline.invalidate()
+                                scope.launch { app.startupTimeline.replace(versionToSave, selected, head) }
+                            }
                             pendingHead = false
                             checkedAt = kotlin.time.Clock.System.now().toEpochMilliseconds()
                             validatedIds = headIds
@@ -181,9 +214,31 @@ class HomeTimeline(
             }
     }
 
+    fun reloadAfterAudienceChange() {
+        app.clearStartupTimeline()
+        showingSavedHead = false
+        app.homeTimelines.clear()
+        posts = emptyList()
+        hasMore = false
+        refresh()
+    }
+
     fun remove(postId: String) {
+        app.clearStartupTimeline()
+        generation++
+        refreshJob?.cancel()
+        refreshJob = null
+        olderJob?.cancel()
+        olderJob = null
+        loading = false
+        loadingOlder = false
+        updating = false
+        refreshing = false
+        deferred = false
+        deferredHead = false
+        checkedAt = 0
         app.homeTimelines.remove(postId)
-        posts = posts.filterNot { it.nested("post").text("id").ifBlank { it.text("id") } == postId }
+        posts = posts.mapNotNull { it.withoutUnavailableHomePost(postId) }
     }
 
     suspend fun awaitUpdate() { refreshJob?.join() }

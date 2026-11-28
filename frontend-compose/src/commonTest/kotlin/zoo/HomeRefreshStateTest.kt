@@ -15,6 +15,39 @@ import kotlinx.serialization.json.JsonArray
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HomeRefreshStateTest {
     @Test
+    fun anAuthoritativelyEmptyTimelineDoesNotRestoreItsOldPosts() = runTest {
+        var homeResponse = """[{"id":"removed"}]"""
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    respond(if (request.url.parameters["timeline"] == "home") homeResponse else "[]")
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            feed.select("local")
+            runCurrent()
+
+            homeResponse = "[]"
+            feed.select("home")
+            assertEquals("removed", feed.posts.single().text("id"))
+            runCurrent()
+            assertTrue(feed.posts.isEmpty())
+
+            feed.select("local")
+            runCurrent()
+            feed.select("home")
+            assertTrue(feed.posts.isEmpty())
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
     fun nearEndPagingResumesAfterAnIdenticalRetainedRefresh() = runTest {
         val gate = CompletableDeferred<Unit>()
         var requests = 0
@@ -56,6 +89,117 @@ class HomeRefreshStateTest {
             assertEquals("older", feed.posts.last().text("id"))
             paging.cancel()
         } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun audienceChangeClearsCachedPostsBeforeTheServerResponds() = runTest {
+        val revalidated = CompletableDeferred<Unit>()
+        var requests = 0
+        val post = obj("id" to "followers-only", "sort_key" to "1")
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler {
+                    if (requests++ == 0) respond(JsonArray(listOf(post)).toString())
+                    else {
+                        revalidated.await()
+                        respond("[]")
+                    }
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            assertEquals(listOf(post), feed.posts)
+            app.homeTimelines.preparePost(post)
+
+            feed.reloadAfterAudienceChange()
+            assertTrue(feed.posts.isEmpty())
+            assertNull(app.homeTimelines.takePost("followers-only"))
+            runCurrent()
+            assertEquals(2, requests)
+            assertTrue(feed.posts.isEmpty())
+
+            revalidated.complete(Unit)
+            runCurrent()
+            assertTrue(feed.posts.isEmpty())
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun removingAPostRejectsAnOlderTimelineResponse() = runTest {
+        val lateResponse = CompletableDeferred<Unit>()
+        var requests = 0
+        val post = obj("id" to "deleted", "sort_key" to "1")
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler {
+                    if (requests++ > 0) lateResponse.await()
+                    respond(JsonArray(listOf(post)).toString())
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            assertEquals(listOf(post), feed.posts)
+            feed.refresh(retain = true)
+            runCurrent()
+            assertEquals(2, requests)
+
+            feed.remove("deleted")
+            lateResponse.complete(Unit)
+            runCurrent()
+
+            assertTrue(feed.posts.isEmpty())
+            assertFalse(feed.updating)
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun aNewSessionCanReadItsPublicHeadBeforeTheFirstNetworkResponse() = runTest {
+        val disk = mutableMapOf<String, String>()
+        val platform = object : Platform by TestPlatform() {
+            override suspend fun readCache(key: String) = disk[key]
+            override suspend fun writeCache(key: String, value: String) { disk[key] = value }
+            override suspend fun removeCache(key: String) { disk.remove(key) }
+        }
+        val cache = StartupTimeline(platform)
+        val public = obj("id" to "open", "visibility" to "public", "content" to "受付を開始")
+        val privatePost = obj("id" to "private", "visibility" to "followers", "content" to "非公開")
+        val version = cache.invalidate()
+        cache.replace(version, "home", listOf(public, privatePost))
+        val response = CompletableDeferred<Unit>()
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { response.await(); respond("[]") }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            platform, http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            assertTrue(cache.read("local").isEmpty())
+            feed.restoreSelection()
+            feed.refresh(retain = true)
+            runCurrent()
+            assertEquals(listOf(public), feed.posts)
+            assertTrue(feed.showingSavedHead)
+            response.complete(Unit)
+            runCurrent()
+            assertTrue(feed.posts.isEmpty())
+            assertFalse(feed.showingSavedHead)
+            assertTrue(cache.read("home").isEmpty())
+        } finally { feed.close(); http.close() }
     }
 
     private class TestPlatform : Platform {
@@ -213,6 +357,38 @@ class HomeRefreshStateTest {
             feed.older(); runCurrent()
             assertFalse(feed.olderError)
             assertFalse(feed.hasMore)
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun aCompleteRefreshClearsTheErrorForAnOlderPageThatNoLongerExists() = runTest {
+        var headSize = 50
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.parameters["before"] != null) respond("{}", HttpStatusCode.ServiceUnavailable)
+                    else respond(JsonArray((headSize downTo 1).map { obj("id" to "$it") }).toString())
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), TestPlatform(), http,
+            backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            feed.older()
+            runCurrent()
+            assertTrue(feed.olderError)
+
+            headSize = 3
+            feed.refresh(retain = true)
+            runCurrent()
+
+            assertEquals(3, feed.posts.size)
+            assertFalse(feed.hasMore)
+            assertFalse(feed.olderError)
         } finally { feed.close(); app.close(); http.close() }
     }
 

@@ -75,19 +75,8 @@ impl ApiClient {
     /// 再認証の ID トークンを送ってよい接続先か。HTTPS か、この機械の中で閉じるループバック（手元の開発）だけ。
     /// 平文の HTTP で送ると、経路上で読み取られたトークンで、失効や鍵スロットの削除を行えてしまう。
     fn reauth_transport_ok(&self) -> bool {
-        let Ok(url) = reqwest::Url::parse(&self.base_url) else {
-            return false;
-        };
-        match url.scheme() {
-            "https" => true,
-            "http" => match url.host() {
-                Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-                None => false,
-            },
-            _ => false,
-        }
+        reqwest::Url::parse(&self.base_url)
+            .is_ok_and(|url| crate::config::is_secure_transport(&url))
     }
 
     /// 封筒なしの JSON を返す要求（GET と `keys/query`）。

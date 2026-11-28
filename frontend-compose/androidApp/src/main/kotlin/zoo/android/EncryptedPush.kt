@@ -80,7 +80,7 @@ internal fun decryptPushBody(context: Context, data: Map<String, String>): Strin
     val user = data["userId"] ?: return null
     if (data["e2ee"] == null) return null
     // 出さない通知（種類が違う、通知が許可されていない）のためには、保存鍵を読まない。
-    if (data["notificationType"] !in setOf("mention", "dm", "reply", "reaction") || !notificationsAllowed(context)) return null
+    if (data["notificationType"] !in setOf("mention", "dm", "reply", "reaction", "channel_message") || !notificationsAllowed(context)) return null
     val store = PushBinding(context)
     if (!store.matches(binding, user)) return null
     val base = store.base(binding) ?: return null

@@ -9,6 +9,8 @@ pub const COMMANDS: &[&str] = &[
     "zoo_set_badge",
     "zoo_notification_settings",
     "zoo_set_notifications",
+    "zoo_channel_notification_settings",
+    "zoo_set_channel_notification_level",
     "zoo_open_channel",
     "zoo_resync",
     "zoo_account_profiles",

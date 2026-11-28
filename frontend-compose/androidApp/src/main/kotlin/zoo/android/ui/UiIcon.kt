@@ -11,6 +11,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.vector.PathParser
@@ -22,10 +25,13 @@ import androidx.compose.ui.unit.dp
 
 internal object AndroidControlSize {
     val target = 48.dp
+    val timelineAvatar = 36.dp
     val inputEdgeInset = 4.dp
+    val inputHandleHeight = 24.dp
+    val inputExpandThreshold = 72.dp
     val postActionInset = 8.dp
     val postToolbarHeight = 36.dp
-    val postToolbarIcon = 14.dp
+    val postToolbarIcon = 20.dp
     val icon = 24.dp
     val inlineIcon = 16.dp
     val metadataIcon = 12.dp
@@ -37,7 +43,14 @@ internal object AndroidControlSize {
 
 // Google Material Design Icons (Outlined, 24px), Apache-2.0.
 // Source and license are bundled in assets/licenses/material-design-icons.txt.
-internal enum class UiIcon(val pathData: String) {
+internal enum class UiIcon(val pathData: String, val outlined: Boolean = false) {
+    // Original Zoo post actions share a rounded stroke on a 24-unit grid.
+    Share("M8 11l8-5 M8 13l8 5 M7.5 12a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0 M20.5 5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0 M20.5 19a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0", true),
+    Reply("M18.5 4.5H8.7C5.2 4.5 3 6.8 3 10v2.7c0 2.4 1.5 4.5 4 5.1v3l4.6-2.8h5.9c2.5 0 4-2.2 4-4.7V9c0-2.5-1.3-4.5-3-4.5Z", true),
+    Repost("M2.5 9l4-4 4 4 M6.5 5.5v9c0 2.3 1.3 3.5 3.6 3.5h2 M21.5 15l-4 4-4-4 M17.5 18.5v-9c0-2.3-1.3-3.5-3.6-3.5h-2", true),
+    AddReaction("M13.4 4.2a8.1 8.1 0 1 0 5.8 7.9 M7.6 10.4h.2 M12.8 10.4h.2 M7.8 14.2c1.6 2.2 4.1 2.2 5.7 0 M18.9 2.2v6 M15.9 5.2h6", true),
+    More("M4.4 12h.5 M11.8 12h.5 M19.2 12h.5", true),
+    QuoteRenote("M6.5 4.5h11c2.2 0 3.5 1.5 3.5 3.5v6c0 2.2-1.3 3.5-3.5 3.5h-6L7 21v-3.5h-.5C4.3 17.5 3 16 3 14V8c0-2 1.3-3.5 3.5-3.5Z M9.8 8.5q-2 1.2-1.6 3.5h1.4 M15.5 8.5q-2 1.2-1.6 3.5h1.4", true),
     Back("M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"),
     Next("M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z"),
     Home("M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"),
@@ -58,8 +71,6 @@ internal enum class UiIcon(val pathData: String) {
     Delete("M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"),
     Minimize("M6 19h12v2H6z"),
     Float("M3 5h18v14H3zM5 7v10h14V7zM11 10h7v6h-7z"),
-    More("M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"),
-    Repost("M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"),
     Search("M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"),
     External("M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"),
     Mic("M12,14c1.66,0,3-1.34,3-3V5c0-1.66-1.34-3-3-3S9,3.34,9,5v6C9,12.66,10.34,14,12,14z M17,11c0,2.76-2.24,5-5,5s-5-2.24-5-5H5c0,3.53,2.61,6.43,6,6.92V21h2v-3.08c3.39-0.49,6-3.39,6-6.92H17z"),
@@ -70,6 +81,8 @@ internal enum class UiIcon(val pathData: String) {
     Check("M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"),
     Close("M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"),
     Refresh("M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"),
+    Eye("M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 13a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11zm0-9a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z"),
+    EyeOff("M2 5.27 3.28 4l16.73 16.73L18.73 22l-3.1-3.1c-1.16.39-2.37.6-3.63.6C7 19.5 2.73 16.39 1 12a12.14 12.14 0 0 1 4.03-5.06L2 5.27zM12 4.5c5 0 9.27 3.11 11 7.5a12.23 12.23 0 0 1-4.13 5.13l-2.1-2.1a5.5 5.5 0 0 0-7.8-7.8L6.68 4.94A12.06 12.06 0 0 1 12 4.5zM7.12 9.04a5.5 5.5 0 0 0 7.84 7.84l-1.52-1.52a3.5 3.5 0 0 1-4.8-4.8L7.12 9.04z"),
     Play("M8 5v14l11-7z"),
     Photo("M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-4.86 8.86l-3 3.87L9 13.14 6 17h12l-3.86-5.14z"),
     Save("M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm2 16H5V5h11.17L19 7.83V19zm-7-7c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3zM6 6h9v4H6z"),
@@ -85,6 +98,10 @@ internal enum class UiIcon(val pathData: String) {
     Archive("M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM6.24 5h11.52l.81.97H5.44l.8-.97zM5 19V8h14v11H5zm8.45-9h-2.9v3H8l4 4 4-4h-2.55z"),
     Public("M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM4 12c0-.61.08-1.21.21-1.78L8.99 15v1c0 1.1.9 2 2 2v1.93C7.06 19.43 4 16.07 4 12zm13.89 5.4c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41C17.92 5.77 20 8.65 20 12c0 2.08-.81 3.98-2.11 5.4z"),
     Unlisted("M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"),
+    VisibilityOff("M12 6c3.79 0 7.17 2.13 8.82 5.5-.59 1.22-1.42 2.27-2.41 3.12l1.41 1.41c1.39-1.23 2.49-2.77 3.18-4.53C21.27 7.11 17 4 12 4c-1.27 0-2.49.2-3.64.57l1.65 1.65C10.66 6.09 11.32 6 12 6zm-1.07 1.14L13 9.21c.57.25 1.03.71 1.28 1.28l2.07 2.07c.08-.34.14-.7.14-1.07C16.5 9.01 14.48 7 12 7c-.37 0-.72.05-1.07.14zM2.01 3.87l2.68 2.68C3.06 7.83 1.77 9.53 1 11.5 2.73 15.89 7 19 12 19c1.52 0 2.98-.29 4.32-.82l3.42 3.42 1.41-1.41L3.42 2.45 2.01 3.87zm7.5 7.5l2.61 2.61c-.04.01-.08.02-.12.02-1.38 0-2.5-1.12-2.5-2.5 0-.05.01-.08.01-.13zm-3.4-3.4l1.75 1.75c-.23.55-.36 1.15-.36 1.78 0 2.48 2.02 4.5 4.5 4.5.63 0 1.23-.13 1.77-.36l.98.98c-.88.24-1.8.38-2.75.38-3.79 0-7.17-2.13-8.82-5.5.7-1.43 1.72-2.61 2.93-3.53z"),
+    CloudOff("M24 15c0-2.64-2.05-4.78-4.65-4.96C18.67 6.59 15.64 4 12 4c-1.33 0-2.57.36-3.65.97l1.49 1.49C10.51 6.17 11.23 6 12 6c3.04 0 5.5 2.46 5.5 5.5v.5H19c1.66 0 3 1.34 3 3 0 .99-.48 1.85-1.21 2.4l1.41 1.41c1.09-.92 1.8-2.27 1.8-3.81zM4.41 3.86L3 5.27l2.77 2.77h-.42C2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h11.73l2 2 1.41-1.41L4.41 3.86zM6 18c-2.21 0-4-1.79-4-4s1.79-4 4-4h1.73l8 8H6z"),
+    Widgets("M16.66 4.52l2.83 2.83-2.83 2.83-2.83-2.83 2.83-2.83M9 5v4H5V5h4m10 10v4h-4v-4h4M9 15v4H5v-4h4m7.66-13.31L11 7.34 16.66 13l5.66-5.66-5.66-5.65zM11 3H3v8h8V3zm10 10h-8v8h8v-8zm-10 0H3v8h8v-8z"),
+    Forward("M14 8.83L17.17 12 14 15.17V14H6v-4h8V8.83M12 4v4H4v8h8v4l8-8-8-8z"),
     Followers("M9 13.75c-2.34 0-7 1.17-7 3.5V19h14v-1.75c0-2.33-4.66-3.5-7-3.5zM4.34 17c.84-.58 2.87-1.25 4.66-1.25s3.82.67 4.66 1.25H4.34zM9 12c1.93 0 3.5-1.57 3.5-3.5S10.93 5 9 5 5.5 6.57 5.5 8.5 7.07 12 9 12zm0-5c.83 0 1.5.67 1.5 1.5S9.83 10 9 10s-1.5-.67-1.5-1.5S8.17 7 9 7zm7.04 6.81c1.16.84 1.96 1.96 1.96 3.44V19h4v-1.75c0-2.02-3.5-3.17-5.96-3.44zM15 12c1.93 0 3.5-1.57 3.5-3.5S16.93 5 15 5c-.54 0-1.04.13-1.5.35.63.89 1 1.98 1 3.15s-.37 2.26-1 3.15c.46.22.96.35 1.5.35z"),
 }
 
@@ -114,7 +131,9 @@ internal fun UiGlyph(icon: UiIcon, color: Color, iconSize: Dp = AndroidControlSi
     val path = remember(icon) { PathParser().parsePathString(icon.pathData).toPath() }
     Canvas(Modifier.size(iconSize)) {
         scale(size.width / 24f, size.height / 24f, pivot = Offset.Zero) {
-            drawPath(path, color)
+            if (icon.outlined) {
+                drawPath(path, color, style = Stroke(width = 1.9f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            } else drawPath(path, color)
         }
     }
 }

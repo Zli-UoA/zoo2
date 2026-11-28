@@ -1,13 +1,25 @@
 ; zoo2 デスクトップ版 (Tauri) の Windows 用 Inno Setup インストーラー定義。
 ; ビルド例:
-;   iscc /DAppVersion=0.2.12 desktop-tauri\installer\zoo2.iss
+;   iscc /DAppVersion=0.3.0 desktop-tauri\installer\zoo2.iss
 
 #if Ver < EncodeVer(6, 5, 2)
   #error This script requires Inno Setup 6.5.2 or later for UTF-8 without BOM and PNG wizard images.
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "0.2.12"
+  #define AppVersion "0.4.0"
+#endif
+; プレリリース版 (例: 0.3.1-rc.1) でも数値専用の VersionInfo 項目へ渡せるように、
+; ハイフン以降を除いた数値部分を AppVersionNumeric として定義する。
+#if Pos("+", AppVersion) != 0
+  #define AppVersionWithoutBuild Copy(AppVersion, 1, Pos("+", AppVersion) - 1)
+#else
+  #define AppVersionWithoutBuild AppVersion
+#endif
+#if Pos("-", AppVersionWithoutBuild) != 0
+  #define AppVersionNumeric Copy(AppVersionWithoutBuild, 1, Pos("-", AppVersionWithoutBuild) - 1)
+#else
+  #define AppVersionNumeric AppVersionWithoutBuild
 #endif
 #ifndef ExePath
   #define ExePath "..\src-tauri\target\release\zoo2-desktop-tauri.exe"
@@ -24,6 +36,14 @@ AppId={{8E9B3B8E-3B89-4F0F-B7C5-6E4F1D79A2C1}
 AppName=zoo2
 AppVersion={#AppVersion}
 AppVerName=zoo2 {#AppVersion}
+; インストーラー自身のファイル情報にも版を入れ、OS 側のアプリ一覧やファイルのプロパティから版を確認できるようにする。
+VersionInfoVersion={#AppVersionNumeric}
+VersionInfoProductVersion={#AppVersionNumeric}
+VersionInfoProductName=zoo2
+VersionInfoCompany=Zli
+; 完全な版 (プレリリースを含む) はテキスト項目に残す。
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoTextVersion={#AppVersion}
 AppPublisher=Zli
 AppPublisherURL=https://github.com/Zli-UoA/zoo2
 AppSupportURL=https://github.com/Zli-UoA/zoo2

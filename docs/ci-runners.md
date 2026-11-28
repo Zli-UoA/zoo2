@@ -6,7 +6,7 @@ privateリポジトリと公開範囲が不明な場合は、Docker不要ジョ�
 
 `runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は、既定では同じ値です。publicのリポジトリだけ、Actions variable `CI_LARGE_RUNNER` に `zli-k8s-heavy` を設定すると、大容量用だけが [zoo2-infra の heavy runner](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/arc.md#runner-の種類待機オンデマンドheavy)（zoo07・zoo08の64コア、メモリlimit 9Gi）になります。空のとき、forkのPR、merge groupはHostedです。他の値は警告して無視します。
 
-heavyが埋まっているときは、重いジョブだけHostedに逃がします（試験的）。`large-runs-on` を使う `ci-backend.yaml` と `ci-frontend.yaml` だけが、`select-runner` に入力 `large: true` を渡し、その場合だけ、選択時点の `zli-k8s-heavy` のジョブ（実行中と待ち）の数を読みます。`ci-backend.yaml` と `ci-frontend.yaml` の実行中・待ちの実行について、ジョブ一覧のAPIで数え、zoo2-infraのheavyの台数（2台）以上になった時点で止めて、Hostedを選びます。Runnerの一覧は読みません。各workflowの実行一覧は `queued`、`in_progress` の順に取得し、両方に現れたrunは一度だけ数えます。`queued` 一覧の取得後に作られ、次の取得時点でも待機中のrunは次回の判定対象になります。複数runの合計が2件に達した場合は、先に数えたrunのジョブを共通の予算と期限内で読み直します。読み直した先のrunだけで2件に達したときは、現在のrunの読み直しが失敗しても、Hostedを選びます。一覧の後続ページや、2つ目の一覧の取得が失敗したときも、それまでに取得したrunは確認し、2件が分かればHosted、分からなければ警告してheavyのままにします。**この読み取りは、`RUNNER_STATUS_TOKEN` ではなく、ワークフロー自身の `GITHUB_TOKEN` で、Node の `fetch` から直接行います**（github-script がスクリプトに渡すクライアントは、`RUNNER_STATUS_TOKEN` で動いていて、別のトークンのクライアントを作る手段は渡されないため）。 `RUNNER_STATUS_TOKEN`（fine-grained PAT）には `Actions: Read` がなく、使うと403になるためです。公開リポジトリのActionsは、権限なしのトークンでも読めるはずですが、実際のAPIでは未確認です（読めないときは403になり、警告を出してheavyのままになります。検証手順は下記を参照してください）。`select` ジョブには権限を要求しません（再利用workflowは、呼び出し元の権限を増やせず、要求すると、呼び出し元が起動前に拒否されます）。選択はworkflowの開始時に一度だけで、予約ではありません。同時に始まるworkflowは同じ結果を見て、どちらもheavyを選ぶことがあります（その場合は待ちます）。先にheavyを選んだ実行でも、後続ジョブが `needs`（`crypto-wasm` や `test-selection`）を待っている間は `runs-on` がまだ評価されず、heavyラベル付きの `queued` / `in_progress` ジョブとして数えられません。この間に別のworkflowがheavyを選ぶと、前段ジョブの完了後に2台分を超えるジョブが並ぶことがあります。`ci-frontend` は重いジョブを3つ持つので、heavyが1台空いていても、2台に3つが並びます。**一覧とジョブの取得は、ページごとに1リクエストとして数え、合計30リクエストまでです。** 超えたときと、読めないとき（403、ネットワーク）は、heavyの使用状況を不明として、heavyのままにし、警告を出します。取得全体の期限は20秒で、超えたら、実行中のリクエストを止め（abort）、以降のリクエストも出しません。`select` が失敗して出力が空になったときの重いジョブの実行先は、Hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため）。
+heavyが埋まっているときは、重いジョブだけHostedに逃がします（試験的）。`large-runs-on` を使う `ci-backend.yaml` と `ci-frontend.yaml` だけが、`select-runner` に入力 `large: true` を渡し、その場合だけ、選択時点の `zli-k8s-heavy` のジョブ（実行中と待ち）の数を読みます。`ci-backend.yaml` と `ci-frontend.yaml` の実行中・待ちの実行について、ジョブ一覧のAPIで数え、zoo2-infraのheavyの台数（2台）以上になった時点で止めて、Hostedを選びます。Runnerの一覧は読みません。各workflowの実行一覧は `queued`、`in_progress` の順に取得し、両方に現れたrunは一度だけ数えます。`queued` 一覧の取得後に作られ、次の取得時点でも待機中のrunは次回の判定対象になります。複数runの合計が2件に達した場合は、先に数えたrunのジョブを共通の予算と期限内で読み直します。読み直した先のrunだけで2件に達したときは、現在のrunの読み直しが失敗しても、Hostedを選びます。一覧の後続ページや、2つ目の一覧の取得が失敗したときも、それまでに取得したrunは確認し、2件が分かればHosted、分からなければ警告してheavyのままにします。**この読み取りは、`RUNNER_STATUS_TOKEN` ではなく、ワークフロー自身の `GITHUB_TOKEN` で、Node の `fetch` から直接行います**（github-script がスクリプトに渡すクライアントは、`RUNNER_STATUS_TOKEN` で動いていて、別のトークンのクライアントを作る手段は渡されないため）。 `RUNNER_STATUS_TOKEN`（fine-grained PAT）には `Actions: Read` がなく、使うと403になるためです。公開リポジトリのActionsは、権限なしのトークンでも読めるはずですが、実際のAPIでは未確認です（読めないときは403になり、警告を出してheavyのままになります。検証手順は下記を参照してください）。`select` ジョブには権限を要求しません（再利用workflowは、呼び出し元の権限を増やせず、要求すると、呼び出し元が起動前に拒否されます）。選択はworkflowの開始時に一度だけで、予約ではありません。同時に始まるworkflowは同じ結果を見て、どちらもheavyを選ぶことがあります（その場合は待ちます）。先にheavyを選んだ実行でも、後続ジョブが `needs`（`crypto-wasm` や `test-selection`）を待っている間は `runs-on` がまだ評価されず、heavyラベル付きの `queued` / `in_progress` ジョブとして数えられません。この間に別のworkflowがheavyを選ぶと、前段ジョブの完了後に2台分を超えるジョブが並ぶことがあります。`ci-frontend` の `check` と `build` は別々のジョブなので、選択時にheavyが1台空いていても、両方が同時に空きを得られるとは限りません。**一覧とジョブの取得は、ページごとに1リクエストとして数え、合計30リクエストまでです。** 超えたときと、読めないとき（403、ネットワーク）は、heavyの使用状況を不明として、heavyのままにし、警告を出します。取得全体の期限は20秒で、超えたら、実行中のリクエストを止め（abort）、以降のリクエストも出しません。`select` が失敗して出力が空になったときの重いジョブの実行先は、Hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため）。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
@@ -16,13 +16,13 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 ### heavyを有効にする手順
 
-**変数を設定する前に、heavy runnerが使える状態になっている必要があります。** heavyが無い（未配備、または登録できていない）状態で `CI_LARGE_RUNNER=zli-k8s-heavy` を設定すると、heavyを選んだ重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`・`browser-test`）は、`zli-k8s-heavy` のRunnerを待ち続けます（`timeout-minutes` はキューの待ち時間に効きません）。
+**変数を設定する前に、heavy runnerが使える状態になっている必要があります。** heavyが無い（未配備、または登録できていない）状態で `CI_LARGE_RUNNER=zli-k8s-heavy` を設定すると、heavyを選んだ重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`）は、`zli-k8s-heavy` のRunnerを待ち続けます（`timeout-minutes` はキューの待ち時間に効きません）。
 
 1. [zoo2-infra#205](https://github.com/Zli-UoA/zoo2-infra/pull/205) をマージして反映します。GitHub Appのインストールに、zoo2のリポジトリが含まれている必要があります（含まれていないと、listenerが登録できません）。
 2. heavyが使えることを確認します。`kubectl -n arc-runners get autoscalingrunnerset zli-k8s-zoo2-heavy` でscale setがあること、zoo2のSettings → Actions → Runnersに、ラベル `zli-k8s-heavy` のscale setが登録されていることを確認します。
 3. その後で、zoo2のActions variable `CI_LARGE_RUNNER` を `zli-k8s-heavy` に設定します。戻すときは、変数を空にします（次のrunからHostedに戻ります）。
 4. `large: true` を渡すCI BackendまたはCI Frontendを起動し、selectのログで `Heavy runner usage checked: <件数>/2` を確認します。`Heavy runner usage unavailable` または `Heavy runner usage unknown` が出た実行では、使用状況の確認に失敗しています。
-5. **heavyを選んだジョブが、実際にheavyで起動することを確認します。** 上のログは、使用状況のAPIを読めたことしか示しません。scale setが登録済みでも、Runner Podの起動が失敗すると（イメージのpull、ノードの空き、`arc-github-app` のSecretなど）、heavyを選んだ重いジョブは待ち続けます。重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`・`browser-test`）のジョブの画面で、Runner名が `zli-k8s-zoo2-heavy-runner-…`、ラベルが `zli-k8s-heavy` になって、数分以内に実行が始まることを確認します。`kubectl -n arc-runners get pods -o wide` で、`zli-k8s-zoo2-heavy-runner-…` のPodが `Running` になっていることも確認できます。
+5. **heavyを選んだジョブが、実際にheavyで起動することを確認します。** 上のログは、使用状況のAPIを読めたことしか示しません。scale setが登録済みでも、Runner Podの起動が失敗すると（イメージのpull、ノードの空き、`arc-github-app` のSecretなど）、heavyを選んだ重いジョブは待ち続けます。重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`）のジョブの画面で、Runner名が `zli-k8s-zoo2-heavy-runner-…`、ラベルが `zli-k8s-heavy` になって、数分以内に実行が始まることを確認します。`kubectl -n arc-runners get pods -o wide` で、`zli-k8s-zoo2-heavy-runner-…` のPodが `Running` になっていることも確認できます。
 6. **数分たっても起動しない（ジョブが `queued` のまま）ときは、戻します。** 次の順に行います。(a) zoo2のActions variable `CI_LARGE_RUNNER` を空にします。(b) 待っているrunを**キャンセル**します（ジョブが `queued` の間は、runが完了していないので、そのままでは再実行できません）。(c) キャンセルが完了してから、「Re-run all jobs」で選び直します。「Re-run failed jobs」は前回の選択を使うので、heavyのままになります。原因の調査は、zoo2-infra側（`kubectl -n arc-runners describe pod`、listenerのログ）で行います。
 
 ## 判定ジョブの実行先
@@ -55,7 +55,7 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 - Docker不要: Rustのbuild／lint／単体テスト、frontendのcheck／単体検証、イメージ計画、ラベル付与、イメージ清掃、Flux通知、Storybookのbuild／deploy、automerge gate。
 - イメージのpromote／publishはregistryのmanifestを操作するだけです。常設CLIの `docker buildx imagetools` と `docker login` を使い、daemonを起動するsetup-buildxは実行しません。kubecampのDocker daemonがない実Runnerで、公開manifestのinspect成功を確認しました。実際のタグ更新・発行は別途CIで確認します。
 
-frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。Storybookを含む `browser-test` も、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。どちらもDockerは不要ですが、必要なメモリを持つHosted（既定）か、`CI_LARGE_RUNNER=zli-k8s-heavy` のときの heavy（runnerのメモリlimit 9GiB）を選びます。privateのリポジトリ向けの `zli-k8s`（メモリlimitは、各リポジトリのscale setによります。zoo2-infraは6GiB、AuthZ・emoji・okiは4GiB）は、zoo2には登録されていないので、選びません。OOMの見積もりは、Hostedなら16GB、heavyなら9GiBを前提にします。テスト内容や失敗条件は維持します。
+frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。`check` と `build` は、必要なメモリを持つHosted（既定）か、`CI_LARGE_RUNNER=zli-k8s-heavy` のときのheavy（runnerのメモリlimit 9GiB）を選びます。Storybookを含む `browser-test` は、2GiB制約でのOOMとheavyでのFirefoxの保存処理遅延を避けるため、GitHub-hosted Ubuntuに固定します。CSPテストはHostedの[実行46025994649](https://github.com/Zli-UoA/zoo2/actions/runs/46025994649/job/140597715288)では58秒で成功し、heavyの[実行46041465416](https://github.com/Zli-UoA/zoo2/actions/runs/46041465416/job/140650152672)では6分後にSQLiteの終了待ちが8秒の制限に達しました。heavy内の遅延原因は未確定です。検査条件と製品側の時間制限を維持して、実行環境をそろえます。これらのジョブにDockerは不要です。privateのリポジトリ向けの `zli-k8s`（メモリlimitは、各リポジトリのscale setによります。zoo2-infraは6GiB、AuthZ・emoji・okiは4GiB）は、zoo2には登録されていないので、選びません。OOMの見積もりは、Hostedなら16GB、heavyなら9GiBを前提にします。テスト内容や失敗条件は維持します。
 
 なお、`frontend/vite.config.ts` の `browser` プロジェクトは Linux の `chromium-headless-shell` でアニメーション停止時に `requestAnimationFrame` が停滞する問題を避けるため、`CHROME_BIN` 未指定時（CI 等）はフル Chromium（`channel: "chromium"`）を使います（Linux の `nix develop` では、`browser` と `storybook` が `CHROME_BIN` の Nix 版 Chromium を使います。`vrt` は常に、`storybook` は `CHROME_BIN` 未指定時に、既存の基準画像・設定に合わせて既定の `chromium-headless-shell` を使います）。
 
@@ -63,7 +63,7 @@ frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶�
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
 
-固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージpromote/publish、Terraform Validate/Plan、Storybook deploy、DB ER 図の deploy、配備バッジ（test・publish）。backendの `check` とfrontendの `check`・`build`・`browser-test` は大容量用を使い、frontend単体テストと、それ以外のRust build/lint/単体テストは共有selectorを使う（publicはHosted優先、privateは空き状況と無料枠で選択）。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージpromote/publish、Terraform Validate/Plan、Storybook deploy、DB ER 図の deploy、配備バッジ（test・publish）。backendの `check` とfrontendの `check`・`build` は大容量用を使い、frontend単体テストと、それ以外のRust build/lint/単体テストは共有selectorを使う（publicはHosted優先、privateは空き状況と無料枠で選択）。Android・Storybook build・frontendの `browser-test` は GitHub-hosted Ubuntu に固定し、実行先の選択にはselectorを使わない。Docker処理はDocker用を使う。
 
 状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。
 
@@ -75,17 +75,33 @@ CI Frontend の `check` と `build` は、`crypto-wasm` の成果物を受け取
 
 PRをまたいで検証を先行させる場合は、リポジトリのmain向けRulesetでMerge Queueを有効にし、Build concurrencyをまず2〜3に設定します。キューは先行PRがマージされる想定で後続の組み合わせを検証し、先行PRが失敗した場合は影響を受ける後続を再検証します。`merge_group` を処理するworkflowは既存の `merge-queue.yaml` を使います。Rulesetはこのリポジトリのコードでは管理していないため、このworkflowの変更だけではMerge Queueは有効になりません。
 
+## PRとマージキューで実行する検証
+
+PRではフロントエンドの型検査・ビルドと、変更に対応する単体・ブラウザー・VRT・Storybookテストを実行します。バックエンドではフォーマット・lint・単体テストと、対象を特定できる結合テストを実行します。認証・E2EEのE2E、対象を絞れないバックエンド結合テスト、本番イメージ検証、DBの負荷検証、Android・Tauriの検証も、影響するPRで実行します。
+
+マージキューは候補コミットの変更パスに応じて対象のworkflowを呼び出し、いずれかが失敗すると必須チェック `automerge-gate/all-passed` を失敗にします。2026-11-28 時点で main の Ruleset に Merge Queue は設定されていません。PR の必須 CI でマージ前の検証を行います。backend・Web・TUI・GitHub Bot の対象パスは各 workflow の `push.paths` を参照し、ほかの workflow は `pull_request.paths` を参照します。既存のmainへのpushと手動実行でも、対象の検証を実行します。
+
+Android専用の電話エンジン・APKメディアビューアの入口とビルド設定は、Webのテスト・Storybookプレビュー・イメージビルドの対象外です。共有のSIP・通話・メディアUIは双方の対象です。実ブラウザーを使う共有WebRTCテストはCI Frontendで実行し、APKメディアビューアのsmoke testはAndroidでGradleが生成したバンドルを使って実行します。
+
+PRゲート、マージキュー、ワークフロー内の選別は同じパス条件を使います。たとえばOIDCのspec変更は認証E2E、DB負荷測定用スクリプトの変更は対応する負荷検証を起動します。複数プラットフォームを含む差分でも、関連するファイルだけを各ワークフローのテスト選別に渡します。
+
 ## Test Selection
 
-CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR内の変更が通常の `frontend/src/**/*.ts`・`tsx` の追加・編集だけなら、`vp test related <変更したファイル>` で依存するテストを選びます。PRのbase SHAとチェックアウトしたコミットを比較し、直前のコミットだけでなくPRの差分全体を対象にします。浅いcheckoutでも選別できるよう、Gitの履歴をたどる `--changed` ではなく、差分のファイル一覧を明示します。Vitestがimportの依存関係をたどるため、共通モジュールを変更すると、それを間接的に使うテストも対象になります。関連テストがない場合だけ、テスト0件を成功として扱います。
+CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PRまたはマージキューの変更が通常の `frontend/src/**/*.ts`・`tsx` の追加・編集だけなら、`vp test related <変更したファイル>` で依存するテストを選びます。PRでは `pull_request.base.sha`、マージキューでは `merge_group.base_sha` とチェックアウトした候補コミットを比較し、候補に含まれる差分全体を対象にします。浅いcheckoutでも選別できるよう、Gitの履歴をたどる `--changed` ではなく、差分のファイル一覧を明示します。Vitestがimportの依存関係をたどるため、共通モジュールを変更すると、それを間接的に使うテストも対象になります。関連テストがない場合だけ、テスト0件を成功として扱います。
 
-設定・依存・CSS・JSONなどの資源、型宣言、共通テスト設定、ルート、Service Worker、i18n・PWA・E2EE・OIDCなどの実行時資源に関わる変更は全件実行します。削除・名前変更、差分取得失敗、base SHA不明、空の差分でも全件に戻します。mainへのpush、マージキュー、手動実行は常に全件実行です。選択モードと理由はジョブログへ出し、テストそのものの失敗は再試行で隠さず、そのまま失敗にします。
+設定・依存・CSS・JSONなどの資源、型宣言、共通テスト設定、ルート、Service Worker、i18n・PWA・E2EE・OIDCなどの実行時資源に関わる変更は全件実行します。削除・名前変更、差分取得失敗、base SHA不明、空の差分でも全件に戻します。mainへのpushと手動実行ではテストケースを全件実行します。選択モードと理由はジョブログへ出し、テストそのものの失敗は再試行で隠さず、そのまま失敗にします。
 
-スイートの選択は共有workflow `select-tests.yaml` が行います。PRの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。アプリ本体・Story・共通ヘルパー・設定・未登録のテストの変更は全スイートを選びます。
+スイートの選択は共有workflow `select-tests.yaml` が行います。PRまたはマージキューの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。通常のフロントエンドモジュールと、その範囲内のテストだけを変更したPRでは、importの依存関係で選べるVitestの単体・ブラウザー・VRT・Storybookに絞ります。Playwright、オフライン検証、静的Storybook生成も、それぞれの入力が変わった PR で実行します。共通設定や実行時資源の変更は、その入力を使うスイートだけを追加します。
 
-バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。
+バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。PRで `backend-e2e-selection.mjs` に登録したルートと独立した結合テストだけを変更した場合は、ルートの結合テストと変更したテストの和集合を実行します。ルート変更時はlintと単体テストも実行します。マージキューではルートの変更に対して結合テストを全件実行します。
 
-判定workflowは自身の回帰テストが成功してから結果を返します。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
+回帰テストを実行する場合は、その成功後に選別結果が後続ジョブで使われます。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
+
+PR で既存の翻訳 JSON を編集するときは、選別ジョブで JSON の構造と補間変数を検査します。既存文言を書き換えた場合は、文言を参照する単体・ブラウザー・VRT・Storybook と Playwright の i18n・レイアウト・認証・E2EE を実行します。追加だけで既存文言が変わらない場合は軽量検査で確認します。キーの削除、補間変数の変更、翻訳ファイルの追加・削除では Web アプリ検証を実行します。共有辞書は Android CI の対象でもあります。Web の README だけの変更ではアプリテストと PR 用イメージの生成を省きます。
+
+PR では変更ファイルごとに検証を選び、選んだスイートと Rust の結合テストターゲットの和集合を実行します。同じ PR に Web 実装・Playwright の spec・proxy 設定が含まれても、Vitest は Web の入力だけから関連ファイルを選びます。Storybook 設定を変更した場合は Storybook・VRT・静的カタログを選び、Service Worker の変更では PWA・オフライン CSP・コンテナを選びます。共有の DB スキーマや Rust の未分類の実装変更はバックエンドの広い検証を選び、結合テストの全件実行は該当する PR とマージキューで行います。分類できない共有入力や差分が取得できない場合は従来の広い検証に戻ります。
+
+PR では `pr-ci.yaml` が GitHub-hosted runner の選別ジョブを一度実行し、backend・Web・TUI・GitHub Bot 用の計画を各 workflow に渡します。対象が空の workflow は起動しません。候補のパスは各 workflow の main push と同じ一覧を使います。差分を読めない場合は全候補を残し、判定や回帰テストで失敗した場合は PR の必須 CI を失敗させます。通常の実装変更では選別スクリプト自身の回帰テストを省き、CI 設定やスクリプトを変えた場合に実行します。Storybook Preview はデプロイの成否が必須 CI に影響しないよう、独立した workflow で選別します。
 
 ## Wasm パッケージの再利用
 
@@ -93,9 +109,13 @@ CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR
 
 ## ケースとパッケージ依存による選別
 
-Vitestのbrowser・VRTは、ファイル単位の`related`に加え、ケース内で使うimport・ローカルhelper・共有hookから依存をたどります。アプリ変更がモジュール初期化やimport構成を変えない純粋な宣言の変更なら、影響するケースのタイトルだけを実行します。動的タイトルのtemplateも静的部分からパターンを作ります。serialスイート、解析できないケース宣言、初期化の副作用やimport構成の変更はファイル単位の実行へ戻します。Storybookも`related`で影響するStoryファイルを選びます。
+Vitestの単体・browser・VRTは、ファイル単位の`related`に加え、ケース内で使うimport・ローカルhelper・共有hookから依存をたどります。アプリ変更がモジュール初期化やimport構成を変えない純粋な宣言の変更なら、影響するケースのタイトルだけを実行します。動的タイトルのtemplateも静的部分からパターンを作ります。serialスイート、解析できないケース宣言、初期化の副作用やimport構成の変更はファイル単位の実行へ戻します。Storybookも`related`で影響するStoryファイルを選びます。
 
 テスト本体だけの編集では、旧版と新版のASTと差分を比較し、編集行がすべて個別ケース内にある場合だけケースを限定します。Vitestはタイトル、Playwrightは宣言位置で指定し、同じ宣言から生成するブラウザー別・パラメーター別ケースは維持します。import・共有helper・hook・describe設定・削除・曖昧な差分は全ファイル／全スイートに戻します。画面遷移でアプリを読むPlaywrightのE2Eは、アプリ本体が変わった場合には全ケースを維持します。
+
+Playwright の既知の spec・fixture・設定ファイルは利用先のスイートへ結び付けます。独立した spec の変更が同じ差分に含まれても、それぞれのケースを絞り込めます。HTTP 経由で使うアプリ本体や共有 fixture の変更では、選んだ spec の全ケースを実行します。
+
+Rust の結合テストでは、既存ターゲット内の独立した `#[test]` と `#[tokio::test]` の本体だけが変わった場合に、`syn` で変更前後の構文木を比較し、`cargo test --test <ターゲット> -- --exact <テスト名>` で該当ケースを実行します。テストの属性・追加・削除、共有コード、本体コード、解析失敗を含む場合は既存のターゲット選別に戻ります。Cargo の依存グラフに現れない HTTP・DB 経由の依存は、既存のルート対応表とマージキューの検証で扱います。
 
 GitHub BotとSDKのNodeテストは、import・再export・静的なdynamic import・`new URL(..., import.meta.url)`の資源を解析し、変更ファイルへ依存するテストファイルを実行します。computed importや未解決の依存を持つテストは必ず含め、設定・データ資源・削除では全件へ戻します。PWAとavatar-cacheのスクリプトも、この依存解析で変更に無関係なら実行しません。Botのテストだけの変更ではイメージ生成とコンテナsmokeも省きます。Botだけの変更でSDK暗号テストは起動せず、SDK暗号部分だけの変更でBotのイメージ検証を起動しません。
 

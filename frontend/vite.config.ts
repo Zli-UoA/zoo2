@@ -1,5 +1,6 @@
 import { pdfAssets } from "./build/pdf-assets";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { devtools } from "@tanstack/devtools-vite";
@@ -75,6 +76,8 @@ const config = defineConfig({
     fs: { allow: [dirname, path.resolve(dirname, "../crates/zoo-crypto-wasm/pkg")] },
   },
   build: {
+    // perf-kit の late-chunk 解析に使う。描画には影響しない。
+    manifest: true,
     // Production CSP permits same-origin fonts only. Keep small KaTeX fonts out of data URLs.
     assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
   },
@@ -173,7 +176,15 @@ const config = defineConfig({
       {
         extends: true,
         plugins: [storybookTest({ configDir: path.join(dirname, ".storybook") })],
-        optimizeDeps: { include: ["@testing-library/react"] },
+        resolve: {
+          alias: {
+            // The addon imports this pnpm-scoped dependency after stories have started.
+            "axe-core": createRequire(import.meta.resolve("@storybook/addon-a11y")).resolve(
+              "axe-core",
+            ),
+          },
+        },
+        optimizeDeps: { include: ["@testing-library/react", "axe-core"] },
         test: {
           name: "storybook",
           setupFiles: ["./.storybook/vitest.setup.ts"],

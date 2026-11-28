@@ -97,7 +97,18 @@
         "Encrypted",
         "Pinned",
         "PinnedArchived",
-        "PinLimit"
+        "PinLimit",
+        "PrivateEncryptSetting",
+        "EncryptedDm",
+        "NotificationAll",
+        "NotificationMentions",
+        "NotificationMute",
+        "NotificationLoading",
+        "NotificationDialogOpen",
+        "NotificationByMember",
+        "NotificationChangeToMute",
+        "NotificationEncryptedOpen",
+        "NotificationDmMenuOpen"
       ]
     },
     {
@@ -134,6 +145,7 @@
         "MobileSections",
         "Pinned",
         "MobilePinned",
+        "PinnedLoading",
         "PinnedThreads",
         "PinnedReorderError"
       ]
@@ -457,6 +469,7 @@
         "KitchenLoading",
         "Mobile",
         "ManyCustomEmojis",
+        "SearchExactFirst",
         "ManyCustomEmojisMobile"
       ]
     },
@@ -608,6 +621,7 @@
         "EncryptionMobile",
         "LegacyDevicesLink",
         "General",
+        "NotificationSettingsGuide",
         "Apps",
         "AppsMobile",
         "Management",
@@ -996,6 +1010,7 @@
       "states": [
         "Loading",
         "Image",
+        "Thumbnail",
         "PDF",
         "MultiPagePDF",
         "Video",
@@ -1169,7 +1184,8 @@
     {
       "file": "src/components/chat/ChannelHeader.tsx",
       "story": "src/components/chat/ChannelHeader.stories.tsx",
-      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。"
+      "checks": ["src/components/chat/ChannelHeader.browser.test.tsx"],
+      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。Notification* で本人の通知設定コレクションから読む 3 段階の現在値・同期前の読込中と選択不可・一般メンバーからの操作・PATCH の反映・暗号化チャンネルの説明・DM メニューからの導線を確認する。ラジオ選択で PATCH が送られること、保存中の二重操作が止まること、失敗時に levelError を出して選択を戻すことは ChannelHeader.browser.test.tsx で確認する。"
     },
     {
       "file": "src/components/chat/ChannelListItem.tsx",
@@ -1198,7 +1214,7 @@
       "file": "src/components/chat/PinnedSection.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。PinnedLoading で一覧の読み込み中に保存済みのピンを先に表示しないことを確認する。ピン留めと通常一覧の同時表示は ChannelSidebar.browser.test.tsx、保存済みデータの即時表示と同期前の空配列の扱いは usePinnedChannels.test.ts で検証する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
     },
     {
       "file": "src/components/chat/DropIndicator.tsx",
@@ -1485,6 +1501,14 @@
     {
       "file": "src/components/desktop/DownloadProgressButton.tsx",
       "story": "src/components/desktop/DownloadProgressButton.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/PreviewDownloadButton.tsx",
+      "reason": "進捗・中止の表示は DownloadProgressButton.stories.tsx で確認する。デスクトップ判定、Web のリンク、CORS 失敗時の案内と別タブへの切替は PreviewDownloadButton.browser.test.tsx で確認する。",
+      "checks": [
+        "src/components/desktop/DownloadProgressButton.stories.tsx",
+        "src/components/desktop/PreviewDownloadButton.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/desktop/DesktopDownloadSettings.tsx",
@@ -1905,6 +1929,11 @@
       "file": "src/components/chat/messages/ForwardMessageDialog.tsx",
       "story": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
       "checks": ["src/components/chat/messages/ForwardMessageDialog.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/AppDialogHost.tsx",
+      "reason": "ダイアログを開く要求を保持する制御層。表示はAppsDialogのStory、イベント購読はブラウザーテストで確認する。",
+      "checks": ["src/components/chat/AppDialogHost.browser.test.tsx"]
     }
   ]
 }

@@ -6,23 +6,23 @@
 
 ## トップと子画面
 
-![ホーム、チャンネル、通知のトップ](images/android-design/reference/top.png)
+![最新のホーム](images/android-design/rebuild/home-media-light.png)
 
 | 画面 | Compose 実キャプチャ | 見る箇所 |
 | --- | --- | --- |
 | ホーム | [タイムライン](images/android-design/home.png) | 枠を減らした投稿、無彩色の本文面、投稿アイコン |
-| チャンネル | [一覧](images/android-design/channels.png) | 参加中、DM。右上の＋から「チャンネルを探す」「チャンネルを作成」を選ぶ。新デザインは名前を1行で表示し、チャンネル名は未読時に600、個人DMのユーザー名は500で表示する。説明文と区切り線は省く。キャプチャは旧版。 |
+| チャンネル | [一覧](images/android-design/channels.png) | 参加中、DM。右上の＋から「チャンネルを探す」「チャンネルを作成」を選ぶ。新デザインは名前を1行で表示し、チャンネル名は未読時に700、個人DMのユーザー名は500で表示する。説明文と区切り線は省く。 |
 | 通知 | [通知一覧](images/android-design/notifications.png) | 送信者、通知元、抜粋、未読表示 |
-| Bubble・設定 | [Bubble](images/android-design/bubble.png)・[設定トップ](images/android-design/settings.png) | 5タブから直接開けるトップ |
+| Bubble・設定 | [Bubble](images/android-design/bubble.png)・[設定トップ](images/android-design/settings.png) | 下部ナビから直接開けるトップ |
 | 投稿詳細・会話・スレッド | [会話](images/android-design/channel-editor-idle.png)・[スレッド](images/android-design/thread.png) | 子画面ではタブを隠し、入力操作は下に置く |
 
 [Bubble・設定のモック](images/android-design/reference/bubble-settings.png) · [投稿詳細・会話・スレッドのモック](images/android-design/reference/detail.png) · [初回のチャンネル一覧とスレッドの比較](images/android-design/agreed-comparison.png)
 
-チャンネル一覧の現在のデザインは上表の実キャプチャを参照する。トップのモックと初回比較には2行だった頃の一覧が含まれる。
+チャンネル一覧の現在のデザインは上表の実キャプチャを参照する。初回比較には2行だった頃の一覧が含まれる。
 
 ## チャンネルヘッダーと入力欄
 
-![入力欄を開いたときの変化](images/android-design/reference/composer-focus.png)
+![チャンネルで入力中の画面](images/android-design/rebuild/conversation-light.png)
 
 | 状態 | デザインモック | Compose 実キャプチャ |
 | --- | --- | --- |

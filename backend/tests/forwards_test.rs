@@ -1170,6 +1170,487 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
     Ok(())
 }
 
+/// ページを取ったあと、書き込む直前に Slack チャンネルの可視性を確かめ直す。開始時は公開、
+/// ページ取得後は `is_private` のない応答 (fail closed で非公開) なら、公開の取り込み先へ書かない。
+#[tokio::test]
+async fn slack_backfill_rechecks_privacy_before_writing_a_page() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let key = [18u8; 32];
+    let team = format!("TPRV{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+
+    let mut config = dev_config();
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+
+    let alice = create_user(&app, &state, "backfill_privacy_alice").await?;
+    let enc = slack::crypto::encrypt(&key, "xoxp-alice")?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id, team_id, slack_user_id, access_token_enc) \
+         VALUES($1, $2, 'UA', $3) RETURNING json_build_object('ok', true)::text",
+        &[&alice, &team, &enc],
+    )
+    .await?;
+
+    let slack_ch = format!("CPRV{}", &team[4..]);
+    let zoo_ch = create_channel(&app, &alice, false, false, &[]).await?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_channels(team_id, slack_channel_id, channel_id, last_ts) \
+         VALUES($1, $2, $3, '0') RETURNING json_build_object('ok', true)::text",
+        &[&team, &slack_ch, &zoo_ch],
+    )
+    .await?;
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let ts_src = format!("{}.000100", now_secs - 600);
+    let ts_fwd = format!("{}.000200", now_secs - 500);
+    let id_src = slack::message_id(&team, &slack_ch, &ts_src).to_string();
+    let id_fwd = slack::message_id(&team, &slack_ch, &ts_fwd).to_string();
+    // 転送元を Zoo に用意する。可視性の確認がなければ、ts_fwd はこの転送元を指して
+    // 実際に挿入される (「書くものがなかっただけ」で通ってしまわないようにする)
+    sql_exec(
+        &state,
+        "INSERT INTO messages(id, user_id, channel_id, content, created_at, revision) \
+         VALUES($1, $2, $3, 'forward source', (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1) \
+         RETURNING json_build_object('ok', true)::text",
+        &[&id_src, &alice, &zoo_ch, &ts_src],
+    )
+    .await?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_message_map(team_id, slack_channel_id, ts, message_id, origin) \
+         VALUES($1, $2, $3, $4, 'slack') RETURNING json_build_object('ok', true)::text",
+        &[&team, &slack_ch, &ts_src, &id_src],
+    )
+    .await?;
+
+    // 開始時 (1 回目) は公開。ページを取ったあとの確認 (2 回目) は `is_private` がない
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": slack_ch, "is_private": false },
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": slack_ch },
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": { "id": "UA", "name": "alice", "real_name": "Alice", "profile": { "display_name": "alice" } },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &slack_ch))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": ts_fwd,
+                "user": "UA",
+                "text": "",
+                "attachments": [{
+                    "is_share": true,
+                    "channel_id": slack_ch,
+                    "ts": ts_src,
+                    "from_url": format!("https://example.slack.com/archives/{slack_ch}/p{}", ts_src.replace('.', "")),
+                    "text": "forward source",
+                }],
+            }],
+            "has_more": false,
+        })))
+        .expect(1)
+        .mount(&slack)
+        .await;
+
+    let err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(slack_ch.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: Vec::new(),
+            thread_cursor: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Private Slack channel cannot be written to public channel"),
+        "{err}"
+    );
+
+    let rows = sql_exec(
+        &state,
+        "SELECT json_build_object('id',id,'content',content)::text FROM messages WHERE channel_id=$1",
+        &[&zoo_ch],
+    )
+    .await?;
+    assert_eq!(
+        rows.len(),
+        1,
+        "no page was written beyond the forward source: {rows:?}"
+    );
+    assert_eq!(rows[0]["id"], json!(id_src));
+    assert_eq!(rows[0]["content"], "forward source");
+    let forwarded = sql_exec(
+        &state,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1",
+        &[&id_fwd],
+    )
+    .await?;
+    assert!(
+        forwarded.is_empty(),
+        "the forwarded message must not be inserted: {forwarded:?}"
+    );
+
+    Ok(())
+}
+
+/// 転送元を Zoo の投稿として解決できず、転送投稿を 1 件も挿入しないページでは、
+/// 投稿者やメンションのプレースホルダも作らない。
+#[tokio::test]
+async fn slack_backfill_does_not_create_placeholders_when_the_forward_source_is_missing()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let key = [19u8; 32];
+    let team = format!("TMIS{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+
+    let mut config = dev_config();
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+
+    let alice = create_user(&app, &state, "backfill_missing_source_alice").await?;
+    let enc = slack::crypto::encrypt(&key, "xoxp-alice")?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id, team_id, slack_user_id, access_token_enc) \
+         VALUES($1, $2, 'UA', $3) RETURNING json_build_object('ok', true)::text",
+        &[&alice, &team, &enc],
+    )
+    .await?;
+
+    let slack_ch = format!("CMIS{}", &team[4..]);
+    let zoo_ch = create_channel(&app, &alice, false, false, &[]).await?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_channels(team_id, slack_channel_id, channel_id, last_ts) \
+         VALUES($1, $2, $3, '0') RETURNING json_build_object('ok', true)::text",
+        &[&team, &slack_ch, &zoo_ch],
+    )
+    .await?;
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let ts_src = format!("{}.000100", now_secs - 600);
+    let ts_fwd = format!("{}.000200", now_secs - 500);
+    let id_src = slack::message_id(&team, &slack_ch, &ts_src).to_string();
+    let id_fwd = slack::message_id(&team, &slack_ch, &ts_fwd).to_string();
+    // 転送元の決定的 ID を、Slack の投稿時刻と一致しない無関係な投稿が使っている。
+    // 元の投稿は Zoo になく、転送先として解決できない
+    sql_exec(
+        &state,
+        "INSERT INTO messages(id, user_id, channel_id, content, created_at, revision) \
+         VALUES($1, $2, $3, 'unrelated occupant', (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1) \
+         RETURNING json_build_object('ok', true)::text",
+        &[&id_src, &alice, &zoo_ch, &format!("{}.000050", now_secs - 9000)],
+    )
+    .await?;
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", &slack_ch))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": slack_ch, "is_private": false },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": { "id": "UB", "name": "bob", "real_name": "Bob", "profile": { "display_name": "bob" } },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &slack_ch))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": ts_fwd,
+                "user": "UB",
+                "text": "",
+                "attachments": [{
+                    "is_share": true,
+                    "channel_id": slack_ch,
+                    "ts": ts_src,
+                    "from_url": format!("https://example.slack.com/archives/{slack_ch}/p{}", ts_src.replace('.', "")),
+                    "text": "missing source",
+                }],
+            }],
+            "has_more": false,
+        })))
+        .expect(1)
+        .mount(&slack)
+        .await;
+
+    let report = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(slack_ch.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: Vec::new(),
+            thread_cursor: None,
+        },
+    )
+    .await?;
+    assert_eq!(report.matched_inserts, 0, "{report:?}");
+    assert_eq!(report.applied_inserts, 0, "{report:?}");
+
+    let placeholder = slack::user_id(&team, "UB");
+    let slack_users = sql_exec(
+        &state,
+        "SELECT json_build_object('id',user_id)::text FROM slack_users \
+         WHERE team_id=$1 AND slack_user_id='UB'",
+        &[&team],
+    )
+    .await?;
+    assert!(
+        slack_users.is_empty(),
+        "no slack_users placeholder for the skipped forward: {slack_users:?}"
+    );
+    let users = sql_exec(
+        &state,
+        "SELECT json_build_object('id',id)::text FROM users WHERE id=$1",
+        &[&placeholder],
+    )
+    .await?;
+    assert!(
+        users.is_empty(),
+        "no users placeholder for the skipped forward: {users:?}"
+    );
+    let forwarded = sql_exec(
+        &state,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1",
+        &[&id_fwd],
+    )
+    .await?;
+    assert!(
+        forwarded.is_empty(),
+        "the unmapped forward must not be inserted: {forwarded:?}"
+    );
+    let source = sql_one(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&id_src],
+    )
+    .await?;
+    assert_eq!(source["content"], "unrelated occupant");
+
+    Ok(())
+}
+
+/// `slack_message_map` が別チャンネルの投稿を指しているとき、バックフィルは取り込み件数を数えず、
+/// その投稿を作り直さない (取り込み先の付け替え後に、古い対応先へ書き込まない)。
+#[tokio::test]
+async fn slack_backfill_skips_a_mapped_message_in_another_channel() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let key = [17u8; 32];
+    let team = format!("TOTH{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+
+    let mut config = dev_config();
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+
+    let alice = create_user(&app, &state, "backfill_other_channel_alice").await?;
+    let enc = slack::crypto::encrypt(&key, "xoxp-alice")?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id, team_id, slack_user_id, access_token_enc) \
+         VALUES($1, $2, 'UA', $3) RETURNING json_build_object('ok', true)::text",
+        &[&alice, &team, &enc],
+    )
+    .await?;
+
+    let slack_ch = format!("COTH{}", &team[4..]);
+    let zoo_ch = create_channel(&app, &alice, false, false, &[]).await?;
+    let other_ch = create_channel(&app, &alice, false, false, &[]).await?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_channels(team_id, slack_channel_id, channel_id, last_ts) \
+         VALUES($1, $2, $3, '0') RETURNING json_build_object('ok', true)::text",
+        &[&team, &slack_ch, &zoo_ch],
+    )
+    .await?;
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let ts_src = format!("{}.000100", now_secs - 500);
+    let ts_mapped = format!("{}.000200", now_secs - 400);
+    let id_src = slack::message_id(&team, &slack_ch, &ts_src).to_string();
+    let id_mapped = slack::message_id(&team, &slack_ch, &ts_mapped).to_string();
+
+    for (id, channel, ts, body) in [
+        (&id_src, &zoo_ch, &ts_src, "forward source"),
+        (&id_mapped, &other_ch, &ts_mapped, "mapped elsewhere"),
+    ] {
+        sql_exec(
+            &state,
+            "INSERT INTO messages(id, user_id, channel_id, content, created_at, revision) \
+             VALUES($1, $2, $3, $4, (to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1) \
+             RETURNING json_build_object('ok', true)::text",
+            &[id, &alice, channel, body, ts],
+        )
+        .await?;
+    }
+    sql_exec(
+        &state,
+        "INSERT INTO slack_message_map(team_id, slack_channel_id, ts, message_id, origin) \
+         VALUES($1, $2, $3, $4, 'slack') RETURNING json_build_object('ok', true)::text",
+        &[&team, &slack_ch, &ts_mapped, &id_mapped],
+    )
+    .await?;
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", &slack_ch))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": slack_ch, "is_private": false },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": { "id": "UA", "name": "alice", "real_name": "Alice", "profile": { "display_name": "alice" } },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &slack_ch))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": ts_mapped,
+                "user": "UA",
+                "text": "",
+                "attachments": [{
+                    "is_share": true,
+                    "channel_id": slack_ch,
+                    "ts": ts_src,
+                    "from_url": format!("https://example.slack.com/archives/{slack_ch}/p{}", ts_src.replace('.', "")),
+                    "text": "forward source",
+                }],
+            }],
+            "has_more": false,
+        })))
+        .mount(&slack)
+        .await;
+
+    let report = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(slack_ch.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: Vec::new(),
+            thread_cursor: None,
+        },
+    )
+    .await?;
+    assert_eq!(report.matched_inserts, 0, "{report:?}");
+    assert_eq!(report.applied_inserts, 0, "{report:?}");
+    assert_eq!(report.matched_backfills, 0, "{report:?}");
+
+    let rows = sql_exec(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE channel_id=$1",
+        &[&zoo_ch],
+    )
+    .await?;
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the forward source stays in the target channel: {rows:?}"
+    );
+    assert_eq!(rows[0]["content"], "forward source");
+    let other = sql_one(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&id_mapped],
+    )
+    .await?;
+    assert_eq!(other["content"], "mapped elsewhere");
+
+    Ok(())
+}
+
 /// Windows・Linux 共通で `sync::run_once` → `worker::insert_message` の既存メッセージ再取込バックフィル
 /// （親メッセージ・スレッド返信とも `updated_at` / `revision` 不変）とコメントなし転送 INSERT を検証する。
 #[tokio::test]

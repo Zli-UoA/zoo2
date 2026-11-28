@@ -316,6 +316,7 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
+    "previewSaveUnsupported": "應用程式無法儲存此檔案。請在新分頁開啟連結後儲存。",
     "downloadSaved": "已儲存為 {{name}}。",
     "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾，或在設定的「下載」中變更儲存位置。",
     "downloadTooMany": "同時儲存的數量已達上限。請等待其他下載完成後再試。",
@@ -328,6 +329,11 @@
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
+    "showSensitiveVideo": "顯示影片",
+    "hideSensitiveVideo": "隱藏影片",
+    "openOriginal": "原始檔案",
+    "imagePreviewFailed": "無法載入圖片",
+    "altText": "圖片說明",
     "sensitiveShort": "敏感圖片",
     "documentSummary": "正文與儲存格的簡易預覽，格式及版面可能與原檔不同。",
     "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
@@ -385,7 +391,10 @@
     "participantsFilterPartial": "僅在已載入的前 {{loaded}} 人中篩選（另有 {{count}} 人無法搜尋）。",
     "participantsDescription": "已加入此討論串的人。",
     "joinToReply": "參與後才能回覆此討論串。",
-    "reopenAndJoin": "重新開啟並參與"
+    "reopenAndJoin": "重新開啟並參與",
+    "errors": {
+      "busy": "此討論串目前繁忙，請稍後再試。"
+    }
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
@@ -421,6 +430,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "正在載入表情符號…",
     "recent": "最近使用的表情符號",
+    "accountEmojiCategory": "帳號",
     "skinTone": "膚色"
   },
   "theme": {
@@ -470,6 +480,9 @@
     "readError": "無法將通知標為已讀",
     "mention": "{{actor}} 提及了你",
     "reply": "{{actor}} 回覆了你",
+    "channelMessage": "{{actor}} 發布了訊息",
+    "channel_message": "{{actor}} 發布了訊息",
+    "channelMessageContext": "頻道訊息",
     "reaction": "{{actor}} 對你的訊息加入了表情回應",
     "openMessage": "開啟訊息",
     "unavailable": "頻道無法使用",
@@ -487,7 +500,24 @@
     "readStatus": "已讀",
     "actors_one": "{{actor}} 和另外 1 人",
     "actors_other": "{{actor}} 和另外 {{count}} 人",
-    "forwardedPreview": "轉寄了一則訊息"
+    "forwardedPreview": "轉寄了一則訊息",
+    "settings": "通知設定",
+    "settingsDefault": "預設通知提及與回覆。",
+    "settingsHint": "各頻道的通知層級可在頻道標題或私訊選單中變更。",
+    "channelSettings": "頻道通知設定",
+    "openChannel": "開啟頻道",
+    "noChannel": "尚未加入任何頻道。",
+    "notMember": "你尚未加入此頻道，無法變更通知設定。",
+    "levelTitle": "通知層級",
+    "levelLoading": "正在載入通知設定…",
+    "levelAll": "所有訊息",
+    "levelAllHelp": "一般貼文也會通知。加密頻道同樣可以選擇。",
+    "levelMentions": "提及與回覆（預設）",
+    "levelMentionsHelp": "有人提及你、回覆你、傳私訊或回應時通知。",
+    "levelMute": "靜音",
+    "levelMuteHelp": "不接收一般通知，提及你或 @channel / @here 仍會送達。",
+    "levelEncryptedHint": "加密頻道也可以選擇「所有訊息」。",
+    "levelError": "無法變更通知設定。"
   },
   "webhooks": {
     "title": "Webhook 設定",
@@ -888,6 +918,7 @@
     "deleted": "已刪除貼文",
     "newPosts": "查看新貼文（{{count}}）",
     "quotedPost": "引用的貼文",
+    "postUnavailable": "無法顯示這則貼文",
     "quoteUnavailable": "無法顯示引用的貼文",
     "openQuotedPost": "開啟引用的貼文",
     "image": "圖片",
@@ -918,6 +949,7 @@
       "unlisted": "首頁",
       "followers": "僅追蹤者"
     },
+    "followersAudience": "追蹤者",
     "audienceHint": {
       "local": "僅在 Zoo 內顯示，不傳送到其他伺服器。",
       "public": "任何人都可閱讀，並傳送給遠端追蹤者。",
@@ -951,6 +983,7 @@
     "userSearch": "搜尋使用者",
     "search": "搜尋",
     "noUsers": "找不到使用者",
+    "openAuthorProfile": "開啟 {{author}} 的個人資料",
     "userDetails": "使用者詳情",
     "joinedAt": "加入日期：{{date}}",
     "pullRefresh": "下拉重新整理",
@@ -1802,6 +1835,16 @@
   },
   "androidUpdate": {
     "title": "應用程式更新"
+  },
+  "androidAttachmentCache": {
+    "title": "圖片快取",
+    "description": "將此帳號的圖片儲存在裝置上。降低上限時，優先刪除最久未使用的圖片。關閉後會清除已儲存的圖片。"
+  },
+  "androidNavigationCache": {
+    "title": "頁面切換快取",
+    "description": "設定記憶體中保留的首頁、貼文詳情與個人資料項目數，以及獨立的頻道項目數。",
+    "off": "關閉",
+    "entries": "{{count}} 項"
   },
   "androidNotifications": {
     "enable": "啟用通知",

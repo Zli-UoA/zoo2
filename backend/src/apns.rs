@@ -318,7 +318,11 @@ async fn authorized_payload(
     // 配信先の権限と、編集・暗号化切り替え後の本文を端末ごとに同じスナップショットで決定する。
     let rows = toasty::sql::query(
         "SELECT COALESCE(NULLIF(actor.display_name,''),actor.user_name), c.channel_name, c.is_dm,
-             CASE WHEN NOT c.encrypted THEN left(m.content,240) END
+             CASE WHEN NOT c.encrypted THEN left(m.content,240) END,
+             CASE WHEN c.encrypted AND m.ciphertext IS NOT NULL THEN json_build_object(
+                 'channel_id', c.id, 'message_id', m.id, 'parent_id', m.parent_id, 'user_id', m.user_id,
+                 'message_kind', m.message_kind, 'epoch', m.epoch, 'revision', m.revision,
+                 'ciphertext', m.ciphertext)::text END
          FROM apns_subscriptions s JOIN users u ON u.id=s.user_id
          LEFT JOIN channels c ON c.id=$4
          LEFT JOIN messages m ON m.id=$5 AND m.channel_id=c.id AND m.deleted_at IS NULL
@@ -354,6 +358,7 @@ async fn authorized_payload(
         Column::String(channel),
         Column::Bool(is_dm),
         content,
+        e2ee,
     ] = row.as_record_unwrap().fields.as_slice()
     else {
         anyhow::bail!("通知に必要な送信者またはチャンネルを取得できませんでした");
@@ -364,11 +369,16 @@ async fn authorized_payload(
         _ => anyhow::bail!("通知のメッセージを取得できませんでした"),
     };
     let preview = NotificationPreview::new(notification, name, channel, *is_dm, content);
-    Ok(Some(payload(
-        notification,
-        &preview,
-        &subscription.revocation_hash,
-    )))
+    let envelope = payload(notification, &preview, &subscription.revocation_hash);
+    // 暗号化チャンネルは、サーバーが本文を持たないので、暗号文の行を付ける。復号は受信端末の通知拡張が行う。
+    let envelope = match e2ee {
+        Column::String(row) => match serde_json::from_str::<Value>(row) {
+            Ok(message) => preview::attach_e2ee(envelope, &notification.user_id, message),
+            Err(_) => envelope,
+        },
+        _ => envelope,
+    };
+    Ok(Some(envelope))
 }
 
 // TRUNCATE と同じ順序で履歴表、容量行をロックし、相互に解放を待つのを防ぐ。

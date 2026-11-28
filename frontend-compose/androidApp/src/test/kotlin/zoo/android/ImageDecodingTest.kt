@@ -2,18 +2,42 @@ package zoo.android
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.os.Looper
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 import zoo.*
+import zoo.android.ui.LocalAttachmentImageDenied
+import zoo.android.ui.LocalCachedTimelineImage
+import zoo.android.ui.LocalTimelineImage
+import zoo.android.ui.LocalTimelineImageWithPreview
+import zoo.android.ui.rememberTimelineImage
+import zoo.android.ui.TimelineMedia
+import zoo.android.ui.TimelineMediaKind
 import java.io.ByteArrayOutputStream
+import java.time.Duration
 import kotlin.test.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -21,6 +45,205 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [26, 28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ImageDecodingTest {
+    @Test
+    fun visibleTimelineImageReloadsWhenAnotherScreenRestoresAccess() {
+        val original = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val restored = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val denied = mutableStateOf(false)
+        val media = TimelineMedia("photo", "Photo", TimelineMediaKind.Image, attachmentId = "photo")
+        var observed: androidx.compose.ui.graphics.ImageBitmap? = null
+        var requests = 0
+        var verifications = 0
+        val controller = Robolectric.buildActivity(ComponentActivity::class.java)
+        controller.get().setTheme(android.R.style.Theme_Material_Light_NoActionBar)
+        val activity = controller.setup().get()
+        val looper = shadowOf(Looper.getMainLooper())
+        fun render() = looper.idleFor(Duration.ofMillis(100))
+        try {
+            activity.setContent {
+                CompositionLocalProvider(
+                    LocalAttachmentImageDenied provides { denied.value },
+                    LocalCachedTimelineImage provides { original },
+                    LocalTimelineImage provides { requests++; restored },
+                    LocalTimelineImageWithPreview provides { _, showCached ->
+                        showCached(original)
+                        verifications++
+                        original
+                    },
+                ) {
+                    val bitmap = rememberTimelineImage(media)
+                    SideEffect { observed = bitmap }
+                }
+            }
+            render()
+            assertSame(original, observed)
+            assertEquals(1, verifications)
+            denied.value = true
+            Snapshot.sendApplyNotifications()
+            render()
+            assertNull(observed)
+            assertEquals(0, requests)
+
+            denied.value = false
+            Snapshot.sendApplyNotifications()
+            render()
+            assertSame(restored, observed)
+            assertEquals(1, requests)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun cachedAttachmentRechecksOnReconnectAndEvictsEvenAfterTheViewerLeaves() = runTest {
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val evicted = CompletableDeferred<String>()
+        val started = CompletableDeferred<Unit>()
+        val deny = CompletableDeferred<Unit>()
+        var requests = 0
+        val http = HttpClient(MockEngine {
+            when (++requests) {
+                1 -> respond("""{"download_url":"https://storage.test/photo"}""")
+                2 -> respond("{}", HttpStatusCode.ServiceUnavailable)
+                3 -> {
+                    started.complete(Unit)
+                    deny.await()
+                    respond("{}", HttpStatusCode.NotFound)
+                }
+                4 -> respond("""{"download_url":"https://storage.test/restored"}""")
+                else -> error("Unexpected attachment request")
+            }
+        })
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) {}
+            override fun uuid() = "preview"
+            override fun now() = "2026-11-15T00:00:00Z"
+            override fun navigate(path: String) {}
+            override fun action(name: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+            override suspend fun cachedAttachmentPreview(cacheKey: String) = byteArrayOf(1)
+            override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) = byteArrayOf(2)
+            override suspend fun removeAttachmentImages(id: String) { evicted.complete(id) }
+            override fun imageFrames(bytes: ByteArray) = flow { emit(bitmap) }
+        }
+        val app = Session(
+            Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform,
+                http, backgroundScope, synchronize = false), backgroundScope, Environment(online = false),
+        )
+        try {
+            app.attachmentLinks.getLinks("photo")
+            val displayed = CompletableDeferred<Unit>()
+            val media = TimelineMedia("photo", "Photo", TimelineMediaKind.Image, attachmentId = "photo")
+            val viewer = launch {
+                timelineImage(app, media, onCached = { displayed.complete(Unit) })
+            }
+            displayed.await()
+            assertEquals(1, requests)
+            app.env = app.env.copy(online = true)
+            Snapshot.sendApplyNotifications()
+            started.await()
+            assertTrue(testScheduler.currentTime >= 5_000)
+            val otherViewer = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { app.attachmentLinks.getLinks("photo", force = true) }
+            }
+            viewer.cancelAndJoin()
+            otherViewer.cancelAndJoin()
+            deny.complete(Unit)
+            assertEquals("photo", evicted.await())
+            assertNull(app.attachmentLinks.cachedLinks("photo"))
+            assertTrue(app.attachmentLinks.isDenied("photo"))
+            assertEquals(3, requests)
+
+            assertSame(bitmap, timelineImage(app, media, onCached = { error("A denied attachment must not be shown first") }))
+            assertFalse(app.attachmentLinks.isDenied("photo"))
+            assertEquals(4, requests)
+        } finally { app.close(); http.close() }
+    }
+
+    @Test
+    fun revocationDuringDecodingInvalidatesMemoryEvenIfTheSameLinkIsAuthorizedAgain() = runTest {
+        val oldBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val newBitmap = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val decoding = CompletableDeferred<Unit>()
+        val previewDecoding = CompletableDeferred<Unit>()
+        val permissionStarted = CompletableDeferred<Unit>()
+        val deny = CompletableDeferred<Unit>()
+        val finishDecoding = CompletableDeferred<Unit>()
+        val url = "https://storage.test/photo"
+        var requests = 0
+        var downloads = 0
+        val http = HttpClient(MockEngine {
+            when (++requests) {
+                2 -> {
+                    permissionStarted.complete(Unit)
+                    deny.await()
+                    respond("{}", HttpStatusCode.NotFound)
+                }
+                else -> respond("""{"download_url":"$url"}""")
+            }
+        })
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) {}
+            override fun uuid() = "preview"
+            override fun now() = "2026-11-15T00:00:00Z"
+            override fun navigate(path: String) {}
+            override fun action(name: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+            override suspend fun cachedAttachmentPreview(cacheKey: String) = byteArrayOf(9)
+            override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) =
+                byteArrayOf((++downloads).toByte())
+            override fun imageFrames(bytes: ByteArray) = flow {
+                if (bytes[0] == 1.toByte()) {
+                    decoding.complete(Unit)
+                    finishDecoding.await()
+                    emit(oldBitmap)
+                } else if (bytes[0] == 9.toByte()) {
+                    previewDecoding.complete(Unit)
+                    finishDecoding.await()
+                    emit(oldBitmap)
+                } else emit(newBitmap)
+            }
+        }
+        val app = Session(
+            Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform,
+                http, backgroundScope, synchronize = false), backgroundScope, Environment(),
+        )
+        val key = "photo:original"
+        try {
+            app.attachmentLinks.getLinks("photo")
+            val pending = async {
+                assertFailsWith<ApiException> { app.imageBitmap(url, signedAttachment = true, cacheKey = key) }
+            }
+            val preview = async {
+                timelineImage(app, TimelineMedia("photo", "Photo", TimelineMediaKind.Image, attachmentId = "photo", useThumbnail = false),
+                    onCached = { error("A preview decoded before revocation must not be displayed") })
+            }
+            decoding.await()
+            previewDecoding.await()
+            permissionStarted.await()
+            val invalidated = async(start = CoroutineStart.UNDISPATCHED) {
+                assertFailsWith<ApiException> { app.attachmentLinks.getLinks("photo", force = true) }
+            }
+            deny.complete(Unit)
+            assertEquals(404, invalidated.await().status)
+            app.attachmentLinks.getLinks("photo", force = true)
+            finishDecoding.complete(Unit)
+            assertEquals(403, pending.await().status)
+            assertSame(newBitmap, preview.await())
+            assertSame(newBitmap, app.cachedImageBitmap(url, signedAttachment = true, cacheKey = key))
+            assertSame(newBitmap, app.imageBitmap(url, signedAttachment = true, cacheKey = key))
+            assertEquals(2, downloads)
+        } finally { app.close(); http.close() }
+    }
+
     @Test
     fun staticPreviewIconAndAvatarUseTheBoundedPlatformDecoder() = runTest {
         val original = Bitmap.createBitmap(4096, 32, Bitmap.Config.ARGB_8888)
@@ -41,7 +264,11 @@ class ImageDecodingTest {
             override fun translate(key: String, args: Map<String, String>) = key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
-            override suspend fun image(url: String): ByteArray { requested += url; return bytes }
+            override suspend fun image(url: String): ByteArray {
+                requested += url
+                return if (url.endsWith("/broken")) byteArrayOf(1, 2, 3) else bytes
+            }
+            override suspend fun refreshImage(url: String): ByteArray = bytes
             override fun imageFrames(bytes: ByteArray) = flow {
                 decodes++
                 emit(decodeOrientedBitmap(bytes).asImageBitmap())
@@ -61,6 +288,12 @@ class ImageDecodingTest {
             }
             assertEquals(3, decodes)
             assertEquals(listOf("https://media.test/preview", "https://media.test/icon", "https://media.test/avatar"), requested)
+            val broken = "https://media.test/broken"
+            assertFailsWith<IllegalArgumentException> { app.imageBitmap(broken) }
+            assertFailsWith<IllegalArgumentException> { app.imageBitmap(broken) }
+            assertEquals(1, requested.count { it == broken })
+            assertEquals(2048, app.imageBitmap(broken, retry = true).width)
+            assertEquals(2048, app.cachedImageBitmap(broken)?.width)
         } finally { app.close() }
     }
 

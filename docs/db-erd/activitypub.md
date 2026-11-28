@@ -75,6 +75,13 @@ erDiagram
       text public_key
     }
     apub_keys |o--o| users : apub_keys_user_id_fkey
+    apub_media_blurhash_queue {
+      text post_id PK,FK
+      timestamptz available_at
+      text lease_id
+      jsonb image_retry_counts
+    }
+    apub_media_blurhash_queue |o--o| apub_remote_posts : apub_media_blurhash_queue_post_id_fkey
     apub_notifications {
       text id PK
       text user_id FK
@@ -94,6 +101,28 @@ erDiagram
       text display_name
     }
     apub_profiles |o--o| users : apub_profiles_user_id_fkey
+    apub_quote_grants {
+      text post_id PK,FK
+      text user_id PK,FK
+      bigint note_revision
+    }
+    apub_quote_grants }o--o| apub_quote_originals : apub_quote_grants_post_id_fkey
+    apub_quote_grants }o--o| users : apub_quote_grants_user_id_fkey
+    apub_quote_originals {
+      text id PK
+      text actor_id FK
+      text content
+      timestamptz published
+      timestamptz updated_at
+      boolean superseded
+      boolean superseded_by_public
+      text observed_audience
+      bigint revision
+      text parent_id
+      jsonb emojis
+      jsonb media
+    }
+    apub_quote_originals }o--o| apub_actors : apub_quote_originals_actor_id_fkey
     apub_reactions {
       text post_id PK
       text actor_id PK

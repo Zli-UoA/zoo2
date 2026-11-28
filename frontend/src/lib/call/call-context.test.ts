@@ -24,6 +24,7 @@ vi.mock("../../hooks/useCallInvites", () => ({
 
 vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: [], isLoading: false, isError: false }),
+  useAllUsers: () => ({ data: [], isLoading: false, isError: false }),
 }));
 
 vi.mock("../electric/collections-context", () => ({

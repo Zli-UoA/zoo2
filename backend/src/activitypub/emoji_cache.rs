@@ -11,10 +11,20 @@ use std::{
 pub(crate) struct Image {
     pub mime: String,
     pub bytes: Vec<u8>,
+    pub blurhash: Option<String>,
 }
+#[derive(Clone, Copy)]
+enum Failure {
+    BadRequest,
+    NotFound,
+    Unsupported,
+    Upstream,
+    RateLimited,
+}
+
 #[derive(Clone)]
 struct Entry {
-    value: Result<Image, u16>,
+    value: Result<Image, Failure>,
     until: Instant,
 }
 #[derive(Default)]
@@ -24,7 +34,7 @@ struct Cache {
     global: Option<(Instant, u32)>,
 }
 impl Cache {
-    fn cached(&mut self, id: &str, now: Instant) -> Option<Result<Image, u16>> {
+    fn cached(&mut self, id: &str, now: Instant) -> Option<Result<Image, Failure>> {
         self.images.retain(|_, v| v.until > now);
         self.images.get(id).map(|v| v.value.clone())
     }
@@ -49,7 +59,7 @@ impl Cache {
         bucket.1 += 1;
         true
     }
-    fn insert(&mut self, id: String, value: Result<Image, u16>, now: Instant) {
+    fn insert(&mut self, id: String, value: Result<Image, Failure>, now: Instant) {
         let ttl = if value.is_ok() { 300 } else { 30 };
         self.images.insert(
             id,
@@ -81,15 +91,13 @@ impl Cache {
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
 static FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
-fn result(value: Result<Image, u16>) -> Result<Image, AppError> {
-    value.map_err(|status| {
-        if status == 400 {
-            AppError::BadRequest("Emoji image unavailable".into())
-        } else if status == 404 {
-            AppError::NotFound("Emoji image unavailable".into())
-        } else {
-            AppError::BadGateway("Emoji image unavailable".into())
-        }
+fn result(value: Result<Image, Failure>) -> Result<Image, AppError> {
+    value.map_err(|failure| match failure {
+        Failure::BadRequest => AppError::BadRequest("Emoji image unavailable".into()),
+        Failure::NotFound => AppError::NotFound("Emoji image unavailable".into()),
+        Failure::Unsupported => emoji::unavailable_image("Emoji image unavailable"),
+        Failure::Upstream => AppError::BadGateway("Emoji image unavailable".into()),
+        Failure::RateLimited => AppError::RateLimited,
     })
 }
 pub(crate) async fn get<F, Fut>(
@@ -101,6 +109,27 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Image, AppError>>,
 {
+    get_with_wait(id, client, Duration::from_secs(15), || async {
+        fetch().await.map_err(FetchError::Cacheable)
+    })
+    .await
+}
+
+pub(super) enum FetchError {
+    Cacheable(AppError),
+    Uncached(AppError),
+}
+
+pub(super) async fn get_with_wait<F, Fut>(
+    id: &str,
+    client: Option<IpAddr>,
+    wait: Duration,
+    fetch: F,
+) -> Result<Image, AppError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Image, FetchError>>,
+{
     {
         let mut cache = CACHE.lock().unwrap();
         if let Some(value) = cache.cached(id, Instant::now()) {
@@ -110,21 +139,27 @@ where
             return Err(AppError::RateLimited);
         }
     }
-    let _permit = tokio::time::timeout(Duration::from_secs(15), FETCHES.acquire())
+    let _permit = tokio::time::timeout(wait, FETCHES.acquire())
         .await
         .map_err(|_| AppError::RateLimited)?
         .map_err(|_| AppError::RateLimited)?;
     if let Some(value) = CACHE.lock().unwrap().cached(id, Instant::now()) {
         return result(value);
     }
-    let value = fetch().await.map_err(|e| {
-        if matches!(e, AppError::BadRequest(_)) {
-            400
-        } else if matches!(e, AppError::NotFound(_)) {
-            404
-        } else {
-            502
-        }
+    let fetched = match fetch().await {
+        Err(FetchError::Uncached(error)) => return Err(error),
+        Err(FetchError::Cacheable(error)) => Err(error),
+        Ok(image) => Ok(image),
+    };
+    let value = fetched.map_err(|error| match error {
+        AppError::BadRequest(_) | AppError::Forbidden(_) => Failure::BadRequest,
+        AppError::NotFound(_) => Failure::NotFound,
+        AppError::Coded {
+            code: "unsupported_federated_image",
+            ..
+        } => Failure::Unsupported,
+        AppError::RateLimited => Failure::RateLimited,
+        _ => Failure::Upstream,
     });
     CACHE
         .lock()
@@ -139,7 +174,7 @@ mod tests {
     fn cache_expiry_negative_entries_capacity_and_client_budget() {
         let mut cache = Cache::default();
         let now = Instant::now();
-        cache.insert("failure".into(), Err(502), now);
+        cache.insert("failure".into(), Err(Failure::Upstream), now);
         assert!(
             cache
                 .cached("failure", now + Duration::from_secs(29))
@@ -156,6 +191,7 @@ mod tests {
             Ok(Image {
                 mime: "image/png".into(),
                 bytes: vec![0],
+                blurhash: None,
             }),
             now,
         );
@@ -189,7 +225,7 @@ mod tests {
             now + Duration::from_secs(60)
         ));
         for n in 0..129 {
-            cache.insert(n.to_string(), Err(502), now);
+            cache.insert(n.to_string(), Err(Failure::Upstream), now);
         }
         assert_eq!(cache.images.len(), 128);
         for n in 0..20 {
@@ -198,6 +234,7 @@ mod tests {
                 Ok(Image {
                     mime: "image/png".into(),
                     bytes: vec![0; 2 * 1024 * 1024],
+                    blurhash: None,
                 }),
                 now,
             );
@@ -222,6 +259,7 @@ mod tests {
                     Ok(Image {
                         mime: "image/png".into(),
                         bytes: vec![7],
+                        blurhash: None,
                     })
                 }
             })
@@ -232,6 +270,28 @@ mod tests {
             .await;
             assert_eq!(first.is_ok(), second.is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn worker_deadline_does_not_cache_a_public_image_failure() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let expired = get_with_wait(&id, None, Duration::from_secs(1), || async {
+            Err(FetchError::Uncached(AppError::BadGateway(
+                "Worker deadline".into(),
+            )))
+        })
+        .await;
+        assert!(matches!(expired, Err(AppError::BadGateway(_))));
+        let public = get(&id, None, || async {
+            Ok(Image {
+                mime: "image/png".into(),
+                bytes: vec![7],
+                blurhash: None,
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(public.bytes, [7]);
     }
 }
 

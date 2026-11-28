@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useUsers } from "../../hooks/useRealtime";
+import { useAllUsers } from "../../hooks/useRealtime";
 import { primeCallSounds } from "../../lib/call/call-sounds";
 import { useSip } from "./SipProvider";
 import { SipPanelView } from "./SipPanelView";
@@ -10,7 +10,7 @@ import { SipControls } from "./SipControls";
 export function SipPanel() {
   const sip = useSip();
   const { isAdmin, currentUserId } = useCurrentUser();
-  const { data: users } = useUsers();
+  const { data: users } = useAllUsers();
   const refresh = sip?.refresh;
   const loaded = sip?.loaded;
   const resetCount = sip?.resetCount;
