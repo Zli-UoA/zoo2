@@ -246,6 +246,7 @@ internal class ConnectedScreenState(
     var postDetail by mutableStateOf<List<Row>>(emptyList())
     var saving by mutableStateOf(false)
         private set
+    var channelSaveError by mutableStateOf<String?>(null)
     var channelName by mutableStateOf("")
     var channelDescription by mutableStateOf("")
     var channelPrivate by mutableStateOf(false)
@@ -1253,6 +1254,7 @@ internal class ConnectedScreenState(
                     }
                 action.id.startsWith("engine:") -> app.searchPreferences.save(action.id.substringAfter(':'))
                 action.id == "rename" && channel != null -> {
+                    channelSaveError = null
                     channelName = channel.text("channel_name")
                     channelDescription = channel.text("description")
                     channelPrivate = channel.flag("is_private")
@@ -1269,6 +1271,7 @@ internal class ConnectedScreenState(
             is AndroidUiAction.ChannelNameChanged -> channelName = action.name
             is AndroidUiAction.ChannelDescriptionChanged -> channelDescription = action.description
             AndroidUiAction.SubmitChannel -> if (!saving) request {
+                channelSaveError = null
                 saving = true
                 try {
                     val payload = obj("channel_name" to channelName.trim(), "description" to channelDescription,
@@ -1277,10 +1280,13 @@ internal class ConnectedScreenState(
                         app.repo.channels.write(app.api, "/api/channels/${channelId.encodeURLParameter()}", "PATCH", payload)
                     } else app.createChannel(kotlinx.serialization.json.JsonObject(payload + ("encrypted" to JsonPrimitive(channelEncrypted))))
                     overlay = null
-                } finally { saving = false }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { channelSaveError = "保存できませんでした。接続を確認して、もう一度保存してください。" }
+                finally { saving = false }
             }
             AndroidUiAction.Browse -> { query = ""; overlay = "browse" }
             AndroidUiAction.CreateChannel -> {
+                channelSaveError = null
                 channelName = ""
                 channelDescription = ""
                 channelPrivate = false

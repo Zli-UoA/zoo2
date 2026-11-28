@@ -544,6 +544,7 @@ internal fun ConnectedScreens(
             state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",
             env.online && state.channelName.isNotBlank() && !state.saving,
             privateChannel = state.channelPrivate.takeUnless { state.overlay == "rename" && encrypted },
+            saveError = state.channelSaveError,
             sensitive = state.channelSensitive,
             encrypted = state.channelEncrypted.takeIf { state.overlay == "create" && state.channelPrivate },
         )

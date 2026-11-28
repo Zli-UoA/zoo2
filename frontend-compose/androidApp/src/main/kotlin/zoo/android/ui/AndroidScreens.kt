@@ -178,6 +178,7 @@ internal sealed interface AndroidScreen {
         val submitLabel: String,
         val canSubmit: Boolean,
         val privateChannel: Boolean? = null,
+        val saveError: String? = null,
         val sensitive: Boolean? = null,
         val encrypted: Boolean? = null,
     ) : AndroidScreen

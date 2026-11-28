@@ -220,6 +220,7 @@ internal fun ChannelEditorPage(
         ChannelField("説明", screen.description, colors, singleLine = false) {
             dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
         }
+        screen.saveError?.let { Text(it, color = colors.unread, fontSize = 14.sp) }
         val options = listOf(
             Triple("channel-private", "非公開", screen.privateChannel),
             Triple("channel-encrypted", "エンドツーエンド暗号化", screen.encrypted),
@@ -233,6 +234,10 @@ internal fun ChannelEditorPage(
             ) {
                 Text(label, Modifier.weight(1f), color = colors.foreground)
                 androidx.compose.material3.Switch(selection, onCheckedChange = null)
+            }
+            if (id == "channel-encrypted" && screen.privateChannel != null && screen.submitLabel == "作成") {
+                Text(if (selection == true) "公開に切り替えると暗号化は解除されます。" else "暗号化を利用するにはチャンネルを非公開にします。",
+                    color = colors.secondary, fontSize = 13.sp)
             }
         }
         Spacer(Modifier.weight(1f))
