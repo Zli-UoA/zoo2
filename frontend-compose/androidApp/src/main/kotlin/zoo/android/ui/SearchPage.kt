@@ -200,7 +200,7 @@ private fun SearchResult(
                 // The snippet is MFM like Web's result row; only its text parts are marked.
                 // Links in the snippet stay text: a tap anywhere on the row opens the result, not the link.
                 EntryBody(item.body, colors.foreground, entryTextSize, item.emoji, maxLines = 3, highlight = highlight,
-                    lineHeight = 23.sp, links = false)
+                    lineHeight = 23.sp, links = false, mentionColors = colors)
             }
             item.media?.let { media -> TimelineMediaGroup(listOf(media), colors, apub = false, showSensitiveToggle = false) { openMedia() } }
             item.linkCard?.let { EntryCards(listOf(it.copy(url = null)), colors) }

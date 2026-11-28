@@ -66,7 +66,7 @@ class EntryTextTest {
             mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
         )
 
-        assertEquals("\uFFFC\u202FAlice. @bob HERE", result.text)
+        assertEquals("\u202F\uFFFC\u202FAlice\u202F. @bob \u202FHERE\u202F", result.text)
         assertEquals(listOf("\uFFFC\u202FAlice", "HERE"), result.spanStyles.filter { it.item == style }
             .map { result.text.substring(it.start, it.end) })
     }
@@ -83,9 +83,6 @@ class EntryTextTest {
     fun mentionDisplayPreservesLiteralAtSignsAndRemoteHosts() {
         val result = formatEntry("@nagi@social.example と desk@example.test と `@nagi`")
         assertEquals("nagi@social.example と desk@example.test と @nagi", result.text)
-        for (dark in listOf(false, true)) {
-            assertEquals(Color.Unspecified, AndroidColors(dark).mentionStyle().background)
-        }
     }
 
     @Test

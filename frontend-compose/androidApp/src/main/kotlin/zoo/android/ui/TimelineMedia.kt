@@ -197,7 +197,7 @@ internal fun TimelineQuoteCard(
                     }
                 }
             }
-            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
+            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, mentionColors = colors, maxLines = 4)
         }
         TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
     }
@@ -208,7 +208,7 @@ internal fun TimelineQuoteCard(
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     android.net.Uri.parse(quote.uri).host?.let { Text(it) }
-                    EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji)
+                    EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, mentionColors = colors)
                     TimelineMediaGroup(quote.media, colors, apub = true) { media ->
                         showOriginal = false
                         openMedia(media)

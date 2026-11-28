@@ -67,7 +67,7 @@ internal fun EntryBlocks(
         when (block) {
             is EntryCard -> EntryCards(listOf(block), colors)
             // 連携の投稿の本文は、アプリ内リンクを短くせず、行き先も取らない（docs/mfm.md）。
-            is EntryContentText -> EntryBody(block.body, colors.foreground, fontSize, emoji, appLinks = false)
+            is EntryContentText -> EntryBody(block.body, colors.foreground, fontSize, emoji, appLinks = false, mentionColors = colors)
             is EntryContentPanel -> Column(
                 Modifier.padding(vertical = 4.dp).fillMaxWidth()
                     .background(colors.inputSurface, RoundedCornerShape(12.dp)).padding(12.dp),

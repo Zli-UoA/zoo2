@@ -149,7 +149,7 @@ internal fun NewPostPage(
                     UiIconButton(UiIcon.Close, "引用元を外す", colors.secondary, { dispatch(AndroidUiAction.RemoveQuote) },
                         iconSize = 16.dp, modifier = Modifier.size(32.dp))
                 }
-                EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji, maxLines = 3)
+                EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji, maxLines = 3, mentionColors = colors)
             }
         }
         CharacterCount(input.text, 1000, colors)

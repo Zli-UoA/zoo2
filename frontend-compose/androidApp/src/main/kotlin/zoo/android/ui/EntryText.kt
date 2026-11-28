@@ -1,6 +1,12 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.staticCompositionLocalOf
 import zoo.Row
 import zoo.text
@@ -234,6 +240,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                 if (username.isEmpty() || allowed != null && !zoo.isAllowedMention(username, allowed)) append(mention)
                 else {
                     pushStringAnnotation(renderedMentionTag, username)
+                    if (format.mentionStyle != null) append('\u202F')
                     withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
                         val profile = format.mentionProfiles[username]
                             ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
@@ -246,6 +253,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                             append("\u202F$label")
                         }
                     }
+                    if (format.mentionStyle != null) append('\u202F')
                     pop()
                 }
                 append(rawName.drop(username.length))
@@ -350,17 +358,17 @@ internal fun EntryBody(
     highlight: EntryHighlight? = null, lineHeight: TextUnit = entryLineHeight, links: Boolean = true,
     /** アプリ内リンクを短くして、行き先を取るか。 */
     appLinks: Boolean = true,
-    mentionColors: AndroidColors? = null, allowedMentions: Set<String>? = null,
+    mentionColors: AndroidColors, allowedMentions: Set<String>? = null,
 ) {
     val loader = LocalTimelineImage.current
     val cached = LocalCachedTimelineImage.current
-    val mentionProfiles = if (mentionColors == null) emptyMap() else LocalMentionProfiles.current
-    val mentionUsernames = if (mentionColors == null) emptySet() else LocalMentionUsernames.current
+    val mentionProfiles = LocalMentionProfiles.current
+    val mentionUsernames = LocalMentionUsernames.current
     val channelLinks = entryChannelLinks(body, links && appLinks)
     val formatted = remember(body, emoji, highlight, links, channelLinks, mentionColors, allowedMentions, mentionProfiles, mentionUsernames) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
-        formatEntry(body, emoji.keys, highlight, links, mentionColors?.mentionStyle(),
+        formatEntry(body, emoji.keys, highlight, links, SpanStyle(fontWeight = AndroidWeights.label),
             allowedMentions, mentionProfiles, mentionUsernames, channelLink = lookup)
     }
     val codes = remember(formatted) {
@@ -387,7 +395,7 @@ internal fun EntryBody(
     } + (channelLinkIconId to InlineTextContent(Placeholder(1.em, 1.em, PlaceholderVerticalAlign.TextCenter)) {
         UiGlyph(UiIcon.Bubble, color, iconSize)
     })
-    val mentionAvatars = if (mentionColors == null) emptyMap() else {
+    val mentionAvatars =
         formatted.getStringAnnotations(mentionAvatarTag, 0, formatted.length).associate { annotation ->
             val username = annotation.item
             val profile = mentionProfiles.getValue(username)
@@ -398,11 +406,24 @@ internal fun EntryBody(
                     profile.text("avatar_url").ifEmpty { null }, mentionColors, iconSize)
             }
         }
+    val mentions = remember(formatted) { formatted.getStringAnnotations(renderedMentionTag, 0, formatted.length) }
+    val layout = remember(formatted) { mutableStateOf<TextLayoutResult?>(null) }
+    val background = if (mentions.isEmpty()) Modifier else Modifier.drawBehind {
+        val textLayout = layout.value ?: return@drawBehind
+        val radius = CornerRadius(4.dp.toPx())
+        for (mention in mentions) {
+            val firstLine = textLayout.getLineForOffset(mention.start)
+            val lastLine = textLayout.getLineForOffset(mention.end - 1)
+            for (line in firstLine..lastLine) {
+                val start = maxOf(mention.start, textLayout.getLineStart(line))
+                val end = minOf(mention.end, textLayout.getLineEnd(line, visibleEnd = true))
+                if (start >= end) continue
+                val bounds = textLayout.getPathForRange(start, end).getBounds()
+                drawRoundRect(mentionColors.mentionBackground, bounds.topLeft, bounds.size, radius)
+            }
+        }
     }
-    Text(formatted, color = color, fontSize = fontSize, lineHeight = lineHeight, inlineContent = inline + mentionAvatars, maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis)
+    Text(formatted, modifier = background, color = color, fontSize = fontSize, lineHeight = lineHeight,
+        inlineContent = inline + mentionAvatars, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
+        onTextLayout = { if (mentions.isNotEmpty()) layout.value = it })
 }
-
-internal fun AndroidColors.mentionStyle() = SpanStyle(
-    color = mentionText, fontWeight = AndroidWeights.emphasis,
-)
