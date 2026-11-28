@@ -7,16 +7,13 @@ WATCH_DESTINATION ?= generic/platform=watchOS Simulator
 # 引数なしの `make` は、これまでどおり `xcodegen generate`。
 .DEFAULT_GOAL := generate
 
-.PHONY: crypto-xcframework mfm-assets generate build build-watch test icon
+.PHONY: crypto-xcframework generate build build-watch test icon
 
 # zoo-crypto の XCFramework と Swift のバインディング（ZooCrypto/）。xcodegen の前に要る。
 crypto-xcframework:
 	cd .. && $(MAKE) crypto-ffi-ios
 
-mfm-assets:
-	pnpm --dir ../frontend build:ios-mfm
-
-generate: crypto-xcframework mfm-assets
+generate: crypto-xcframework
 	xcodegen generate
 
 build:

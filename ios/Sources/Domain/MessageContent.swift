@@ -27,14 +27,10 @@ enum MessageContent {
         text.range(of: #"@[A-Za-z0-9._-]+@|(?im)^.+ (?:検索|search)$"#, options: .regularExpression) != nil
     }
 
-    static func mfmShortcodes(in text: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for match in codes.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-            guard let range = Range(match.range(at: 1), in: text) else { continue }
-            let code = String(text[range])
-            result[code] = shortcodes[String(code.dropFirst().dropLast())]
+    static func emojiCandidates(in text: String) -> [String] {
+        codes.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+            Range($0.range(at: 1), in: text).map { String(text[$0]) }
         }
-        return result
     }
 
     static func mfmMentions(in text: String, resolve: (String) -> Bool?) -> [String: Bool] {

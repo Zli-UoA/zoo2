@@ -11,7 +11,6 @@
     "sync:emojibase": "node scripts/sync-emojibase-data.mjs",
     "test:media-preview-bundle": "pnpm build:media-preview && node scripts/media-preview-bundle.test.mjs",
     "build:media-preview": "vp build --config vite.media-preview.config.ts",
-    "build:ios-mfm": "vp build --config vite.ios-mfm.config.ts",
     "build": "vp build && vp build --config vite.sw-push.config.ts",
     "start": "vp preview",
     "preview": "vp preview",

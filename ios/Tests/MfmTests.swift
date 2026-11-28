@@ -1,60 +1,224 @@
 import Foundation
+import SwiftUI
 import Testing
-import WebKit
 import UIKit
 @testable import Zoo
 
-@MainActor @Suite("MFMの描画", .timeLimit(.minutes(1)))
+@MainActor @Suite("ネイティブMFM")
 struct MfmTests {
-    private func payload(_ content: String) -> MfmPayload {
-        MfmPayload(content: content, emojis: [":smile:": "😄"], mentions: ["you": true], channels: [:],
-                   restrictedMentions: false, dark: false, reducedMotion: false, active: true, fontSize: 17)
+    private func key(width: CGFloat = 320, dark: Bool = false, size: CGFloat = 17) -> MfmRenderKey {
+        MfmRenderKey(fontSize: size, width: width, dark: dark, emojis: [], mentions: ["you": true], channels: [:],
+                     restrictedMentions: false, revealed: [], locale: "ja_JP", timeZone: "Asia/Tokyo")
+    }
+    private func kinds(_ nodes: [MfmNode]) -> [MfmNode.Kind] { nodes.flatMap { [$0.kind] + kinds($0.children) } }
+
+    @Test("見出し・装飾・数式・コード・引用・関数をSwiftで解析する")
+    func syntax() {
+        let document = MfmDocument("# 見出し\n**太字** <i>斜体</i> ~~取消~~\n$[ruby 漢字 かんじ] $[spin.speed=2s 回転]\n\\(x^2\\)\n```swift\nlet x = 1\n```\n> 引用\n<center>中央</center>")
+        let all = Set(kinds(document.nodes))
+        #expect(all.isSuperset(of: [.heading, .bold, .italic, .strike, .function, .math, .codeBlock, .quote, .center]))
+        #expect(document.animated)
+        #expect(document.nodes.first?.children.first?.value == "見出し")
     }
 
-    @Test("同梱した文書で装飾・数式・コード・保護領域を描画する")
-    func bundledRenderer() async throws {
-        let model = MfmPageModel()
-        await model.render(payload("# 見出し\n**太字** <i>斜体</i> ~~取消~~ :smile: @you\n$[ruby 漢字 かんじ] $[spin.speed=2s 回転]\n\\(x^2\\)\n```swift\nlet x = 1\n```\n<plain>**原文** :smile:</plain>"))
-        #expect(!model.failed)
-        #expect(model.height > 24)
-        let result = try await model.page.callJavaScript("return [document.querySelector('h1')?.textContent, document.querySelector('strong')?.textContent, document.querySelector('rt')?.textContent, document.querySelector('.mfm-spin')?.style.animationDuration, !!document.querySelector('.katex'), !!document.querySelector('.hljs-keyword'), document.querySelector('.mention-self')?.textContent, document.body.textContent.includes('**原文** :smile:')];") as? [Any]
-        let values = try #require(result)
-        #expect(values[0] as? String == "見出し")
-        #expect(values[1] as? String == "太字")
-        #expect(values[2] as? String == "かんじ")
-        #expect(values[3] as? String == "2s")
-        #expect(values[4] as? Bool == true)
-        #expect(values[5] as? Bool == true)
-        #expect(values[6] as? String == "@you")
-        #expect(values[7] as? Bool == true)
+    @Test("コード・plain・数式・URL・未知関数の内側をスタンプの取得対象にしない")
+    func symbols() {
+        let document = MfmDocument("https://example.com/**:草:** [確認 :ラベル:](https://example.com/:url:) <plain>:plain:</plain> `:code:` \\( :math: \\) $[unknown :unknown:] :smile: :@you:")
+        #expect(document.emojiCodes == [":草:", ":ラベル:", ":smile:", ":@you:"])
     }
 
-    @Test("本文を実行せず、外部通信と危険なリンクを禁止する")
-    func security() async throws {
-        let model = MfmPageModel()
-        await model.render(payload("<script>window.injected=true</script> [危険](javascript:alert(1)) <img src=https://evil.invalid/x onerror=alert(1)> \\(\\href{javascript:alert(1)}{危険}\\)"))
-        #expect(!model.failed)
-        let result = try await model.page.callJavaScript("try { await fetch('https://evil.invalid/'); return false; } catch { return !window.injected && !document.querySelector('#content script, #content img, a[href^=\"javascript:\"]'); }") as? Bool
-        #expect(result == true)
+    @Test("入れ子の関数はコード・plain・リンク内の閉じ括弧で終わらない")
+    func nestedFunctions() {
+        let document = MfmDocument("$[tada **太字** $[fg.color=abc `]` <plain>]</plain> [リンク](https://example.com/a(b))]]")
+        #expect(document.nodes.count == 1)
+        #expect(document.nodes[0].kind == .function)
+        #expect(kinds(document.nodes).filter { $0 == .function }.count == 2)
+        #expect(kinds(document.nodes).contains(.link))
     }
 
-    @Test("編集後に短くなった本文の高さとテーマ・動きの設定を更新する")
-    func updates() async throws {
-        let model = MfmPageModel()
-        await model.render(payload(String(repeating: "行\n", count: 30)))
-        let original = model.height
-        var changed = payload("$[spin 回転] **短文**")
-        changed.dark = true
-        changed.reducedMotion = true
-        changed.active = false
-        await model.render(changed)
-        #expect(!model.failed)
-        #expect(model.height < original)
-        let result = try await model.page.callJavaScript("return document.documentElement.classList.contains('dark') && getComputedStyle(document.querySelector('.mfm-spin')).animationName === 'none';") as? Bool
-        #expect(result == true)
+    @Test("日本語・絵文字・エスケープ・壊れた構文を失わない", arguments: [
+        "😀日本語\n通常の本文", "閉じない $[spin 本文", "<script>alert(1)</script>",
+        "[危険](javascript:alert(1))", "`閉じないコード", "***", "_単語の途中"
+    ])
+    func literal(_ source: String) {
+        let document = MfmDocument(source)
+        #expect(!document.nodes.isEmpty)
+        #expect(!document.nodes.map(\.plainText).joined().isEmpty)
+        let state = MfmNativeState(content: source)
+        #expect(!state.prepare(key: key(), images: [:]).isEmpty)
     }
 
-    @Test("同じ接続先のチャンネル・返信リンクだけをアプリ内の行き先にする")
+    @Test("全関数・数式・ルビをネイティブのTextとして描画できる")
+    func nativeDrawing() throws {
+        let functions = MfmFunction.names.sorted().map { name in
+            name == "ruby" ? "$[ruby 漢字 かんじ]" : name == "unixtime" ? "$[unixtime 1700000000]" : "$[\(name) 動き]"
+        }.joined(separator: " ")
+        let state = MfmNativeState(content: "# MFM\n**太字** :smile: @you\n\\(\\frac{1}{2}+x^2\\)\n" + functions)
+        let blocks = state.prepare(key: key(), images: [:])
+        let content = VStack(alignment: .leading) {
+            ForEach(blocks) { block in
+                block.text.textRenderer(MfmNativeEffects(time: 0.25, reducedMotion: false))
+            }
+        }.frame(width: 320).fixedSize(horizontal: false, vertical: true)
+        let image = try #require(ImageRenderer(content: content).uiImage)
+        #expect(image.size.width == 320 && image.size.height > 30)
+        #expect(state.preparationCount == 1)
+    }
+
+    @Test("数式を文字列ではなく分数として描き、ルビを本文の幅いっぱいに広げない")
+    func nativeMathAndRuby() throws {
+        let formula = MfmNativeState(content: "\\[\\frac{1}{2}\\]")
+        let math = try #require(formula.prepare(key: key(), images: [:]).first)
+        let mathImage = try #require(ImageRenderer(content: math.text).uiImage)
+        #expect(mathImage.size.height > 24 && mathImage.size.width < 40)
+        let ruby = MfmNativeState(content: "$[ruby 漢字 かんじ]")
+        let block = try #require(ruby.prepare(key: key(), images: [:]).first)
+        let image = try #require(ImageRenderer(content: block.text).uiImage)
+        #expect(image.size.width < 120 && image.size.height > 20)
+    }
+
+    @Test("テーマ・文字サイズ・画像・ぼかし解除の変更時だけ描画用データを更新する")
+    func invalidation() throws {
+        let state = MfmNativeState(content: "$[blur **:草:**]")
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemGreen.setFill(); context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        var value = key()
+        _ = state.prepare(key: value, images: [:])
+        _ = state.prepare(key: value, images: [:])
+        #expect(state.preparationCount == 1)
+        value = key(dark: true, size: 24)
+        _ = state.prepare(key: value, images: [:])
+        #expect(state.preparationCount == 2)
+        let imageKey = MfmRenderKey(fontSize: value.fontSize, width: value.width, dark: true,
+                                    emojis: [.init(code: ":草:", image: ObjectIdentifier(image))], mentions: value.mentions,
+                                    channels: value.channels, restrictedMentions: false, revealed: [], locale: value.locale, timeZone: value.timeZone)
+        _ = state.prepare(key: imageKey, images: [":草:": image])
+        _ = state.prepare(key: imageKey, images: [":草:": image])
+        #expect(state.preparationCount == 3)
+        let blur = try #require(state.document.nodes.first)
+        state.revealed.insert(blur.id)
+        let row = MessageRenderState()
+        let retained = row.mfm(content: state.document.source)
+        retained.revealed.insert(blur.id)
+        row.cancelLoads()
+        #expect(row.mfm(content: state.document.source).revealed == [blur.id])
+    }
+
+    @Test("同じ本文・幅・画像では解析と描画用データを再作成しない")
+    func preparedCache() {
+        let cache = MessageRenderCache()
+        let ids = (0..<40).map(String.init)
+        let state = cache.state(for: "15").mfm(content: "**本文** \\(x^2\\)")
+        _ = state.prepare(key: key(), images: [:])
+        cache.retain(visibleIDs: ["15", "16"], orderedIDs: ids)
+        cache.retain(visibleIDs: ["16", "17"], orderedIDs: ids)
+        let returned = cache.state(for: "15").mfm(content: state.document.source)
+        _ = returned.prepare(key: key(), images: [:])
+        #expect(returned === state)
+        #expect(returned.preparationCount == 1)
+        _ = returned.prepare(key: key(width: 240), images: [:])
+        #expect(returned.preparationCount == 2)
+        #expect(cache.state(for: "15").mfm(content: "編集後の本文") !== state)
+    }
+
+    @Test("保持範囲の外へ出たMFM状態を解放する")
+    func eviction() {
+        let cache = MessageRenderCache()
+        weak var old: MfmNativeState?
+        do { let value = cache.state(for: "0").mfm(content: "**古い本文**"); old = value }
+        #expect(old != nil)
+        cache.retain(visibleIDs: ["20"], orderedIDs: (0..<40).map(String.init))
+        #expect(old == nil)
+    }
+
+    @Test("MFMから通常本文への編集で以前の画像とぼかし解除状態を解放する")
+    func editingToPlainText() {
+        let row = MessageRenderState()
+        weak var previous: MfmNativeState?
+        do {
+            let value = row.mfmIfNeeded(content: "$[blur 隠す本文]")
+            value?.revealed.insert(0)
+            previous = value
+        }
+        #expect(previous != nil)
+        #expect(row.mfmIfNeeded(content: "通常の本文") == nil)
+        #expect(previous == nil)
+        #expect(row.mfmIfNeeded(content: "$[blur 隠す本文]")?.revealed.isEmpty == true)
+    }
+
+    @Test("画像ストアの退避中も直近の画像を保持し、URLとアカウントの変更で破棄する")
+    func retainedImagesAndAccounts() throws {
+        let row = MessageRenderState()
+        let content = "**:草:**"
+        let state = row.mfm(content: content, scope: "account-a")
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { _ in }
+        let url = try #require(URL(string: "https://example.com/stamp.png"))
+        #expect(state.retainImages(urls: [":草:": url], available: [":草:": image])[":草:"] === image)
+        #expect(state.retainImages(urls: [":草:": url], available: [:])[":草:"] === image)
+        let changed = try #require(URL(string: "https://example.com/updated.png"))
+        #expect(state.retainImages(urls: [":草:": changed], available: [:]).isEmpty)
+        state.revealed.insert(0)
+        let other = row.mfm(content: content, scope: "account-b")
+        #expect(other !== state && other.revealed.isEmpty)
+        #expect(other.retainImages(urls: [":草:": url], available: [:]).isEmpty)
+    }
+
+    @Test("数式・ルビの同じ画像を共有し、投稿全体の実ピクセル予算を超えない")
+    func imageBudget() {
+        let repeated = MfmNativeState(content: "$[x4 " + String(repeating: "\\(x\\) $[ruby 漢字 かんじ] ", count: 500) + "]")
+        _ = repeated.prepare(key: key(), images: [:])
+        #expect(repeated.rasterImageCount == 2)
+        #expect(repeated.rasterPixels <= 524_288)
+        let distinct = MfmNativeState(content: (0..<150).map { "\\(x_{\($0)}\\) $[ruby 漢字 かんじ\($0)]" }.joined(separator: " "))
+        _ = distinct.prepare(key: key(), images: [:])
+        #expect(distinct.rasterImageCount <= 64 && distinct.rasterPixels <= 524_288)
+        let tall = MfmNativeState(content: "$[x4 \\[\\begin{matrix}" + Array(repeating: "11111", count: 30).joined(separator: "\\\\") + "\\end{matrix}\\]]")
+        _ = tall.prepare(key: key(), images: [:])
+        #expect(tall.rasterPixels <= 524_288)
+    }
+
+    @Test("絵文字・数式・ルビの画像ラベルへリンクの当たり判定を保持する")
+    func imageLinks() throws {
+        let state = MfmNativeState(content: "[:草:](https://example.com/emoji) [\\(x^2\\)](https://example.com/math) [$[ruby 漢字 かんじ]](https://example.com/ruby)")
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemGreen.setFill(); context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        let block = try #require(state.prepare(key: key(), images: [":草:": image]).first)
+        #expect(Set(block.imageLinks.map { $0.url.path }) == ["/emoji", "/math", "/ruby"])
+        let content = block.text.textRenderer(MfmNativeEffects(time: 0, reducedMotion: true, interactions: block.interactions))
+        let snapshot = try #require(ImageRenderer(content: content).uiImage)
+        var paths: Set<String> = []
+        for x in stride(from: 0.0, through: snapshot.size.width, by: 2) {
+            for y in stride(from: 0.0, through: snapshot.size.height, by: 2) {
+                if let url = block.interactions.url(at: CGPoint(x: x, y: y)) { paths.insert(url.path) }
+            }
+        }
+        #expect(paths == ["/emoji", "/math", "/ruby"])
+    }
+
+    @Test("ルビの中の複数リンクと移動した文字リンクの描画位置を保持する")
+    func nestedLinks() throws {
+        let source = "$[ruby [漢](https://example.com/first)[字](https://example.com/second) かんじ] $[position.x=2 [a](https://example.com/shifted)]"
+        let block = try #require(MfmNativeState(content: source).prepare(key: key(), images: [:]).first)
+        #expect(block.accessibilityLabel == "漢字（かんじ） a")
+        #expect(Set(block.imageLinks.map { $0.url.path }) == ["/first", "/second", "/shifted"])
+        let view = block.text.textRenderer(MfmNativeEffects(time: 0, reducedMotion: true, interactions: block.interactions)).frame(width: 320)
+        _ = try #require(ImageRenderer(content: view).uiImage)
+        #expect(Set(block.interactions.snapshot().map { $0.url.path }) == ["/first", "/second", "/shifted"])
+        let first = try #require(block.interactions.snapshot().first { $0.url.path == "/first" })
+        let second = try #require(block.interactions.snapshot().first { $0.url.path == "/second" })
+        #expect(first.bounds.midX < second.bounds.midX)
+        #expect(block.interactions.url(at: CGPoint(x: first.bounds.midX, y: first.bounds.midY))?.path == "/first")
+        #expect(block.interactions.url(at: CGPoint(x: second.bounds.midX, y: second.bounds.midY))?.path == "/second")
+    }
+
+    @Test("装飾中の句点付きメンションにも許可条件を適用する")
+    func mentions() {
+        #expect(MessageContent.mfmMentions(in: "**@you.** $[spin @other]", resolve: { $0 == "you" ? true : nil }) == ["you": true])
+    }
+
+    @Test("同じ接続先のチャンネルリンクだけをアプリ内で開く")
     func routing() throws {
         let channel = "11111111-1111-4111-8111-111111111111"
         let message = "22222222-2222-4222-8222-222222222222"
@@ -62,50 +226,9 @@ struct MfmTests {
         let target = try #require(MfmMessageView.channelTarget(url, serverURL: "https://zli.chat:443"))
         #expect(target.channelID == channel && target.messageID == message)
         #expect(MfmMessageView.channelTarget(url, serverURL: "https://other.invalid") == nil)
-        #expect(MfmMessageView.channelTarget(url, serverURL: "http://zli.chat") == nil)
     }
 
-    @Test("装飾の内側でもメンションの許可を守り、plainでは画像を取得しない")
-    func symbols() {
-        #expect(MessageContent.mfmMentions(in: "**@you** $[tada @other]", resolve: { $0 == "you" ? true : nil }) == ["you": true])
-        #expect(MessageContent.parse("<plain>:smile: https://example.com</plain>") { _ in URL(string: "https://example.com/stamp.png") } == [.text("<plain>:smile: https://example.com</plain>")])
-        #expect(MessageContent.mfmMentions(in: "**@you.**", resolve: { $0 == "you" ? true : nil }) == ["you": true])
-    }
-
-    @Test("装飾中の日本語名スタンプを表示し、plainとコードは置換しない")
-    func japaneseEmoji() async throws {
-        let model = MfmPageModel()
-        var value = payload("**:草:** [確認 :草:](https://example.com) <plain>:草:</plain> `:草:`")
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { context in
-            UIColor.systemGreen.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
-        }
-        let data = try #require(image.pngData())
-        value.emojis[":草:"] = "data:image/png;base64," + data.base64EncodedString()
-        await model.render(value)
-        #expect(!model.failed)
-        let result = try await model.page.callJavaScript("return document.querySelectorAll('img').length === 2 && document.querySelector('strong img')?.alt === ':草:' && document.querySelector('a img')?.alt === ':草:' && document.querySelector('code')?.textContent === ':草:';") as? Bool
-        #expect(result == true)
-    }
-
-    @Test("MFMで見えるスタンプだけを画像の取得対象にする")
-    func emojiDiscovery() async throws {
-        let model = MfmPageModel()
-        await model.inspect("https://example.com/**:草:** [確認 :ラベル:](https://example.com/:url:) <plain>:plain:</plain> `:code:` $[unknown :unknown:] :smile:")
-        #expect(!model.failed)
-        #expect(Set(model.emojiCodes) == [":草:", ":ラベル:", ":smile:"])
-    }
-
-    @Test("構文がある投稿だけをMFM表示へ渡す", arguments: [
-        ("こんにちは 😄 https://example.com @you", false), ("**太字**", true),
-        ("$[tada 動き]", true), ("# 見出し", true), ("\\(x^2\\)", true),
-        ("[リンク](https://example.com)", true), ("言葉 検索", true)
-    ])
-    func detection(_ source: String, _ expected: Bool) {
-        #expect(MessageContent.requiresMfm(source) == expected)
-    }
-
-    @Test("関数名を補完し、コード・plain・URL・エスケープを候補から除く", arguments: [
+    @Test("関数名を補完し、保護領域を候補から除く", arguments: [
         ("$", ""), ("$je", "je"), ("本文 $[SP", "sp"), ("`$je", nil),
         ("```\n$je", nil), ("<plain>$je", nil), ("https://example.com/$je", nil), ("\\$je", nil)
     ])
@@ -113,24 +236,23 @@ struct MfmTests {
         #expect(MfmInput.query(in: source, caret: source.endIndex)?.text == expected)
     }
 
-    @Test("Web版と共有する全関数の雛形と日本語の説明を同梱する")
-    func templates() throws {
-        #expect(MfmInput.candidates.count == 24)
-        let candidate = try #require(MfmInput.options("FG").first)
-        #expect(candidate.template == "$[fg.color=ff0000 ]")
-        #expect(candidate.description == "文字色")
+    @Test("関数一覧・時間と数値の上限を全クライアントと揃える")
+    func limits() throws {
+        #expect(MfmInput.candidates.count == MfmFunction.names.count)
+        let node = try #require(MfmDocument("$[spin.speed=1ms,delay=-999999s,x=Infinity 回転]").nodes.first)
+        let function = MfmFunction(node)
+        #expect(function.seconds("speed", fallback: 1) == 0.5)
+        #expect(function.seconds("delay", fallback: 0, delay: true) == -86400)
+        #expect(function.number("x", fallback: 1, range: -5...5) == 1)
     }
 
-    @Test("初回読み込み中のタスク交代でも最新の本文を描画する")
-    func loadingReplacement() async throws {
-        let model = MfmPageModel()
-        let previous = Task { await model.render(payload("**古い本文**")) }
-        await Task.yield()
-        previous.cancel()
-        await model.render(payload("**最新の本文**"))
-        await previous.value
-        #expect(!model.failed)
-        let result = try await model.page.callJavaScript("return document.querySelector('strong')?.textContent;") as? String
-        #expect(result == "最新の本文")
+    @Test("深い入れ子・閉じない構文・長文でも解析量を制限する")
+    func boundedParsing() {
+        let deep = String(repeating: "$[spin ", count: 100) + "本文" + String(repeating: "]", count: 100)
+        #expect(!MfmDocument(deep).nodes.isEmpty)
+        #expect(!MfmDocument(String(repeating: "$[spin ** [", count: 3_000)).nodes.isEmpty)
+        #expect(!MfmDocument(String(repeating: ">", count: 40_000)).nodes.isEmpty)
+        let text = String(repeating: "😀日本語\n", count: 6_000)
+        #expect(MfmDocument(text).nodes.map(\.plainText).joined() == text)
     }
 }

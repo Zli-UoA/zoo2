@@ -315,8 +315,6 @@
               iosToolchain
               pkgs.gnumake
               pkgs.xcodegen
-              pkgs.nodejs_24
-              pkgs.pnpm
             ];
           };
         };

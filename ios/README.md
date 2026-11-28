@@ -8,13 +8,14 @@ REST API と Electric の差分同期で `https://zli.chat` に直接接続し�
 
 投稿とスレッド返信はMFMに対応しています。見出し、太字・斜体・取り消し線、コード、引用、
 リンク、絵文字、数式、入れ子の関数とアニメーションを表示し、入力欄の`$`で関数を補完できます。
-Web版とパーサー・関数設定・スタイル・補完の雛形を共有し、数式フォントを含めてアプリに同梱します。
+Swiftで構文を解析し、SwiftUIのTextとTextRendererで描画します。数式はSwiftMathと同梱フォントで描画します。
 絵文字画像は既存の共有キャッシュを使い、本文の描画から外部通信は行いません。
-通常のテキストはSwiftUIで、MFM構文がある本文はiOS 26のWebViewで表示します。
+通常のテキストもMFM本文もネイティブ表示で、WebViewやJavaScriptは使いません。
 ダークモード・文字サイズ・「視覚効果を減らす」に追従し、ぼかしはタップで解除できます。
 編集時は元のMFMを保ち、検索・通知の抜粋は従来のテキスト表示です。
-`make mfm-assets`で同梱文書・ライセンス・補完用データを再生成します（`make generate`にも含まれます）。
-再生成の前に`pnpm --dir ../frontend install`でWeb版の依存関係を準備してください。
+解析結果・描画用テキスト・数式とルビの描画結果を`MessageRenderCache`の上下10件の保持範囲で再利用します。
+本文の編集時は解析から更新し、幅・文字サイズ・テーマ・画像などの変更時は描画用データを更新します。
+保持範囲から外れた表示状態は解放し、チャンネルの投稿データの保存・復元は従来の同期キャッシュを使います。
 対応範囲は[共通のMFM仕様](../docs/mfm.md)を参照してください。
 
 この説明は2026-11-21時点のmain（[`285e7c3`](https://github.com/Zli-UoA/zoo2-ios/commit/285e7c34111981e153cd2262bd0eb732e6e6f198)）の実装に基づきます。
@@ -270,6 +271,9 @@ Keychainへ保存し、退出成功後に削除します。通信に失敗した
 
 音声通話には [stasel/WebRTC](https://github.com/stasel/WebRTC/tree/157.0.0) の配布バイナリを使用し、バージョンを固定しています。
 [ライセンス原文](Sources/Resources/WebRTC-LICENSE.txt) をアプリにも同梱します。
+
+数式には[SwiftMath 1.7.3](https://github.com/mgriebling/SwiftMath/tree/1.7.3)を使用します。
+[ライセンス原文](Sources/Resources/SwiftMath-LICENSE.txt)と、パッケージのフォント・ライセンスを同梱します。
 
 絵文字短縮名のデータにはEmojibaseを使用し、Web版と同じ[ライセンス原文](Sources/Resources/Emojibase-LICENSE.txt)をアプリに同梱します。
 

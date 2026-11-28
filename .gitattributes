@@ -1,2 +1,0 @@
-# 同梱する生成物は原文を保ち、ライブラリ内の文字列やライセンスの末尾空白を変更しない。
-ios/Sources/Resources/Mfm/* linguist-generated whitespace=-blank-at-eol

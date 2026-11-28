@@ -110,6 +110,17 @@ final class PreviewChatClient: ChatClient {
             allMessages[0].content = "# MFMの表示\n**太字** <i>斜体</i> ~~取り消し~~ :smile: @you\n$[fg.color=ff0000 赤い文字] $[ruby 漢字 かんじ]\n$[spin.speed=2s 回転] $[jelly ぷるぷる]\n\\(x^2 + y^2 = 1\\)\n> 引用文\n[安全なリンク](https://example.com)"
             allMessages[1].content = "後ろの投稿も読めます。"
         }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-interactions") {
+            let target = serverURL + "/channels/55555555-5555-4555-8555-555555555555"
+            allMessages[0].content = "# 画像のぼかし\n$[blur :sakura:]\n# 画像リンク\n$[position.x=2 [:sakura:](\(target))]\n# ルビリンク\n$[ruby [漢字](\(target)) かんじ]"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-text-link") {
+            allMessages[0].content = "# 移動したリンク\n$[position.x=2 [a](https://ui.test.invalid/channels/55555555-5555-4555-8555-555555555555)]"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-centered-link") {
+            allMessages[0].content = "<center>[中央リンク](https://ui.test.invalid/channels/55555555-5555-4555-8555-555555555555)</center>"
+        }
+
         if ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
             // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。
             let encryptedID = "77777777-7777-4777-8777-777777777777"

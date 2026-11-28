@@ -14,6 +14,9 @@ settings:
     DEVELOPMENT_TEAM: F82XB5KFX2
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath.git
+    exactVersion: 1.7.3
   ZooCrypto:
     path: ZooCrypto
   WebRTC:
@@ -25,6 +28,7 @@ targets:
     platform: iOS
     sources: [Sources, Shared, WatchShared, CallActivityShared]
     dependencies:
+      - package: SwiftMath
       - package: WebRTC
       - package: ZooCrypto
       - target: ZooNotificationService

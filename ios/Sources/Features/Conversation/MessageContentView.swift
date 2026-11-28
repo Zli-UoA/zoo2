@@ -46,6 +46,21 @@ final class MessageRenderCache {
 final class MessageRenderState {
     let id = UUID()
     @ObservationIgnored private var attachments: [String: AttachmentRenderState] = [:]
+    @ObservationIgnored private var mfmState: MfmNativeState?
+    @ObservationIgnored private var mfmScope = ""
+
+    func mfm(content: String, scope: String = "") -> MfmNativeState {
+        if let mfmState, mfmScope == scope, mfmState.document.source == content { return mfmState }
+        let state = MfmNativeState(content: content)
+        mfmState = state
+        mfmScope = scope
+        return state
+    }
+
+    func mfmIfNeeded(content: String, scope: String = "") -> MfmNativeState? {
+        guard MessageContent.requiresMfm(content) else { mfmState = nil; return nil }
+        return mfm(content: content, scope: scope)
+    }
 
     func attachment(_ attachment: MessageAttachment) -> AttachmentRenderState {
         if let state = attachments[attachment.id], state.attachment == attachment { return state }
@@ -80,8 +95,9 @@ struct MessageContentView: View {
     }
 
     var body: some View {
-        if MessageContent.requiresMfm(message.content) {
-            MfmMessageView(message: message, workspace: workspace, isVisible: isVisible)
+        if let mfm = renderState.mfmIfNeeded(content: message.content, scope: workspace.client.serverURL + "|" + workspace.user.id) {
+            MfmMessageView(message: message, workspace: workspace, isVisible: isVisible,
+                           state: mfm)
         } else {
             plainBody
         }
