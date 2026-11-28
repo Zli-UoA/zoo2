@@ -440,7 +440,8 @@ internal fun TimelineAvatar(
     val image = timelineIcon(url)
     val imageContent: @Composable () -> Unit = {
         Box(Modifier.size(size).clip(CircleShape).background(colors.background), contentAlignment = Alignment.Center) {
-            if (image == null) Text(author.take(1), Modifier.clearAndSetSemantics {}, color = colors.secondary, fontSize = 13.sp)
+            if (image == null) Text(author.take(1), Modifier.wrapContentSize(unbounded = true).clearAndSetSemantics {},
+                color = colors.secondary, fontSize = 13.sp, lineHeight = 16.sp, maxLines = 1)
             else Image(image, contentDescription = null, Modifier.matchParentSize().testTag("timeline-avatar"), contentScale = ContentScale.Crop)
         }
     }
