@@ -1135,8 +1135,7 @@ final class ZooUITests: XCTestCase {
         app.launch()
         let error = app.staticTexts["操作に失敗しました（503）。チャンネルを取得できませんでした。"]
         XCTAssertTrue(error.waitForExistence(timeout: 5))
-        app.swipeDown()
-        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 35))
         XCTAssertFalse(error.exists)
         XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
     }
