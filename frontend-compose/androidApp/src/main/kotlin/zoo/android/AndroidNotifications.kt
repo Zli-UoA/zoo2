@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.net.Uri
 import android.graphics.Bitmap
+import android.os.Bundle
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.sync.Semaphore
@@ -373,7 +374,6 @@ internal class AndroidNotifications(
         observer.cancel()
         pictureAccessObserver.cancel()
         pictureVersions.clear()
-        postedPictures.clear()
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
         pictureJobs.values.forEach { it.cancel() }
@@ -394,8 +394,11 @@ internal class AndroidNotifications(
                     dismiss(id, refreshSummary = false)
                     continue
                 }
-                val detached = Notification.Builder.recoverBuilder(activity, notification)
-                    .setActions().setDeleteIntent(null).setGroup(null)
+                val hasPicture = id in postedPictures ||
+                    notification.extras.getString(Notification.EXTRA_TEMPLATE) == Notification.BigPictureStyle::class.java.name
+                val builder = if (hasPicture) notificationWithoutPicture(notification)
+                    else Notification.Builder.recoverBuilder(activity, notification)
+                val detached = builder.setActions().setDeleteIntent(null).setGroup(null)
                     .setContentIntent(PendingIntent.getActivity(activity, 0, destination,
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                     .setOnlyAlertOnce(true).build().apply {
@@ -408,8 +411,27 @@ internal class AndroidNotifications(
             shown.clear()
         }
         else shown.keys.toList().forEach { dismiss(it, refreshSummary = false) }
+        postedPictures.clear()
         updateSummaries()
         if (active === this) active = null
+    }
+
+    private fun notificationWithoutPicture(notification: Notification): Notification.Builder {
+        val extras = notification.extras
+        val body = extras.getCharSequence(Notification.EXTRA_TEXT)
+        return Notification.Builder(activity, notification.channelId)
+            .setSmallIcon(notification.smallIcon)
+            .setLargeIcon(notification.getLargeIcon())
+            .setContentTitle(extras.getCharSequence(Notification.EXTRA_TITLE))
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setWhen(notification.`when`)
+            .setCategory(notification.category)
+            .setVisibility(notification.visibility)
+            .setAutoCancel(true)
+            .setExtras(Bundle().apply {
+                extras.getString(PUSH_DECRYPTED_BODY)?.let { putString(PUSH_DECRYPTED_BODY, it) }
+            })
     }
 
     fun dispatch(intent: Intent, finished: () -> Unit) {
