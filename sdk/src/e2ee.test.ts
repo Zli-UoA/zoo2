@@ -10,6 +10,30 @@ import { FakeZoo, HumanDevice } from "./testing/fakeZoo.ts";
 const crypto = await loadZooCrypto();
 const storageKey = new Uint8Array(32).fill(3);
 
+test("配布先の不正な次ページ位置で鍵やメッセージを送らない", async () => {
+  for (const cursor of [1, true, {}, []]) {
+    const zoo = new FakeZoo(randomUUID());
+    const app = new ZooApp({
+      baseUrl: "https://zoo.example",
+      credentials: { access_token: "a", refresh_token: "r" },
+      fetch: async (input, init) => {
+        const response = await zoo.fetch(input, init);
+        if (!String(input).includes("/recipients")) return response;
+        return Response.json({ ...(await response.json()), next_after: cursor });
+      },
+    });
+    const bot = await openBot(zoo, app);
+    try {
+      const channel = zoo.channel([zoo.botUserId]);
+      await assert.rejects(bot.sendMessage(channel, "送らない本文"), /配布先の次ページの位置が不正です/);
+      assert.equal(zoo.messages.length, 0);
+      assert.equal(zoo.toDevice.length, 0);
+    } finally {
+      bot.close();
+    }
+  }
+});
+
 function setup(scopes?: string[]) {
   const zoo = new FakeZoo(randomUUID(), scopes);
   const app = new ZooApp({ baseUrl: "https://zoo.example", credentials: { access_token: "a", refresh_token: "r" }, fetch: zoo.fetch });

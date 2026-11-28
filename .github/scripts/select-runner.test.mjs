@@ -220,6 +220,7 @@ const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", 
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve", "gate"], "pr-review-relay.yaml": ["relay"], "select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"],
   "ci-desktop-tauri.yaml": ["check"],
+  "ci-frontend.yaml": ["browser-test"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
@@ -368,7 +369,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = (file === 'ci-frontend.yaml' && ['check', 'build', 'browser-test'].includes(id)) ||
+      const large = (file === 'ci-frontend.yaml' && ['check', 'build'].includes(id)) ||
         (file === 'ci-backend.yaml' && id === 'check');
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
@@ -506,4 +507,3 @@ test('the selector needs no permissions, so reusable-workflow callers need no ch
   assert.match(script, /authorization: `Bearer \$\{process\.env\.ACTIONS_READ_TOKEN\}`/);
   assert.doesNotMatch(script, /getOctokit\(/);
 });
-

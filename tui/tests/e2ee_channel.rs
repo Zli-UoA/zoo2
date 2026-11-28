@@ -48,6 +48,7 @@ struct UserKeys {
 #[derive(Default)]
 struct State {
     epoch: u64,
+    recipient_cursor: Value,
     members: BTreeSet<String>,
     users: BTreeMap<String, UserKeys>,
     /// `(ピンを置いた人, 相手)` → ピン。
@@ -153,7 +154,7 @@ impl State {
             "user_signing_keys": { caller: self.users[caller].upload["user_signing_key"] },
             "signatures": signatures,
             "tofu_pins": tofu_pins,
-            "next_after": null,
+            "next_after": self.recipient_cursor,
         })
     }
 }
@@ -468,6 +469,23 @@ async fn setup() -> (MockServer, Backend, Member, Member) {
         state.members = BTreeSet::from([ALICE.to_owned(), BOB.to_owned()]);
     }
     (server, backend, alice, bob)
+}
+
+#[tokio::test]
+async fn rejects_invalid_recipient_cursors() {
+    let (_server, backend, alice, _bob) = setup().await;
+    for cursor in [json!(1), json!(true), json!({}), json!([])] {
+        backend.0.lock().unwrap().recipient_cursor = cursor;
+        let error = send::fetch_recipients(&alice.api, CHANNEL, None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("配布先の次ページの位置が不正です")
+        );
+        assert!(backend.0.lock().unwrap().requests.is_empty());
+    }
 }
 
 fn message(body: &str) -> NewMessage {

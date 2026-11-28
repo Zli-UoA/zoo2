@@ -129,7 +129,37 @@ fn deliver(from: &mut User, to: &User, out: &VerificationOutgoing) -> Verificati
         .unwrap();
     assert_eq!(message.sender_user_id, from.id);
     assert_eq!(message.event_type, out.event_type);
-    message
+    // iOS の暗号ストアへの保存を挟んでも、検証済みの端末と内容を保持する。
+    let expected_sender = message.sender_user_id.clone();
+    let expected_device = message.sender_device.clone();
+    let expected_type = message.event_type.clone();
+    let expected_content: serde_json::Value = serde_json::from_str(&message.content).unwrap();
+    let stored = verification_message_to_json(message).unwrap();
+    let restored = verification_message_from_json(stored).unwrap();
+    assert_eq!(restored.sender_user_id, expected_sender);
+    assert_eq!(restored.event_type, expected_type);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&restored.content).unwrap(),
+        expected_content
+    );
+    assert_eq!(restored.sender_device.user_id(), expected_device.user_id());
+    assert_eq!(
+        restored.sender_device.device_id(),
+        expected_device.device_id()
+    );
+    assert_eq!(
+        restored.sender_device.algorithms(),
+        expected_device.algorithms()
+    );
+    assert_eq!(
+        restored.sender_device.curve25519_key(),
+        expected_device.curve25519_key()
+    );
+    assert_eq!(
+        restored.sender_device.ed25519_key(),
+        expected_device.ed25519_key()
+    );
+    restored
 }
 
 fn single(out: Vec<VerificationOutgoing>, event_type: &str) -> VerificationOutgoing {

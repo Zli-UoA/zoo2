@@ -498,7 +498,7 @@ jobs:
 
   browser-test:
     if: >-
-      !cancelled() && needs.runner.result == 'success' && needs.crypto-wasm.result == 'success' &&
+      !cancelled() && needs.crypto-wasm.result == 'success' &&
       (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
       (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.browser ||
       fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.vrt ||
@@ -509,9 +509,9 @@ jobs:
       fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.layout ||
       fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['frontend-selection'] ||
       fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.catalog)
-    needs: [runner, crypto-wasm, test-selection]
-    # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
+    needs: [crypto-wasm, test-selection]
+    # heavyではFirefoxの保存処理が遅延するため、時間制限を維持してHostedで検査する。
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./frontend
