@@ -185,6 +185,12 @@ describe("MfmContent", () => {
     expect(html).toContain(expected);
     expect(html).not.toContain("$[");
   });
+  it("renders clickable display text without a button when requested", () => {
+    const html = render("$[clickable.ev=hello click me]", { clickable: "display" });
+    expect(html).toContain("click me");
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("mfm-clickable");
+  });
   it("bounds cumulative enlargement, transforms and borders", () => {
     expect(render("$[x4 $[x4 hi]]")).toContain("font-size:2em");
     expect(render("$[scale.x=999,y=-999 hi]")).toContain("scale(5, -5)");

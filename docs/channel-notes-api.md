@@ -36,4 +36,4 @@ API のノート作成・更新・削除・復元・並べ替えは、順序や�
 
 削除済み一覧は `(deleted_at, id)` の昇順で、1 ページの件数を SQL で制限する。各項目は `id, channel_id, title, position, version, created_user_id, created_at, updated_at, deleted_at` の概要で、本文 (`content`) は含まない。本文は `GET /api/channels/{channel_id}/notes/deleted/{note_id}` で取得する。この項目 API は参加者のみ利用でき、削除から 24 時間以内のノートだけを返す。有効なノート、削除から 24 時間を過ぎたノート、存在しないノートはすべて `404 Not Found` になる。クエリーパラメーター `limit`（1〜200、既定 50）と `after`（前ページ最後の項目の `deleted_at` と `id` を空白区切りにした値）で次ページを取得できる。各項目の `deleted_at` は UTC の `YYYY-MM-DDTHH:MM:SS.mmm`（23 文字・ミリ秒 3 桁固定）で返し、カーソルも同じ形式に限る。この形式に合わない `deleted_at`（ミリ秒欠落・実在しない日時など）は SQL の実行前に `400 Bad Request` として拒否する（キャスト失敗の 500 にはしない）。`after` の `id` 部分は有効一覧と同じく、区切りの空白があれば空文字を許す。期限（24 時間）とチャンネルの条件は全ページで維持される。
 
-メンション通知とクライアント画面は別の変更で追加する。
+メンション通知は別の変更で追加する。Web 版の画面仕様は [channel-notes-web.md](channel-notes-web.md) を参照する。

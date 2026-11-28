@@ -12,6 +12,6 @@ export const Route = createFileRoute("/_shell/channels/$channelId")({
 
 function ChannelRoute() {
   const { channelId } = Route.useParams();
-  const { message } = Route.useSearch();
-  return <ChannelScreen channelId={channelId} targetMessageId={message} />;
+  const { message, thread } = Route.useSearch();
+  return <ChannelScreen channelId={channelId} targetMessageId={message} targetThreadId={thread} />;
 }

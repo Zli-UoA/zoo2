@@ -30,6 +30,7 @@ export function useMessageReadState(
   messages: FeedMessage[],
   pending: boolean,
   writePending = false,
+  isActive = true,
 ) {
   const { t } = useTranslation();
   const enabled = !!channelId && !!userId;
@@ -79,6 +80,7 @@ export function useMessageReadState(
       : null;
   const markRead = useCallback(() => {
     if (
+      !isActive ||
       !client ||
       pending ||
       writePending ||
@@ -108,7 +110,7 @@ export function useMessageReadState(
       .finally(() => {
         inFlight.current = false;
       });
-  }, [client, path, messages, pending, writePending, lastRead, t, savedVersion]);
+  }, [client, isActive, path, messages, pending, writePending, lastRead, t, savedVersion]);
   return {
     firstUnreadId,
     lastRead,

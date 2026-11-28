@@ -129,11 +129,14 @@ export function MessagePane({
   membershipEpoch,
   channelName,
   targetMessageId,
+  isActive = true,
 }: {
   channelId: string;
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** ノートなど別の表示中は false。既読の書き込みを止める。 */
+  isActive?: boolean;
   /** 投稿権限がない（`posting_policy=managers` で管理者・作成者ではない）。閲覧はでき、入力欄だけを理由付きで止める。 */
   postingForbidden?: boolean;
   /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
@@ -1093,6 +1096,7 @@ export function MessagePane({
               isWritePending={isWritePending}
               isLoading={messagesQuery.isLoading}
               isError={messagesQuery.isError}
+              isActive={isActive}
               currentUserId={readOnly ? null : currentUserId}
               viewerId={isMember ? currentUserId : null}
               canModerate={canModerate}

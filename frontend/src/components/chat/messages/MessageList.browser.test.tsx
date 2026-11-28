@@ -381,3 +381,77 @@ it("shows the boundary to encrypted messages and warns only about plaintext rows
   await waitFor(() => expect(screen.queryByText("暗号化されていません")).toBeNull());
   expect(screen.queryByRole("separator", { name: "ここから暗号化されています" })).toBeNull();
 });
+
+it("does not write read state while the channel notes view is active", async () => {
+  await startMockServer();
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  let readStateGets = 0;
+  const readStatePosts: unknown[] = [];
+  mockServer.use(
+    http.get("*/api/channels/:channelId/read-state", () => {
+      readStateGets += 1;
+      return HttpResponse.json({ last_read_at: null });
+    }),
+    http.post("*/api/channels/:channelId/read-state", async ({ request }) => {
+      readStatePosts.push(await request.json());
+      return HttpResponse.json({
+        data: { last_read_at: "2026-01-02T00:00:01.000" },
+        txid: null,
+      });
+    }),
+  );
+  const noop = () => {};
+  const messages: FeedMessage[] = [
+    {
+      id: "message-1",
+      user_id: "other",
+      display_name: "Alice",
+      parent_id: null,
+      created_at: "2026-01-02 00:00:00.000",
+      content: "New message",
+    },
+  ];
+  const list = (isActive: boolean) => (
+    <LocaleProvider>
+      <div className="flex h-[400px] w-[360px] flex-col">
+        <MessageList
+          channelId="channel-1"
+          messages={messages}
+          isActive={isActive}
+          isLoading={false}
+          isError={false}
+          currentUserId="me"
+          editingId={null}
+          editingText=""
+          onEditingTextChange={noop}
+          onStartEdit={noop}
+          onCancelEdit={noop}
+          onSaveEdit={noop}
+          onRequestDelete={noop}
+          reactions={new Map()}
+          kitchenCatalog={null}
+          canReact={false}
+          onReaction={noop}
+          onPickReaction={noop}
+          onOpenThread={noop}
+        />
+      </div>
+    </LocaleProvider>
+  );
+
+  const view = render(list(false));
+  await waitFor(() => expect(readStateGets).toBe(1));
+  const scroller = screen.getByTestId("message-scroll");
+  fireEvent.scroll(scroller);
+  window.dispatchEvent(new Event("focus"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  await nextFrame();
+  expect(readStatePosts).toHaveLength(0);
+
+  view.rerender(list(true));
+  fireEvent.scroll(scroller);
+  window.dispatchEvent(new Event("focus"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  await waitFor(() => expect(readStatePosts).toHaveLength(1), { timeout: 3_000 });
+});
