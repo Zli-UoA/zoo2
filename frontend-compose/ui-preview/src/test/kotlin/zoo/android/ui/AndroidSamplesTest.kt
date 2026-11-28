@@ -971,6 +971,23 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun progressDoesNotMoveTheFollowingControl() {
+        var active by mutableStateOf(false)
+        ui.setContent {
+            androidx.compose.foundation.layout.Column {
+                ProgressStrip(active, Color.Black)
+                Text("次の操作")
+            }
+        }
+        val control = ui.onNodeWithText("次の操作")
+        val initial = control.fetchSemanticsNode().boundsInRoot
+        for (value in listOf(true, false)) {
+            ui.runOnIdle { active = value }
+            check(control.fetchSemanticsNode().boundsInRoot == initial)
+        }
+    }
+
+    @Test
     fun imageDescriptionStaysWithItsAttachment() {
         var description by mutableStateOf("")
         var sensitive by mutableStateOf(false)

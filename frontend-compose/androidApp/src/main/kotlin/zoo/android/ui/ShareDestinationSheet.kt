@@ -56,7 +56,7 @@ internal fun ShareDestinationSheet(
                     }
                 }
                 error?.let { Text(it, color = colors.unread, fontSize = 14.sp) }
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = colors.foreground)
+                ProgressStrip(busy, colors.foreground)
             }
             if ("ホーム".contains(query.trim(), true)) item("home") {
                 ShareTarget("ホーム", UiIcon.Home, colors, busy) { select(null) }

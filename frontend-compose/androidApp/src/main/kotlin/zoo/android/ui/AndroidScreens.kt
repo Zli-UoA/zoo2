@@ -482,8 +482,7 @@ private fun RenderAndroidScreen(
                 if (screen.loadFailed && screen.online) FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
                     dispatch(AndroidUiAction.RetryPost)
                 }
-                if (screen.loading && screen.online && !screen.loadFailed)
-                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = colors.accent)
+                ProgressStrip(screen.loading && screen.online && !screen.loadFailed, colors.accent)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {
@@ -1334,5 +1333,14 @@ private fun EntryMarks(marks: List<String>, colors: AndroidColors) {
                 Text(mark, color = colors.secondary, fontSize = 12.sp)
             }
         }
+    }
+}
+
+
+/** Retain the same boundary while a refresh starts or finishes. */
+@Composable
+internal fun ProgressStrip(active: Boolean, color: androidx.compose.ui.graphics.Color) {
+    Box(Modifier.fillMaxWidth().height(4.dp)) {
+        if (active) LinearProgressIndicator(Modifier.fillMaxSize(), color = color)
     }
 }
