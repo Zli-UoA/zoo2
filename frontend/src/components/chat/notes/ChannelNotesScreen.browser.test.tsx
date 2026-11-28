@@ -618,6 +618,64 @@ it("keeps the editor data locked while a save is in flight", async () => {
   expect(await screen.findByText("Draft body")).toBeVisible();
 });
 
+it("keeps a saving editor locked when write access drops and returns before the request completes", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let patchStarted = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0)])),
+    http.get("*/api/channels/:channelId/notes/:noteId", () =>
+      envelope(noteBody("note-0", "Base body", { title: "Note 0" })),
+    ),
+    http.patch("*/api/channels/:channelId/notes/:noteId", async ({ request }) => {
+      const body = (await request.json()) as {
+        title: string;
+        content: string;
+        version: number;
+      };
+      patchStarted = true;
+      await pending;
+      return envelope(noteBody("note-0", body.content, { title: body.title, version: 2 }));
+    }),
+  );
+
+  const view = renderNotes();
+  await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+  await userEvent.click(await screen.findByRole("button", { name: "編集" }));
+  const title = screen.getByRole("textbox", { name: "タイトル" }) as HTMLInputElement;
+  const content = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
+  await userEvent.clear(content);
+  await userEvent.type(content, "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(patchStarted).toBe(true));
+
+  updateProps(view, { canWrite: false });
+  expect(
+    await screen.findByText("書き込み権限がなくなりました。下書きはこの画面に残っています。"),
+  ).toBeVisible();
+  expect(content.readOnly).toBe(true);
+
+  updateProps(view, { canWrite: true });
+  await waitFor(() =>
+    expect(
+      screen.queryByText("書き込み権限がなくなりました。下書きはこの画面に残っています。"),
+    ).toBeNull(),
+  );
+  expect(title.readOnly).toBe(true);
+  expect(content.readOnly).toBe(true);
+  expect(screen.getByRole("button", { name: "保存中…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "キャンセル" })).toBeDisabled();
+
+  await userEvent.type(content, " ignored");
+  expect(content).toHaveValue("Draft body");
+
+  release();
+  expect(await screen.findByText("Draft body")).toBeVisible();
+  expect(screen.queryByRole("textbox", { name: "本文" })).toBeNull();
+});
+
 it("keeps a copyable draft when only write access is lost and clears it when read access is lost", async () => {
   mockServer.use(http.get("*/api/channels/:channelId/notes", () => envelope([])));
   const view = renderNotes();
@@ -1469,6 +1527,68 @@ it("validates the draft before overwriting the latest version", async () => {
   await waitFor(() => expect(patches).toHaveLength(2));
   expect(patches[1]).toEqual({ title: "Overwritten", content: "Draft body", version: 2 });
   expect(await screen.findByText("Draft body")).toBeVisible();
+});
+
+it("keeps saved content when a silent detail refresh started before the edit returns stale data", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let detailRequests = 0;
+  let staleDetailSettled = false;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => envelope([summary(0)])),
+    http.get("*/api/channels/:channelId/notes/:noteId", async () => {
+      detailRequests += 1;
+      if (detailRequests > 1) {
+        await pending;
+        staleDetailSettled = true;
+      }
+      return envelope(noteBody("note-0", "Version 1 body", { title: "Note 0" }));
+    }),
+    http.patch("*/api/channels/:channelId/notes/:noteId", async ({ request }) => {
+      const body = (await request.json()) as {
+        title: string;
+        content: string;
+        version: number;
+      };
+      return envelope(noteBody("note-0", body.content, { title: body.title, version: 2 }));
+    }),
+  );
+
+  const visibilityDesc = Object.getOwnPropertyDescriptor(document, "visibilityState");
+  try {
+    renderNotes();
+    await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+    expect(await screen.findByText("Version 1 body")).toBeVisible();
+    expect(detailRequests).toBe(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(detailRequests).toBe(2));
+
+    await userEvent.click(screen.getByRole("button", { name: "編集" }));
+    const content = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
+    await userEvent.clear(content);
+    await userEvent.type(content, "Version 2 body");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByText("Version 2 body")).toBeVisible();
+
+    release();
+    await waitFor(() => expect(staleDetailSettled).toBe(true));
+    await flushUpdates();
+    expect(screen.getByText("Version 2 body")).toBeVisible();
+    expect(screen.queryByText("Version 1 body")).toBeNull();
+  } finally {
+    release();
+    if (visibilityDesc) {
+      Object.defineProperty(document, "visibilityState", visibilityDesc);
+    } else {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    }
+  }
 });
 
 it("ignores a delayed deleted body after a successful restore", async () => {

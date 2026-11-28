@@ -652,7 +652,7 @@ export function ChannelNotesScreen({
     readLostRef.current = false;
     if (!canWrite) {
       setEditor((previous) =>
-        previous && isDirty(previous) ? { ...previous, saving: false, writeLost: true } : previous,
+        previous && isDirty(previous) ? { ...previous, writeLost: true } : previous,
       );
       // 並べ替えの準備中や競合後の再取得中でも、古い応答が閉じた画面を開き直さない
       // ように要求番号を進める。開いていた場合だけ案内を出す。
@@ -767,6 +767,9 @@ export function ChannelNotesScreen({
 
   const finishMutation = useCallback(
     (saved: ChannelNote, key: NoteNoticeSuffix = "saved") => {
+      // 保存前に始まった無通知の本文取得が、保存済みの本文・版を古い内容で上書きしないようにする。
+      detailRequest.current += 1;
+      detailController.current?.abort();
       setSelection({ kind: "active", id: saved.id });
       setDetail({ status: "ready", note: saved, deletedNote: null, error: null });
       setEditor(null);
