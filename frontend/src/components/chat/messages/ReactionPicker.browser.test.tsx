@@ -206,6 +206,33 @@ describe("ReactionPicker", () => {
     expect(labels()).toEqual(["🎉", "👍"]);
   });
 
+  it("keeps a wide recent emoji inside its own button", async () => {
+    await startMockServer();
+    const png = await createSolidPng(120, 20);
+    mockServer.use(
+      http.get(
+        "*/wide.png",
+        () => new HttpResponse(png, { headers: { "Content-Type": "image/png" } }),
+      ),
+      http.get("*/api/emojis", () =>
+        HttpResponse.json([
+          { name: "wide", url: "/wide.png", width: 120, height: 20, category: "" },
+        ]),
+      ),
+    );
+    localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify([":wide:", "🎉"]));
+    const { onSelect } = renderPicker();
+    const group = within(screen.getByRole("group", { name: "最近使った絵文字" }));
+    const wide = await group.findByRole("button", { name: ":wide:" });
+    const image = (await within(wide).findByRole("img")).getBoundingClientRect();
+    const button = wide.getBoundingClientRect();
+    expect(image.width).toBeGreaterThan(0);
+    expect(image.left).toBeGreaterThanOrEqual(button.left);
+    expect(image.right).toBeLessThanOrEqual(button.right);
+    await userEvent.click(group.getByRole("button", { name: "🎉" }));
+    expect(onSelect).toHaveBeenCalledWith("🎉");
+  });
+
   it("keeps Emoji Kitchen working and selects a combination", async () => {
     const { onSelect, onOpenChange } = renderPicker();
 

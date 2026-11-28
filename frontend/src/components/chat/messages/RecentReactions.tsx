@@ -54,7 +54,9 @@ export function RecentReactions({
             className="flex size-11 items-center justify-center rounded-lg outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
             onClick={() => onSelect(emoji)}
           >
-            <ReactionEmoji emoji={emoji} catalog={catalog ?? kitchen.catalog} size={26} />
+            <span className="flex max-w-full items-center justify-center overflow-hidden [&_img]:max-w-full!">
+              <ReactionEmoji emoji={emoji} catalog={catalog ?? kitchen.catalog} size={26} />
+            </span>
           </button>
         ))}
       </div>
