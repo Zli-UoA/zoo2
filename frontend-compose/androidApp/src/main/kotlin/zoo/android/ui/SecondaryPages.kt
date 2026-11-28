@@ -49,6 +49,7 @@ internal data class SelectionItem(
     val detail: String? = null,
     val isUserName: Boolean = false,
     val selected: Boolean? = null,
+    val unavailable: String? = null,
 )
 internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false)
 
@@ -75,7 +76,7 @@ internal fun DirectoryPage(
             items(results, key = { it.id }) { item ->
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                        .clickable(role = Role.Button) { select(item.id) },
+                        .clickable(enabled = item.unavailable == null, role = Role.Button) { select(item.id) },
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -85,7 +86,8 @@ internal fun DirectoryPage(
                         item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
                     }
                     val selected = item.selected
-                    if (selected == null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
+                    if (item.unavailable != null) Text(item.unavailable, color = colors.secondary, fontSize = 13.sp)
+                    else if (selected == null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                     else androidx.compose.material3.Checkbox(selected, onCheckedChange = null)
                 }
             }

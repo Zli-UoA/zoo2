@@ -542,9 +542,20 @@ internal fun ConnectedScreens(
         state.overlay == "thread-members" -> AndroidScreen.Directory("スレッドの参加者", state.query,
             state.threadDetails.array("participants").rows().filter { author(it).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = currentThread)
-        state.overlay == "add-member" -> AndroidScreen.Directory("メンバーを追加", state.query,
-            users.filter { u -> channelMembers.none { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = channelId)
+        state.overlay == "add-member" -> {
+            val existing = channelMembers.mapTo(mutableSetOf()) { it.text("user_id") }
+            val canInvite = channel != null && state.canEditMembers(channel)
+            AndroidScreen.Directory("メンバーを追加", state.query, users.filter {
+                author(it).contains(state.query, true) || it.text("user_name").contains(state.query, true)
+            }.map { user ->
+                val id = user.text("id")
+                SelectionItem(id, author(user), user.text("user_name"), isUserName = true, unavailable = when {
+                    id in existing -> "参加済み"
+                    !canInvite -> "招待権限なし"
+                    else -> null
+                })
+            }.sortedBy { it.unavailable != null }, scopeId = channelId)
+        }
         state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = channelId)

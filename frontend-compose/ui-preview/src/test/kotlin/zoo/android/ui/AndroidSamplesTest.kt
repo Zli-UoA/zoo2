@@ -356,7 +356,8 @@ class AndroidSamplesTest {
                 SelectionItem("yui", "ゆい", isUserName = true),
             )),
             "channel-add-member" to AndroidScreen.Directory("メンバーを追加", "", listOf(
-                SelectionItem("mizuki", "みずき", isUserName = true),
+                SelectionItem("mizuki", "みずき", "@mizuki", isUserName = true),
+                SelectionItem("yui", "ゆい", "@yui", isUserName = true, unavailable = "参加済み"),
             )),
             "settings-detail" to AndroidScreen.SettingsDetail("通知", settings.take(1)),
             "login" to AndroidScreen.SignIn(false),
