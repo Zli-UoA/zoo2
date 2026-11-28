@@ -863,6 +863,8 @@ class AndroidSamplesTest {
             return node.fetchSemanticsNode().boundsInRoot.top + layouts.single().firstBaseline
         }
         check(kotlin.math.abs(baseline("ゆい") - baseline("@yui@social.example")) <= 1f)
+        ui.onNode(hasText("ホーム") and isSelectable() and isSelected() and hasAnySibling(hasText("ローカル"))).assertIsDisplayed()
+        capture("home-timeline-tabs")
         ui.onNodeWithText("ローカル").performClick()
         ui.onNodeWithText("ソーシャル").performClick()
         for (authorName in listOf("はる", "ゆい")) {

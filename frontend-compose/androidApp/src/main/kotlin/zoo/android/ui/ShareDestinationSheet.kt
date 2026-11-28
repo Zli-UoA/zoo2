@@ -2,7 +2,6 @@ package zoo.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,17 +10,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,7 +51,7 @@ internal fun ShareDestinationSheet(
         LazyColumn(Modifier.fillMaxWidth().then(if (searchable) Modifier.fillMaxHeight() else Modifier)
             .imePadding().testTag("share-targets"), state = list, contentPadding = PaddingValues(bottom = 16.dp)) {
             item {
-                Column(Modifier.padding(horizontal = 20.dp)) {
+                Column(Modifier.padding(horizontal = 16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("共有先", Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.emphasis, fontSize = 22.sp)
                         UiIconButton(UiIcon.Close, "閉じる", colors.secondary, cancel, enabled = !busy, modifier = Modifier.size(36.dp))
@@ -77,40 +71,20 @@ internal fun ShareDestinationSheet(
             }
             if (searchable) stickyHeader(key = "search") {
                 Column(Modifier.fillMaxWidth().background(colors.background)) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp)
-                        .background(colors.inputSurface, RoundedCornerShape(12.dp)).heightIn(min = 44.dp)
-                        .padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        UiGlyph(UiIcon.Search, colors.secondary, 18.dp)
-                        BasicTextField(query, {
-                            query = it
-                            list.requestScrollToItem(1)
-                        }, Modifier.weight(1f).heightIn(min = 44.dp).testTag("share-search").semantics { contentDescription = "共有先を検索" }, singleLine = true,
-                            textStyle = TextStyle(color = colors.foreground, fontSize = 16.sp), cursorBrush = SolidColor(colors.foreground),
-                            decorationBox = { field -> Box(contentAlignment = Alignment.CenterStart) {
-                                if (query.isEmpty()) Text("共有先を検索", color = colors.secondary)
-                                field()
-                            } })
-                        if (query.isNotEmpty()) UiIconButton(UiIcon.Close, "検索をクリア", colors.secondary, {
-                            query = ""
-                            list.requestScrollToItem(1)
-                        }, iconSize = 16.dp, modifier = Modifier.size(32.dp))
-                    }
-                    if (hasBothTypes) Row(Modifier.selectableGroup().padding(horizontal = 20.dp),
+                    SearchInput(query, {
+                        query = it
+                        list.requestScrollToItem(1)
+                    }, "共有先を検索", colors, Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("share-search"))
+                    if (hasBothTypes) Row(Modifier.selectableGroup().padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         ShareScope.entries.forEach { option ->
-                            val selected = scope == option
-                            Box(Modifier.selectable(selected, role = Role.Tab) {
+                            ScopeTab(option.label, scope == option, colors) {
                                 selectedScope = option
                                 list.requestScrollToItem(1)
-                            }.heightIn(min = 40.dp), contentAlignment = Alignment.Center) {
-                                Text(option.label, Modifier.background(if (selected) colors.headerLight else colors.background, CircleShape)
-                                    .padding(horizontal = 12.dp, vertical = 3.dp), color = if (selected) colors.foreground else colors.secondary,
-                                    fontSize = 14.sp, fontWeight = if (selected) AndroidWeights.emphasis else androidx.compose.ui.text.font.FontWeight.Normal)
                             }
                         }
                     }
-                    error?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = colors.unread, fontSize = 14.sp) }
+                    error?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = colors.unread, fontSize = 14.sp) }
                     ProgressStrip(busy, colors.foreground)
                 }
             }
@@ -118,30 +92,25 @@ internal fun ShareDestinationSheet(
                 ShareTarget("ホーム", UiIcon.Home, colors, busy) { select(null) }
             }
             for (section in matches) {
-                item { Text(section.label, Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp), color = colors.secondary, fontSize = 13.sp) }
+                item { Text(section.label, Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp), color = colors.secondary, fontSize = 13.sp) }
                 items(section.channels, key = { "channel-" + it.id }) {
                     ShareTarget(it.title, if (it.direct) UiIcon.Person else UiIcon.Channels, colors, busy, it.handle) { select(it.id) }
                 }
             }
             if (term.isNotEmpty() && matches.isEmpty() && !showHome)
-                item { Text("共有先が見つかりません", Modifier.padding(horizontal = 20.dp, vertical = 12.dp), color = colors.secondary) }
+                item { Text("共有先が見つかりません", Modifier.padding(horizontal = 16.dp, vertical = 12.dp), color = colors.secondary) }
         }
     }
 }
 
 @Composable
 private fun ShareTarget(label: String, icon: UiIcon, colors: AndroidColors, busy: Boolean, handle: String? = null, click: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(enabled = !busy, role = Role.Button, onClickLabel = "下書きを開く", onClick = click)
-        .heightIn(min = 48.dp).padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Box(Modifier.size(32.dp).background(if (icon == UiIcon.Home) colors.headerLight else colors.inputSurface,
-            if (icon == UiIcon.Person) CircleShape else RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
-            UiGlyph(icon, colors.foreground, 17.dp)
-        }
-        Column(Modifier.weight(1f)) {
-            Text(label, color = colors.foreground, fontSize = 16.sp)
-            if (handle != null && handle != label) Text(handle, color = colors.secondary, fontSize = 13.sp)
-        }
-        UiGlyph(UiIcon.Next, colors.secondary, 16.dp)
-    }
+    LabeledRow(label, handle?.takeIf { it != label }, colors,
+        Modifier.clickable(enabled = !busy, role = Role.Button, onClickLabel = "下書きを開く", onClick = click),
+        leading = {
+            Box(Modifier.size(32.dp).background(if (icon == UiIcon.Home) colors.headerLight else colors.inputSurface,
+                if (icon == UiIcon.Person) CircleShape else RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
+                UiGlyph(icon, colors.foreground, 17.dp)
+            }
+        }) { UiGlyph(UiIcon.Next, colors.secondary, AndroidControlSize.inlineIcon) }
 }

@@ -77,6 +77,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
@@ -563,10 +564,9 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                 UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
                     { dispatch(AndroidUiAction.OpenSetting("people")) })
             }
-            if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
+            if (screen.timeline != null) Row(Modifier.fillMaxWidth().selectableGroup()) {
                 for ((id, title) in listOf("home" to "ホーム", "local" to "ローカル", "social" to "ソーシャル")) {
-                    TextAction(androidLabel("home.timelineLabels.$id", title), colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
-                        modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
+                    ScopeTab(androidLabel("home.timelineLabels.$id", title), id == screen.timeline, colors, Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
                 }
             }
         }
