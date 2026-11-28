@@ -24,7 +24,7 @@ internal sealed interface SettingsEntry {
     val title: String
 
     data class Destination(override val id: String, override val title: String, val value: String? = null) : SettingsEntry
-    data class Choice(override val id: String, override val title: String, val selected: Boolean) : SettingsEntry
+    data class Choice(override val id: String, override val title: String, val selected: Boolean, val description: String? = null) : SettingsEntry
     data class Information(override val id: String, override val title: String) : SettingsEntry
     data class Toggle(override val id: String, override val title: String, val enabled: Boolean) : SettingsEntry
 }
@@ -67,6 +67,8 @@ internal fun SettingsPage(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(entry.title, color = colors.foreground, fontSize = 16.sp)
+                            if (entry is SettingsEntry.Choice && entry.description != null)
+                                Text(entry.description, color = colors.secondary, fontSize = 13.sp)
                             if (entry is SettingsEntry.Destination && entry.value != null) {
                                 Text(entry.value, color = colors.secondary, fontSize = 13.sp)
                             }

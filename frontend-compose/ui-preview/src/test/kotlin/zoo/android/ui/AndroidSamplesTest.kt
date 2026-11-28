@@ -253,9 +253,9 @@ class AndroidSamplesTest {
                 SettingsEntry.Destination("archive", "アーカイブ"),
             )),
             SettingsGroup("通知", listOf(
-                SettingsEntry.Choice("notification:all", "すべての投稿", false),
-                SettingsEntry.Choice("notification:mentions", "メンション", true),
-                SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", false),
+                SettingsEntry.Choice("notification:all", "すべての投稿", false, "通常のチャンネル投稿も届きます"),
+                SettingsEntry.Choice("notification:mentions", "メンション", true, "自分への返信やリアクションも届きます"),
+                SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", false, "自分への明示的なメンションだけ届きます"),
             )),
         ))
         val gallery = galleryMap()

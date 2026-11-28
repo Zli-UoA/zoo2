@@ -1046,9 +1046,9 @@ internal class ConnectedScreenState(
         if (member && !archived) {
             val notificationEntries = notificationLevel?.let { level ->
                 listOf(
-                    SettingsEntry.Choice("notification:all", "すべての投稿", level == "all"),
-                    SettingsEntry.Choice("notification:mentions", "メンション", level == "mentions"),
-                    SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", level == "mute"),
+                    SettingsEntry.Choice("notification:all", "すべての投稿", level == "all", "通常のチャンネル投稿も届きます"),
+                    SettingsEntry.Choice("notification:mentions", "メンション", level == "mentions", "自分への返信やリアクションも届きます"),
+                    SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", level == "mute", "自分への明示的なメンションだけ届きます"),
                 )
             } ?: listOf(
                 SettingsEntry.Information(
