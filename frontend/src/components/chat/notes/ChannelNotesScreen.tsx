@@ -300,6 +300,11 @@ export function ChannelNotesScreen({
     reorderRequest.current += 1;
     reorderController.current?.abort();
     reorderController.current = null;
+    // 破棄した並べ替えの finally が、後から始まった並べ替えのロックを
+    // 消してしまわないよう、ロックはここで解放する。
+    reorderStartInFlight.current = false;
+    reorderSaveInFlight.current = false;
+    setReorderLoading(false);
     setReorder(null);
   }, []);
 
@@ -651,11 +656,9 @@ export function ChannelNotesScreen({
       );
       // 並べ替えの準備中や競合後の再取得中でも、古い応答が閉じた画面を開き直さない
       // ように要求番号を進める。開いていた場合だけ案内を出す。
-      reorderRequest.current += 1;
-      reorderController.current?.abort();
-      reorderController.current = null;
-      if (reorderRef.current) {
-        setReorder(null);
+      const wasOpen = reorderRef.current !== null;
+      closeReorder();
+      if (wasOpen) {
         setNotice({ tone: "error", key: "writePermissionLost" });
       }
     } else {
@@ -663,7 +666,7 @@ export function ChannelNotesScreen({
         previous?.writeLost ? { ...previous, writeLost: false, error: null } : previous,
       );
     }
-  }, [canRead, canWrite, resetSession]);
+  }, [canRead, canWrite, closeReorder, resetSession]);
 
   const confirmDiscard = useCallback((): boolean => {
     if (saveInFlight.current || editorRef.current?.saving) return false;
@@ -1209,7 +1212,7 @@ export function ChannelNotesScreen({
         setNotice({ tone: "error", key: "reorderLoadError" });
       }
     } finally {
-      if (isCurrent(epoch)) {
+      if (isCurrent(epoch) && op === reorderRequest.current) {
         reorderStartInFlight.current = false;
         setReorderLoading(false);
       }
@@ -1258,6 +1261,9 @@ export function ChannelNotesScreen({
     } catch (error) {
       if (!isCurrent(epoch)) return;
       if (apiStatus(error) === 409) {
+        // 競合後の再取得は、今も表示中の同じ並べ替えだけが行う。破棄済みの保存が
+        // 新しい並べ替えの取得を abort しないよう、取得の前に確認する。
+        if (!canApplyReorderReload(epoch, op)) return;
         // 競合後の再取得中に画面が閉じたり権限を失った場合は、結果を反映しない。
         try {
           const latest = await loadAllActivePages();
@@ -1286,7 +1292,7 @@ export function ChannelNotesScreen({
         );
       }
     } finally {
-      if (isCurrent(epoch)) reorderSaveInFlight.current = false;
+      if (isCurrent(epoch) && op === reorderRequest.current) reorderSaveInFlight.current = false;
     }
   }
 

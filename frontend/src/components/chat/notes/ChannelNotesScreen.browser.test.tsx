@@ -95,6 +95,30 @@ async function flushUpdates() {
   });
 }
 
+/** 指定したリクエストのモック応答がページへ届くまで待つ。 */
+function waitForMockedResponse(
+  method: string,
+  pathSuffix: string,
+): { promise: Promise<void>; dispose: () => void } {
+  let onResponse: (({ request }: { request: Request }) => void) | null = null;
+  const dispose = () => {
+    if (!onResponse) return;
+    mockServer.events.removeListener("response:mocked", onResponse);
+    onResponse = null;
+  };
+  const promise = new Promise<void>((resolve) => {
+    onResponse = ({ request }: { request: Request }) => {
+      if (request.method !== method || !new URL(request.url).pathname.endsWith(pathSuffix)) {
+        return;
+      }
+      dispose();
+      resolve();
+    };
+    mockServer.events.on("response:mocked", onResponse);
+  });
+  return { promise, dispose };
+}
+
 function renderNotes(
   overrides: Partial<ComponentProps<typeof ChannelNotesScreen>> = {},
 ): ReturnType<typeof render> & { props: ComponentProps<typeof ChannelNotesScreen> } {
@@ -486,6 +510,65 @@ it("offers saving as a new note when an edit 404 is confirmed as deleted", async
   await waitFor(() => expect(posts).toHaveLength(1));
   expect(posts[0]).toEqual({ title: "Note 0", content: "Draft body" });
   expect(await screen.findByText("Draft body")).toBeVisible();
+});
+
+it("resends a deleted edit as a new note after an unknown create", async () => {
+  let listRequests = 0;
+  let posts = 0;
+  const patches: Array<{ title: string; content: string; version: number }> = [];
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", () => {
+      listRequests += 1;
+      // 3 回目以降は作成結果不明の確認と、作成成功後の再取得。新規ノートはまだ無い。
+      return listRequests >= 3 ? envelope([]) : envelope([summary(0)]);
+    }),
+    http.get("*/api/channels/:channelId/notes/:noteId", () =>
+      envelope(noteBody("note-0", "Base body", { title: "Note 0" })),
+    ),
+    http.patch("*/api/channels/:channelId/notes/:noteId", async ({ request }) => {
+      patches.push((await request.json()) as { title: string; content: string; version: number });
+      return new HttpResponse(null, { status: 404 });
+    }),
+    http.get("*/api/channels/:channelId/notes/deleted/:noteId", () =>
+      envelope(deletedBody("note-0", "Base body")),
+    ),
+    http.post("*/api/channels/:channelId/notes", async ({ request }) => {
+      posts += 1;
+      const body = (await request.json()) as { title: string; content: string };
+      if (posts === 1) return new HttpResponse(null, { status: 503 });
+      return envelope(noteBody("created", body.content, { title: body.title }));
+    }),
+  );
+
+  renderNotes();
+  await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+  expect(await screen.findByText("Base body")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "編集" }));
+  const textarea = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
+  await userEvent.clear(textarea);
+  await userEvent.type(textarea, "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  expect(
+    await screen.findByText("編集中のノートは削除されました。新規ノートとして保存できます。"),
+  ).toBeVisible();
+  expect(patches).toEqual([{ title: "Note 0", content: "Draft body", version: 1 }]);
+
+  await userEvent.click(screen.getByRole("button", { name: "新規ノートとして保存" }));
+
+  expect(
+    await screen.findByText(
+      "作成結果を確認できませんでした。自動では再送しません。一覧を再取得しました。",
+    ),
+  ).toBeVisible();
+  const resend = screen.getByRole("button", { name: "重複を承知で再送" });
+  await waitFor(() => expect(resend).not.toBeDisabled());
+  expect(posts).toBe(1);
+  await userEvent.click(resend);
+
+  expect(await screen.findByText("Draft body")).toBeVisible();
+  expect(screen.queryByRole("textbox", { name: "本文" })).toBeNull();
+  expect(posts).toBe(2);
 });
 
 it("keeps the editor data locked while a save is in flight", async () => {
@@ -897,6 +980,82 @@ it("reloads the latest order after a reorder 409 without reapplying the old move
   expect(screen.getByText("3. Note 0")).toBeVisible();
 });
 
+it("keeps a new reorder loading when a discarded save returns 409", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  const items = [summary(0), summary(1), summary(2)];
+  let releaseSave!: () => void;
+  const pendingSave = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let releaseReorderLoad!: () => void;
+  const pendingReorderLoad = new Promise<void>((resolve) => {
+    releaseReorderLoad = resolve;
+  });
+  let listRequests = 0;
+  let patches = 0;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", async () => {
+      listRequests += 1;
+      // 3 回目は、破棄した並べ替えの後に始めた新しい並べ替えの全ページ取得。
+      if (listRequests === 3) {
+        await pendingReorderLoad;
+      }
+      return envelope(items);
+    }),
+    http.patch("*/api/channels/:channelId/notes/order", async () => {
+      patches += 1;
+      // 1 回目は破棄済みの並べ替えの保存。新しい並べ替えの取得中に 409 を返す。
+      if (patches === 1) {
+        await pendingSave;
+        return new HttpResponse(null, { status: 409 });
+      }
+      return envelope({ updated: true });
+    }),
+  );
+
+  renderNotes();
+  const reorderButton = await screen.findByRole("button", { name: "並べ替え" });
+  await waitFor(() => expect(reorderButton).not.toBeDisabled());
+  await userEvent.click(reorderButton);
+  await screen.findByText("1. Note 0");
+  await userEvent.click(screen.getByRole("button", { name: "下へ移動: Note 0" }));
+  await userEvent.click(screen.getByRole("button", { name: "順序を保存" }));
+  await waitFor(() => expect(patches).toBe(1));
+
+  await userEvent.click(screen.getByRole("button", { name: "新規ノート" }));
+  expect(confirm).toHaveBeenCalled();
+  expect(screen.queryByText("1. Note 0")).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", { name: "並べ替え" }));
+  await waitFor(() => expect(listRequests).toBe(3));
+
+  const patchResponded = waitForMockedResponse("PATCH", "/notes/order");
+  try {
+    releaseSave();
+    await patchResponded.promise;
+  } finally {
+    patchResponded.dispose();
+  }
+  await flushUpdates();
+  // 破棄した保存の 409 は再取得を始めず、新しい並べ替えの取得を中断しない。
+  expect(listRequests).toBe(3);
+  expect(
+    screen.queryByText(
+      "他の参加者が並び順を変更しました。最新の順序を表示しました。もう一度並べ替えて保存してください。",
+    ),
+  ).toBeNull();
+
+  releaseReorderLoad();
+  expect(await screen.findByText("1. Note 0")).toBeVisible();
+  expect(screen.queryByText("並べ替えの準備でノートを読み込めませんでした。")).toBeNull();
+  expect(listRequests).toBe(3);
+  // 破棄した保存の後始末が、新しい並べ替えの保存ロックを残さない。
+  await userEvent.click(screen.getByRole("button", { name: "下へ移動: Note 0" }));
+  await userEvent.click(screen.getByRole("button", { name: "順序を保存" }));
+  expect(await screen.findByText("並び順を保存しました。")).toBeVisible();
+  expect(patches).toBe(2);
+});
+
 it("keeps reorder when the new-note discard is cancelled and closes it on confirmation", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   mockServer.use(
@@ -1082,6 +1241,48 @@ it("checks the list with a preserved draft after an unknown create on a narrow s
   await userEvent.click(resend);
   expect(await screen.findByText("Draft body")).toBeVisible();
   expect(posts).toBe(2);
+});
+
+it("cancels a draft while an unknown-create list check is pending", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  let releaseCheck!: () => void;
+  const pendingCheck = new Promise<void>((resolve) => {
+    releaseCheck = resolve;
+  });
+  let listRequests = 0;
+  mockServer.use(
+    http.get("*/api/channels/:channelId/notes", async () => {
+      listRequests += 1;
+      // 2 回目は作成結果不明の後の一覧確認。下書きを閉じるまで保留する。
+      if (listRequests === 2) await pendingCheck;
+      return envelope([]);
+    }),
+    http.post("*/api/channels/:channelId/notes", () => new HttpResponse(null, { status: 503 })),
+  );
+
+  renderNotes();
+  const newNote = await screen.findByRole("button", { name: "新規ノート" });
+  await waitFor(() => expect(newNote).not.toBeDisabled());
+  await userEvent.click(newNote);
+  await userEvent.type(screen.getByRole("textbox", { name: "タイトル" }), "Runbook");
+  await userEvent.type(screen.getByRole("textbox", { name: "本文" }), "Draft body");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  const content = screen.getByRole("region", { name: "ノート本文" });
+  expect(
+    await within(content).findByText(
+      "作成結果を確認できませんでした。一覧でノートを確認しています…",
+    ),
+  ).toBeVisible();
+  await waitFor(() => expect(listRequests).toBe(2));
+  // 一覧の確認中でも保存のロックは解放され、確認ダイアログを経て閉じられる。
+  await userEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("textbox", { name: "タイトル" })).toBeNull();
+
+  releaseCheck();
+  await flushUpdates();
+  expect(screen.queryByRole("textbox", { name: "タイトル" })).toBeNull();
 });
 
 it("keeps resend disabled when the post-create list refresh fails and unlocks it on retry", async () => {
