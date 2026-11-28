@@ -12,7 +12,6 @@ import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -26,7 +25,20 @@ import zoo.*
 internal val navigationCacheLimits = listOf(0, 4, 8, 16)
 internal val attachmentCacheSizesMiB = listOf(0, 128, 256, 512, 1024, 2048)
 private const val DefaultAttachmentCacheMiB = 512
-private const val BytesPerMiB = 1024L * 1024
+internal const val BytesPerMiB = 1024L * 1024
+
+internal fun accountCacheDirectory(context: android.content.Context, base: String, user: String) =
+    context.cacheDir.resolve("accounts/${AttachmentImageDiskCache.digest("$base:$user")}")
+
+internal fun accountImageDirectory(context: android.content.Context, base: String, user: String) =
+    context.noBackupFilesDir.resolve("image-cache/${AttachmentImageDiskCache.digest("$base:$user")}/images")
+
+private fun imageCachePreference(account: String) = "attachment-cache-mib:$account"
+
+internal fun readImageCacheSize(context: android.content.Context, account: String): Int =
+    context.getSharedPreferences("preferences", android.content.Context.MODE_PRIVATE)
+        .getInt(imageCachePreference(account), DefaultAttachmentCacheMiB)
+        .takeIf { it in attachmentCacheSizesMiB } ?: DefaultAttachmentCacheMiB
 
 internal class AndroidPlatform(
     private val activity: Activity,
@@ -84,19 +96,18 @@ internal class AndroidPlatform(
     private val history = NavigationHistory(env.path)
     val navigationRevision: Long get() = history.revision
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
-    private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
+    private val cacheDirectory = accountCacheDirectory(activity, base, userId)
     private val cache = AccountCache(cacheDirectory)
-    private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${hash("$base:$userId")}"))
+    private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${cacheDirectory.name}"))
     private val mediaProxy = AndroidMediaProxy(activity, base)
-    private val attachmentCachePreference = "attachment-cache-mib:${cacheDirectory.name}"
-    var attachmentCacheSizeMiB by mutableIntStateOf(
-        prefs.getInt(attachmentCachePreference, DefaultAttachmentCacheMiB)
-            .takeIf { it in attachmentCacheSizesMiB } ?: DefaultAttachmentCacheMiB
-    )
+    private val attachmentCachePreference = imageCachePreference(cacheDirectory.name)
+    private val imageDirectory = accountImageDirectory(activity, base, userId)
+    var attachmentCacheSizeMiB by mutableIntStateOf(readImageCacheSize(activity, cacheDirectory.name))
         private set
     private val attachmentCacheSettingsLock = Mutex()
     private val images = AndroidImageCache(
-        cacheDirectory.resolve("images"), attachmentCacheBytes = attachmentCacheSizeMiB * BytesPerMiB,
+        imageDirectory, maxBytes = attachmentCacheSizeMiB * BytesPerMiB,
+        legacyDirectory = cacheDirectory.resolve("images"),
     )
 
     suspend fun enforceAttachmentCacheSize(): Boolean = attachmentCacheSettingsLock.withLock {
@@ -115,11 +126,6 @@ internal class AndroidPlatform(
         }
     }
     private val dictionaries = mutableMapOf<String, Row>()
-
-    private fun hash(value: String) =
-        MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
-            "%02x".format(it)
-        }
 
     override fun imageFrames(bytes: ByteArray): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> =
         kotlinx.coroutines.flow.flow {
@@ -145,6 +151,10 @@ internal class AndroidPlatform(
     fun close() {
         onNavigation = null
         images.close()
+    }
+
+    suspend fun clearImageCache() = withContext(NonCancellable + Dispatchers.IO) {
+        AndroidImageCache.clearAccount(imageDirectory)
     }
 
     private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {

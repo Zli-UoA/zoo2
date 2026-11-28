@@ -359,9 +359,16 @@ class ZooMessagingService : FirebaseMessagingService() {
             }
             try {
                 val proxy = AndroidMediaProxy(this@ZooMessagingService, base)
-                val directory = pushImageDirectory(this@ZooMessagingService, posted.binding)
-                // Push can run without a session; its disk cache has a separate owner.
-                AndroidImageCache(directory, maxBytes = 32L * 1024 * 1024, timeoutMillis = 3_000).use { images ->
+                val images = synchronized(PushBinding.lock) {
+                    if (!PushBinding(this@ZooMessagingService).matches(posted.binding, posted.user)) {
+                        return@runBlocking
+                    }
+                    val legacy = accountCacheDirectory(this@ZooMessagingService, base, posted.user)
+                    AndroidImageCache(accountImageDirectory(this@ZooMessagingService, base, posted.user),
+                        maxBytes = readImageCacheSize(this@ZooMessagingService, legacy.name) * BytesPerMiB,
+                        timeoutMillis = 3_000, legacyDirectory = legacy.resolve("images"))
+                }
+                images.use {
                     enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
                         val bytes = proxy.image(url, client, images, limit = 4 * 1024 * 1024, push = true)
                         withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
@@ -369,11 +376,6 @@ class ZooMessagingService : FirebaseMessagingService() {
                 }
             } finally {
                 client.close()
-                synchronized(PushBinding.lock) {
-                    if (!PushBinding(this@ZooMessagingService).matches(posted.binding, posted.user)) {
-                        pushImageDirectory(this@ZooMessagingService, posted.binding).deleteRecursively()
-                    }
-                }
             }
         }
     }

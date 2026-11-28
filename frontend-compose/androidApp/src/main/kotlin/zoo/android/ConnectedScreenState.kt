@@ -937,12 +937,10 @@ internal class ConnectedScreenState(
 
     private fun searchParentUnavailable(message: LinkedMessageState): Boolean =
         message.hasCiphertext || when (val parent = message.row) {
-            LinkedRow.Missing, LinkedRow.Failed -> true
+            LinkedRow.Missing -> true
             is LinkedRow.Found -> parent.row.present("deleted_at") || parent.row.present("ciphertext")
-            LinkedRow.Loading -> false
+            LinkedRow.Loading, LinkedRow.Failed -> false
         }
-
-    private var searchMediaRequest = 0
 
     private fun openSearchMedia(action: AndroidUiAction.OpenSearchMedia) {
         val search = app.globalSearch
@@ -953,24 +951,8 @@ internal class ConnectedScreenState(
         val parent = row.text("message_id").takeIf { it.isNotBlank() } ?: return
         val media = currentSearchChannel(id)?.let { searchImage(row, it) } ?: return
         if (media.sensitive && !action.revealedSensitive) return
-        val attachmentId = media.attachmentId ?: return
         val selection = TimelineMediaSelection(listOf(media), 0, ChannelLinkTarget(id, parent))
-        if (!canKeepMediaPreview(selection)) return
-        val requestId = ++searchMediaRequest
-        val navigation = platform.navigationRevision
-        request {
-            // Cached signed URLs can outlive deletion. Ask the attachment API to authorize this open.
-            try {
-                app.attachmentLinks.get(attachmentId, force = true)
-            } catch (failure: ApiException) {
-                if (failure.status !in setOf(403, 404, 410)) throw failure
-                return@request
-            }
-            if (requestId == searchMediaRequest && navigation == platform.navigationRevision &&
-                platform.env.visible && row in search.items && canKeepMediaPreview(selection)) {
-                mediaPreview = selection
-            }
-        }
+        if (canKeepMediaPreview(selection)) mediaPreview = selection
     }
 
     private fun searchImage(row: Row, channel: Row): TimelineMedia? =

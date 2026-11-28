@@ -193,19 +193,36 @@ internal class AndroidNotifications(
         }
         pendingPictures.remove(id)
         val job = app.scope.launch(start = CoroutineStart.LAZY) {
+            fun show(bitmap: Bitmap?) {
+                if (closed) return
+                pictures[id] = bitmap
+                while (pictures.size > 8) pictures.remove(pictures.keys.first())
+                shown.values.filter { previewImage(it)?.text("id") == id }.toList()
+                    .forEach { post(it, refreshSummary = false) }
+            }
+
+            suspend fun decode(bytes: ByteArray): Bitmap =
+                withContext(avatarDispatcher) { decodeOrientedBitmap(bytes, maxEdge = 720) }
+
+            val access = app.attachmentLinks
+            val version = access.accessVersion(id)
+            val key = "$id:original"
+            val cached = if (access.isDenied(id)) null else try {
+                app.platform.cachedAttachmentPreview(key)?.let { decode(it) }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+            if (cached != null && !access.isDenied(id) && access.accessVersion(id) == version) show(cached)
             val bitmap = try {
                 withTimeoutOrNull(8_000) {
-                    val bytes = app.image(app.attachmentLinks.get(id), signedAttachment = true)
-                    withContext(avatarDispatcher) { decodeOrientedBitmap(bytes, maxEdge = 720) }
+                    val url = access.get(id, force = true)
+                    if (cached != null && access.accessVersion(id) == version) cached
+                    else decode(app.image(url, signedAttachment = true, cacheKey = key))
                 }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { null }
+            val visible = bitmap ?: cached?.takeIf { !access.isDenied(id) && access.accessVersion(id) == version }
+            if (visible !== pictures[id] || id !in pictures) show(visible)
             pictureJobs.remove(id)
-            if (closed) return@launch
-            pictures[id] = bitmap
-            while (pictures.size > 8) pictures.remove(pictures.keys.first())
-            if (bitmap != null) shown.values.filter { previewImage(it)?.text("id") == id }.toList()
-                .forEach { post(it, refreshSummary = false) }
             pendingPictures.firstOrNull()?.let(::loadPicture)
         }
         pictureJobs[id] = job

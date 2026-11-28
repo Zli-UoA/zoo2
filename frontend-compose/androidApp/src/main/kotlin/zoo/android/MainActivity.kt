@@ -566,7 +566,12 @@ private class RunningSession(
     suspend fun logout() {
         notifications.close()
         try { push.logout() } finally {
-            try { auth.forget() } finally { close(preserveNotifications = false) }
+            try {
+                platform.clearImageCache()
+                auth.forget()
+            } finally {
+                close(preserveNotifications = false)
+            }
         }
     }
 
