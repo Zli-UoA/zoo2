@@ -104,6 +104,9 @@ internal fun ConnectedScreens(
         }
     }
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
+    val initialMessageSyncReady = messageTable?.initialSyncReady?.collectAsState()?.value == true
+    val messageSyncFailed = messageTable?.error?.collectAsState()?.value != null
+    val initialMessagePageFailed = messageTable?.initialPageFailed?.collectAsState()?.value == true
     LaunchedEffect(messageTable) {
         messageTable?.replicatedRows?.collect(state::reconcileOutgoing)
     }
@@ -277,6 +280,20 @@ internal fun ConnectedScreens(
             !session.channelReadPositionsChecked else !mainPageReady)
     val unreadPositionPending = !unreadPositioned && (awaitingInitialRead ||
         (env.online && currentThread == null && focusMessage == null && needsUnreadHistory))
+    val canLoadUnreadHistory = channel != null && currentThread == null && env.online && env.visible &&
+        focusMessage == null && positionForHistory?.hasUnread == true
+    val waitingForTarget = focusMessage != null && rows.none { it.text("id") == focusMessage }
+    val loadingDetail = when {
+        !env.online || (mainPageReady && !unreadPositionPending && !waitingForTarget) -> null
+        messageSyncFailed -> session.t("threads.loadingDetails.syncError")
+        !initialMessageSyncReady -> session.t("threads.loadingDetails.sync")
+        initialMessagePageFailed -> session.t("threads.loadingDetails.pageRetry")
+        !mainPageReady -> session.t("threads.loadingDetails.messages")
+        waitingForTarget -> session.t("threads.loadingDetails.position")
+        awaitingInitialRead -> session.t("threads.loadingDetails.readPosition")
+        needsUnreadHistory && canLoadUnreadHistory -> session.t("threads.loadingDetails.unread")
+        else -> session.t("threads.loadingDetails.position")
+    }
     val unreadId = firstUnreadInWindow.takeUnless {
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
@@ -630,6 +647,7 @@ internal fun ConnectedScreens(
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || mainPageReady,
+            loadingDetail = loadingDetail,
             unreadPositionPending = unreadPositionPending,
             unreadHistoryIncomplete = unreadHistoryIncomplete,
             onUnreadPositioned = onUnreadPositioned.takeIf { env.online && currentReadPosition != null && !unreadPositioned },
@@ -638,7 +656,8 @@ internal fun ConnectedScreens(
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
-            "channel:$channelId", session.t("common.loading"), env.online)
+            "channel:$channelId", session.t("common.loading"), env.online,
+            loadingDetail = session.t("threads.loadingDetails.channel"))
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val typingEnabled = env.visible && env.focused && canPost && (screen is AndroidScreen.Conversation ||
@@ -656,10 +675,9 @@ internal fun ConnectedScreens(
         screen is AndroidScreen.Thread -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
         else -> screen
     }
-    val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
-        focusMessage == null && positionForHistory?.hasUnread == true
-    LaunchedEffect(messageTable, generation, positionForHistory, canLoadUnreadHistory) {
-        if (!canLoadUnreadHistory || messageTable == null) return@LaunchedEffect
+    val loadUnreadOnConversation = screen is AndroidScreen.Conversation && canLoadUnreadHistory
+    LaunchedEffect(messageTable, generation, positionForHistory, loadUnreadOnConversation) {
+        if (!loadUnreadOnConversation || messageTable == null) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
             val page = messageTable.pageStates.first { states ->
                 states[PageScope.Main]?.let { it.loaded && !it.loading } == true

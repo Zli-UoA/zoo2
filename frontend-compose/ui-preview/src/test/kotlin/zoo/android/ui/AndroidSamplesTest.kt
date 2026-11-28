@@ -1379,6 +1379,41 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun channelLoadingDetailAppearsAfterFiveSecondsAndFollowsTheCurrentWait() {
+        val starting = "メッセージの同期開始を待っています"
+        val retrieving = "最初のメッセージ一覧を取得しています"
+        val opening = "チャンネル情報を読み込んでいます"
+        val waiting = AndroidScreen.Conversation("dev", "開発", "", emptyList(), InputState(),
+            historyReady = false, unreadPositionPending = true, loadingDetail = starting)
+        var screen by mutableStateOf<AndroidScreen>(
+            AndroidScreen.OpeningConversation("channel:dev", "開発", online = true, loadingDetail = opening),
+        )
+        ui.mainClock.autoAdvance = false
+        try {
+            ui.setContent { AndroidScreens(screen, false, true, {}) { _, _ -> } }
+            ui.mainClock.advanceTimeBy(3_800)
+            ui.onNodeWithText(opening).assertDoesNotExist()
+            ui.runOnIdle { screen = waiting }
+            ui.mainClock.advanceTimeBy(1_000)
+            ui.onNodeWithText(starting).assertDoesNotExist()
+            ui.mainClock.advanceTimeBy(400)
+            ui.onNodeWithText(starting).assertIsDisplayed()
+
+            ui.runOnIdle { screen = waiting.copy(loadingDetail = retrieving) }
+            ui.mainClock.advanceTimeByFrame()
+            ui.onNodeWithText(starting).assertDoesNotExist()
+            ui.onNodeWithText(retrieving).assertIsDisplayed()
+
+            ui.runOnIdle { screen = waiting.copy(historyReady = true, unreadPositionPending = false, loadingDetail = null) }
+            ui.mainClock.advanceTimeByFrame()
+            ui.onNodeWithText(retrieving).assertDoesNotExist()
+            ui.onNodeWithText(starting).assertDoesNotExist()
+        } finally {
+            ui.mainClock.autoAdvance = true
+        }
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "ja-rJP-w320dp-h640dp-xhdpi")
     fun narrowScreenWithEnlargedTypeOffersRecovery() {
         var retries = 0

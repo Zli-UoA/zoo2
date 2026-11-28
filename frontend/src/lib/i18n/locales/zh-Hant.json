@@ -354,6 +354,16 @@
     "downloadDestinationUnsupportedAskEveryTimeOff": "無法儲存到此位置。請在設定的「下載」中變更儲存位置，或開啟「每次儲存時確認」。"
   },
   "threads": {
+    "loadingDetails": {
+      "channel": "正在載入頻道資訊",
+      "sync": "正在等待訊息同步開始",
+      "messages": "正在載入第一頁訊息",
+      "readPosition": "正在檢查上次閱讀的位置",
+      "unread": "正在載入較早的未讀訊息",
+      "position": "正在還原對話中的位置",
+      "pageRetry": "無法載入第一頁訊息，正在重試…",
+      "syncError": "同步訊息時發生錯誤"
+    },
     "title": "子討論",
     "close": "關閉子討論",
     "open": "開啟子討論",

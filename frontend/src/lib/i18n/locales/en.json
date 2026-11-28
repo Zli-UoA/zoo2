@@ -354,6 +354,16 @@
     }
   },
   "threads": {
+    "loadingDetails": {
+      "channel": "Loading channel information",
+      "sync": "Waiting for message sync to start",
+      "messages": "Waiting for the first page of messages",
+      "readPosition": "Checking where you last read",
+      "unread": "Loading older unread messages",
+      "position": "Restoring your position in the conversation",
+      "pageRetry": "Could not load the first page of messages. Retrying…",
+      "syncError": "Message sync encountered an error"
+    },
     "title": "Thread",
     "close": "Close thread",
     "open": "Open thread",

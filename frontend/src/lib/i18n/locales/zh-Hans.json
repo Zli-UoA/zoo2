@@ -354,6 +354,16 @@
     "downloadDestinationUnsupportedAskEveryTimeOff": "无法保存到此位置。请在设置的“下载”中更改保存位置，或开启“每次保存时确认”。"
   },
   "threads": {
+    "loadingDetails": {
+      "channel": "正在加载频道信息",
+      "sync": "正在等待消息同步开始",
+      "messages": "正在加载第一页消息",
+      "readPosition": "正在检查上次阅读的位置",
+      "unread": "正在加载较早的未读消息",
+      "position": "正在恢复对话中的位置",
+      "pageRetry": "未能加载第一页消息，正在重试…",
+      "syncError": "同步消息时出错"
+    },
     "title": "子线程",
     "close": "关闭子线程",
     "open": "打开子线程",

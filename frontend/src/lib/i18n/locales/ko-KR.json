@@ -354,6 +354,16 @@
     "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"다운로드\"에서 저장 위치를 변경하거나, \"저장할 때마다 확인\"을 켜세요."
   },
   "threads": {
+    "loadingDetails": {
+      "channel": "채널 정보를 불러오는 중",
+      "sync": "메시지 동기화가 시작되기를 기다리는 중",
+      "messages": "메시지의 첫 페이지를 불러오는 중",
+      "readPosition": "마지막으로 읽은 위치를 확인하는 중",
+      "unread": "이전의 읽지 않은 메시지를 불러오는 중",
+      "position": "대화 위치를 복원하는 중",
+      "pageRetry": "메시지의 첫 페이지를 불러오지 못했습니다. 다시 시도하는 중…",
+      "syncError": "메시지 동기화 중 오류가 발생했습니다"
+    },
     "title": "스레드",
     "close": "스레드 닫기",
     "open": "스레드 열기",

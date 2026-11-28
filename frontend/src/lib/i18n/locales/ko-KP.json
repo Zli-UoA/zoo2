@@ -354,6 +354,16 @@
     "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"내려받기\"에서 저장 위치를 변경하거나, \"내려받을 때마다 확인\"을 켜십시오."
   },
   "threads": {
+    "loadingDetails": {
+      "channel": "통로 정보를 불러오는 중",
+      "sync": "메쎄지 동기화가 시작되기를 기다리는 중",
+      "messages": "메쎄지의 첫 페지를 불러오는 중",
+      "readPosition": "마지막으로 읽은 위치를 확인하는 중",
+      "unread": "이전의 읽지 않은 메쎄지를 불러오는 중",
+      "position": "대화 위치를 복원하는 중",
+      "pageRetry": "메쎄지의 첫 페지를 불러오지 못했습니다. 다시 시도하는 중…",
+      "syncError": "메쎄지 동기화 중 오류가 발생했습니다"
+    },
     "title": "타래",
     "close": "타래 닫기",
     "open": "타래 열기",

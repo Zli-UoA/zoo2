@@ -354,6 +354,16 @@
     "downloadDestinationUnsupportedAskEveryTimeOff": "呢個位置存唔到檔案。請喺設定嘅「下載」改儲存位置，或者開返「每次儲存都確認」。"
   },
   "threads": {
+    "loadingDetails": {
+      "channel": "載入緊頻道資料",
+      "sync": "等緊訊息開始同步",
+      "messages": "載入緊第一頁訊息",
+      "readPosition": "檢查緊上次睇到邊度",
+      "unread": "載入緊較早嘅未讀訊息",
+      "position": "還原緊對話入面嘅位置",
+      "pageRetry": "載入唔到第一頁訊息，重試緊…",
+      "syncError": "同步訊息嗰陣出現錯誤"
+    },
     "title": "子討論",
     "close": "閂咗個子討論",
     "open": "開子討論",
