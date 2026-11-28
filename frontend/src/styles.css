@@ -364,13 +364,16 @@ body {
 .mfm-blur:focus {
   filter: none;
 }
-.mfm-custom-emoji {
-  display: inline-block;
-  height: 1.5em;
-  width: auto;
-  max-width: 8em;
-  object-fit: contain;
-  vertical-align: middle;
+@layer components {
+  /* 呼び出し側のユーティリティ（幅・高さのカスタムプロパティ）が効くように components 層に置く。 */
+  .mfm-custom-emoji {
+    display: inline-block;
+    height: 1.5em;
+    width: auto;
+    max-width: 8em;
+    object-fit: contain;
+    vertical-align: middle;
+  }
 }
 .mfm-math-block {
   display: block;

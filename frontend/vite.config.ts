@@ -66,7 +66,7 @@ const config = defineConfig({
     rules: {
       "vite-plus/prefer-vite-plus-imports": "error",
       "shadcn/no-restyle": [
-        "warn",
+        "error",
         {
           allow: ["layout"],
           // 呼び出し側が責任を持つ範囲だけを component ごとに開ける。
@@ -124,13 +124,13 @@ const config = defineConfig({
         },
       ],
       "shadcn/no-raw-colors": [
-        "warn",
+        "error",
         { message: "Use a theme color from {{file}}: {{suggestions|a declared token}}." },
       ],
-      "shadcn/no-arbitrary-values": ["warn", { allow: ["layout"] }],
-      "shadcn/no-inline-styles": "warn",
-      "shadcn/no-unknown-classes": ["warn", { allow: ["mfm-math", "mfm-search", "toaster"] }],
-      "shadcn/require-static-classes": "warn",
+      "shadcn/no-arbitrary-values": ["error", { allow: ["layout"] }],
+      "shadcn/no-inline-styles": "error",
+      "shadcn/no-unknown-classes": ["error", { allow: ["mfm-math", "mfm-search", "toaster"] }],
+      "shadcn/require-static-classes": "error",
     },
     overrides: [
       {

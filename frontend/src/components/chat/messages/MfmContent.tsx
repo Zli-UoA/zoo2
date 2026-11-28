@@ -153,8 +153,14 @@ function EmojiCode({
   if (url && (/^\/(?!\/)/.test(url) || /^https?:\/\//.test(url)))
     return (
       <img
-        className="mfm-custom-emoji w-(--mfm-emoji-width)"
-        style={{ "--mfm-emoji-width": `calc(1.5em * ${ratio})` } as CSSProperties}
+        className="mfm-custom-emoji h-(--mfm-emoji-height) w-(--mfm-emoji-width) max-w-(--mfm-emoji-max-width) object-contain"
+        style={
+          {
+            "--mfm-emoji-height": "1.5em",
+            "--mfm-emoji-width": `calc(1.5em * ${ratio})`,
+            "--mfm-emoji-max-width": "8em",
+          } as CSSProperties
+        }
         src={url}
         alt={`:${name}:`}
         loading="lazy"
