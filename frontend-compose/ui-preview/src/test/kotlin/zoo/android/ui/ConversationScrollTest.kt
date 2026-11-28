@@ -61,7 +61,7 @@ class ConversationScrollTest {
 
         ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText)).performClick().assertIsFocused()
         ui.onNodeWithText("アリス").assertIsDisplayed()
-        ui.onNodeWithText("@alice").assertIsSelected().performClick()
+        ui.onNodeWithText("alice").assertIsSelected().performClick()
         ui.runOnIdle { assertEquals("alice", chosen) }
     }
 
@@ -79,7 +79,7 @@ class ConversationScrollTest {
         val editor = ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText))
         editor.performClick().assertIsDisplayed()
         ui.onNodeWithContentDescription("送信").assertIsDisplayed().assertIsEnabled()
-        ui.onNodeWithText("@user1").assertIsNotDisplayed()
+        ui.onNodeWithText("user1").assertIsNotDisplayed()
         editor.performKeyInput { pressKey(Key.Enter) }
         ui.runOnIdle { assertEquals(null, chosen) }
     }

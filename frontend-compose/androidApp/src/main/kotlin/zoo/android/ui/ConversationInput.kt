@@ -207,10 +207,12 @@ internal fun ConversationInput(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text("@${option.name}", color = colors.foreground, fontSize = 14.sp,
+                                    Text(option.name, color = colors.foreground, fontSize = 14.sp,
                                         fontFamily = FontFamily.Monospace)
-                                    Text(option.label, color = colors.secondary, fontSize = 14.sp, maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                    if (option.label.isNotBlank() && option.label.removePrefix("@") != option.name) {
+                                        Text(option.label, color = colors.secondary, fontSize = 14.sp, maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                    }
                                 }
                             }
                         }
