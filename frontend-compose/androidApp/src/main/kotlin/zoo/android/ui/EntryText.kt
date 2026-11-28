@@ -4,6 +4,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
@@ -244,7 +246,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                     withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
                         val profile = format.mentionProfiles[username]
                             ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
-                        if (profile == null) append(username)
+                        if (profile == null) append(mention)
                         else {
                             val label = profile.text("display_name").ifEmpty { username }
                             pushStringAnnotation(mentionAvatarTag, username)
@@ -419,7 +421,12 @@ internal fun EntryBody(
                 val end = minOf(mention.end, textLayout.getLineEnd(line, visibleEnd = true))
                 if (start >= end) continue
                 val bounds = textLayout.getPathForRange(start, end).getBounds()
-                drawRoundRect(mentionColors.mentionBackground, bounds.topLeft, bounds.size, radius)
+                val em = iconSize.toPx()
+                val baseline = textLayout.multiParagraph.getLineBaseline(line)
+                val center = baseline - em * 0.35f
+                val height = minOf(bounds.height, em * 1.25f)
+                drawRoundRect(mentionColors.mentionBackground, Offset(bounds.left, center - height / 2),
+                    Size(bounds.width, height), radius)
             }
         }
     }
