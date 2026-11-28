@@ -138,7 +138,7 @@ struct Ctx {
     starting: RwSignal<bool>,
     /// 本文のリンクが指すメッセージで、Rust 側が取った結果。
     linked: RwSignal<link_store::Fetched>,
-    /// その結果のうち、移動先の確認で取り直して届いたもの。
+    /// その結果のうち、いまの移動先の確認で取り直して届いたもの。
     checked: RwSignal<HashSet<LinkedMessage>>,
     /// 開いているチャンネルの同期した行に、暗号文の行があるか。
     open_ciphertext: Memo<bool>,
@@ -329,9 +329,11 @@ impl Ctx {
                 .update(|seen| seen.extend(update.ciphertext));
         }
         if !update.linked.is_empty() {
+            // 前の確認の結果は、あとから届いても使わない。
+            let round = Some(self.check_round.get_value());
             self.checked.update(|checked| {
                 for update in &update.linked {
-                    if update.checked {
+                    if update.checked == round {
                         checked.insert(update.target.clone());
                     } else {
                         checked.remove(&update.target);

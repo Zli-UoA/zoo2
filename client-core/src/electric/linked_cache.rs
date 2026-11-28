@@ -41,8 +41,17 @@ pub struct LinkReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedState {
     pub fetch: LinkedFetch,
-    /// いまの [`LinkedCache::check`] で取り直して届いた結果か。
-    pub checked: bool,
+    /// この結果が、いまの [`LinkedCache::check`] のあとに始めた取得で届いたものなら、その確認の番号。
+    pub checked: Option<u64>,
+}
+
+/// 移動先の確認。
+struct Check {
+    id: u64,
+    /// 確認を始めたときの、直近の購読の番号。これより後の購読は、確認のあとに取得を始めている。
+    since: u64,
+    /// そうした購読で届いたリンク先。
+    arrived: HashSet<LinkedKey>,
 }
 
 struct Fetching {
@@ -84,8 +93,7 @@ pub struct LinkedCache {
     ciphertext: BTreeSet<String>,
     /// [`Self::report`] で返した状態。
     reported: HashMap<LinkedKey, LinkedState>,
-    /// いまの確認の番号と、取り直したリンク先。値は、取り直した結果が届いたか。
-    check: Option<(u64, HashMap<LinkedKey, bool>)>,
+    check: Option<Check>,
     /// 前の [`Self::report`] のあとで、[`Self::ciphertext`] が増えたか。
     ciphertext_changed: bool,
     /// 次の [`Self::report`] で、画面の近くのリンク先は変わっていなくても返す。
@@ -158,7 +166,8 @@ impl LinkedCache {
             let checked = self
                 .check
                 .as_ref()
-                .is_some_and(|(_, done)| done.get(&key) == Some(&true));
+                .filter(|check| check.arrived.contains(&key))
+                .map(|check| check.id);
             // 変わっていない行は、写さずに比べる。
             if !again
                 && let (Some(Some(message)), Some(sent)) =
@@ -198,56 +207,32 @@ impl LinkedCache {
         self.ciphertext_changed = !self.ciphertext.is_empty();
     }
 
-    /// 移動先を確かめるために、番号が `check` の確認の `keys` を、覚えている結果に頼らず取り直す。
-    /// 同じ確認の中では 1 回だけ取り直し、届いた結果に [`LinkedState::checked`] を付ける。覚えている
-    /// 結果は、届くまで残す。このあとに [`Self::watch`] して、まだ追っていないものの取得を始める。
-    pub fn check(&mut self, now: Instant, check: u64, keys: &[LinkedKey]) {
-        if self.check.as_ref().is_none_or(|(old, _)| *old != check) {
-            self.check = Some((check, HashMap::new()));
+    /// 番号が `id` の確認として、移動先の `keys` を取り直させる。覚えている結果や、確認の前に始めた
+    /// 取得の応答を使わないよう、確認より前からある購読は閉じる（止まった購読も作り直される）。覚えて
+    /// いる結果は残す。このあとに [`Self::watch`] して、新しい購読で取得を始める。作り直した購読で
+    /// 届いた結果に [`LinkedState::checked`] を付ける。
+    pub fn check(&mut self, id: u64, keys: &[LinkedKey]) {
+        if self.check.as_ref().is_none_or(|check| check.id != id) {
+            self.check = Some(Check {
+                id,
+                since: self.generation,
+                arrived: HashSet::new(),
+            });
         }
-        for key in keys {
-            let Some((_, done)) = &mut self.check else {
-                return;
-            };
-            if done.contains_key(key) {
-                continue;
+        let since = self.check.as_ref().map_or(0, |check| check.since);
+        for (channel_id, _) in keys {
+            if self
+                .generation(channel_id)
+                .is_some_and(|generation| generation <= since)
+            {
+                self.release(channel_id);
             }
-            done.insert(key.clone(), false);
-            self.refetch(now, key);
         }
     }
 
     /// 移動先の確認をやめる。
     pub fn end_check(&mut self) {
         self.check = None;
-    }
-
-    /// 追っているリンク先を取り直す。止まった購読は閉じて、作り直せるようにする。
-    fn refetch(&mut self, now: Instant, key: &LinkedKey) {
-        let (channel_id, message_id) = key;
-        let Some(fetching) = self.channels.get(channel_id) else {
-            return;
-        };
-        if !fetching.is_running() {
-            self.release(channel_id);
-            return;
-        }
-        if !fetching.wanted.contains_key(message_id) {
-            return;
-        }
-        // 取得のタスクは、外れた ID を忘れ、入れ直すと取り直す。
-        let without = fetching
-            .sent
-            .iter()
-            .filter(|id| *id != message_id)
-            .cloned()
-            .collect();
-        let _ = fetching.requests.send(without);
-        let _ = fetching.requests.send(fetching.sent.clone());
-        self.failed.remove(key);
-        if !self.results.contains_key(key) {
-            self.started.insert(key.clone(), now);
-        }
     }
 
     /// 画面の近くのリンク先を入れ替えて [`Self::sync`] する。画面が変わったときだけ呼ぶ側のためのもので、
@@ -538,10 +523,10 @@ impl LinkedCache {
                     };
                     self.started.remove(&key);
                     self.failed.remove(&key);
-                    if let Some((_, done)) = &mut self.check
-                        && let Some(done) = done.get_mut(&key)
+                    if let Some(check) = &mut self.check
+                        && generation > check.since
                     {
-                        *done = true;
+                        check.arrived.insert(key.clone());
                     }
                     if self.results.insert(key.clone(), message).is_none() {
                         self.order.push_back(key);
@@ -914,7 +899,7 @@ mod tests {
         assert!(links.visible.is_empty());
     }
 
-    fn checked(report: Option<LinkReport>) -> Vec<bool> {
+    fn checked(report: Option<LinkReport>) -> Vec<Option<u64>> {
         let linked = report.map(|report| report.linked).unwrap_or_default();
         linked
             .into_iter()
@@ -923,61 +908,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_check_fetches_the_destination_again_once() {
+    async fn a_check_ignores_fetches_started_before_it() {
         let mut links = LinkedCache::default();
         let start = Instant::now();
-        links.visible = vec![key("m1")];
-        let mut sent = None;
-        links.sync(start, |_, _, receiver| {
-            sent = Some(receiver);
-            idle()
-        });
-        let mut sent = sent.expect("購読を始める");
-        let generation = links.generation("c1").unwrap();
-        links.apply(generation, rows("m1", Some("本文")));
-        assert_eq!(checked(links.report(start)), [false]);
-        while sent.try_recv().is_ok() {}
-        // 追っている行は、外して入れ直し、取り直してもらう。覚えている内容は残す。
-        links.check(start, 1, &[key("m1")]);
-        assert_eq!(sent.try_recv().unwrap(), Vec::<String>::new());
-        assert_eq!(sent.try_recv().unwrap(), ["m1"]);
-        assert!(matches!(
-            links.fetch(&key("m1"), start),
-            LinkedFetch::Found(_)
-        ));
-        assert_eq!(checked(links.report(start)), Vec::<bool>::new());
-        // 同じ確認では、もう取り直さない。内容が同じでも、届いたら伝える。
-        links.check(start, 1, &[key("m1")]);
-        assert!(sent.try_recv().is_err());
-        links.apply(generation, rows("m1", Some("本文")));
-        assert_eq!(checked(links.report(start)), [true]);
-        links.check(start, 1, &[key("m1")]);
-        assert!(sent.try_recv().is_err());
-        // 次の確認では、また取り直す。
-        links.check(start, 2, &[key("m1")]);
-        assert_eq!(checked(links.report(start)), [false]);
-        assert!(sent.try_recv().is_ok());
-        links.apply(generation, rows("m1", None));
-        assert_eq!(checked(links.report(start)), [true]);
+        let before = subscribe(&mut links, start, &["m1"]);
+        links.apply(before, rows("m1", Some("本文")));
+        assert_eq!(checked(links.report(start)), [None]);
+        // 確認より前の購読は閉じる。覚えている内容は残す。
+        links.check(1, &[key("m1")]);
+        assert_eq!(links.generation("c1"), None);
+        let after = subscribe(&mut links, start, &["m1"]);
+        assert_ne!(after, before);
+        // 押す前に始めた取得の応答は、内容も使わない。
+        links.apply(before, rows("m1", Some("古い応答")));
+        let LinkedFetch::Found(message) = links.fetch(&key("m1"), start) else {
+            panic!("覚えている内容を残す");
+        };
+        assert_eq!(message.content, "本文");
+        assert_eq!(checked(links.report(start)), Vec::<Option<u64>>::new());
+        // 内容が同じでも、新しい購読で届いたら伝える。
+        links.apply(after, rows("m1", Some("本文")));
+        assert_eq!(checked(links.report(start)), [Some(1)]);
+        // 同じ確認で親を足しても、作り直した購読は閉じない。
+        links.check(1, &[key("m1"), key("p")]);
+        assert_eq!(links.generation("c1"), Some(after));
+        links.sync(start, |_, _, _| idle());
+        // 次の確認では、また作り直す。
+        links.check(2, &[key("m1")]);
+        assert_eq!(links.generation("c1"), None);
+        let next = subscribe(&mut links, start, &["m1"]);
+        links.report_again();
+        assert_eq!(checked(links.report(start)), [None]);
+        links.apply(next, rows("m1", None));
+        assert_eq!(checked(links.report(start)), [Some(2)]);
         links.end_check();
-        assert_eq!(checked(links.report(start)), [false]);
+        assert_eq!(checked(links.report(start)), [None]);
     }
 
     #[tokio::test]
-    async fn a_check_does_not_trust_results_from_before_it() {
+    async fn a_check_does_not_trust_results_kept_after_unsubscribing() {
         let mut links = LinkedCache::default();
         let start = Instant::now();
         let generation = subscribe(&mut links, start, &["m1"]);
         links.apply(generation, rows("m1", None));
-        // 購読を閉じたあとに残る結果は、新しい購読で届くまで確かめたことにしない。
         links.watch(start, Vec::new(), |_, _, _| idle());
         let later = start + RELEASE_DELAY;
         links.sync(later, |_, _, _| idle());
-        links.check(later, 1, &[key("m1")]);
+        links.check(1, &[key("m1")]);
         let generation = subscribe(&mut links, later, &["m1"]);
-        assert_eq!(checked(links.report(later)), [false]);
+        assert_eq!(links.fetch(&key("m1"), later), LinkedFetch::Missing);
+        assert_eq!(checked(links.report(later)), [None]);
         links.apply(generation, rows("m1", Some("復活")));
-        assert_eq!(checked(links.report(later)), [true]);
+        assert_eq!(checked(links.report(later)), [Some(1)]);
     }
 
     #[tokio::test]
@@ -993,7 +975,7 @@ mod tests {
             },
         );
         assert_eq!(links.fetch(&key("m1"), start), LinkedFetch::Failed);
-        links.check(start, 1, &[key("m1")]);
+        links.check(1, &[key("m1")]);
         let restarted = subscribe(&mut links, start, &["m1"]);
         assert_ne!(restarted, generation);
         assert_eq!(

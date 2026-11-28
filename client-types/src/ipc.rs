@@ -332,7 +332,7 @@ pub struct LinkedMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchLinks {
     pub targets: Vec<LinkedMessage>,
-    /// 移動先を確かめている間の、確認の番号。`targets` は移動先で、確認ごとに 1 回ずつ取り直す。
+    /// 移動先を確かめている間の、確認の番号。`targets` は移動先で、確認ごとに取り直す。
     pub check: Option<u64>,
 }
 
@@ -351,9 +351,9 @@ pub struct Linked {
     pub target: LinkedMessage,
     /// `None` は、分かっていたことがなくなった（捨てた）。画面も捨てる。
     pub fetch: Option<LinkedFetch>,
-    /// [`WatchLinks::check`] の確認で取り直して届いた結果か。偽の結果は、埋め込みには出すが、
-    /// 削除などを見落としているかもしれないので、移動先の判定には使わない。
-    pub checked: bool,
+    /// [`WatchLinks::check`] の確認のあとに始めた取得で届いた結果なら、その番号。移動先の判定には、
+    /// いまの確認の番号の結果だけを使う（ほかは、削除などを見落としているかもしれない。埋め込みには出す）。
+    pub checked: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

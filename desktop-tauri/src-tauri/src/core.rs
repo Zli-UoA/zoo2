@@ -662,7 +662,7 @@ impl Core {
             .collect();
         let now = Instant::now();
         match links.check {
-            Some(check) => session.links.check(now, check, &keys),
+            Some(check) => session.links.check(check, &keys),
             None => session.links.end_check(),
         }
         let fetcher = self.link_fetcher(session);
@@ -1622,7 +1622,7 @@ fn link_update(report: LinkReport) -> LinkedUpdate {
                     channel_id,
                     message_id,
                 },
-                checked: state.as_ref().is_some_and(|state| state.checked),
+                checked: state.as_ref().and_then(|state| state.checked),
                 fetch: state.map(|state| state.fetch),
             })
             .collect(),
