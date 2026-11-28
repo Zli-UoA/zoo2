@@ -12,6 +12,7 @@ final class AppSession {
     private(set) var isStarting = true
     private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
     var error: String?
+    private var displayedNotificationWarning: String?
     let notifications: NotificationController
     @ObservationIgnored weak var systemCalls: SystemCallController?
     private let authentication: Authentication
@@ -314,16 +315,27 @@ final class AppSession {
             ZooShortcuts.updateAppShortcutParameters()
             SiriVocabulary.update(nil)
         }
-        var logoutErrors: [String] = []
-        if let notificationError = notifications.logout() { logoutErrors.append(notificationError) }
+        let notificationError = notifications.logout()
         do { try authentication.logout() }
-        catch { logoutErrors.append(error.localizedDescription) }
-        if !logoutErrors.isEmpty { self.error = logoutErrors.joined(separator: "\n\n") }
+        catch { self.error = error.localizedDescription }
+        updateNotificationWarning(notificationError)
         if let syncSession {
             needsCacheCleanup = true
             cacheCleanup = syncSession.close()
         }
         self.syncSession = nil
+    }
+
+    private func updateNotificationWarning(_ warning: String?) {
+        // 自分が末尾に加えた警告だけを置き換え、認証やキャッシュのエラーは残す。
+        if let previous = displayedNotificationWarning, let current = error {
+            if current == previous { error = nil }
+            else if current.hasSuffix("\n\n" + previous) {
+                error = String(current.dropLast(previous.count + 2))
+            }
+        }
+        displayedNotificationWarning = warning
+        if let warning { error = error.map { $0 + "\n\n" + warning } ?? warning }
     }
 
     func resume() async {
@@ -373,6 +385,7 @@ final class AppSession {
                     self.error = error.localizedDescription
                     if !attemptedNotificationCleanup, workspace == nil {
                         let notificationCleanup = notifications.revokeRegistration()
+                        attemptedNotificationCleanup = true
                         notificationError = notifications.previewKeyError
                         let previous = cacheCleanup
                         let cleanup = Task<Void, Error> {
@@ -384,11 +397,7 @@ final class AppSession {
                     }
                 }
             }
-            if generation == epoch, let notificationError {
-                if let current = self.error {
-                    if !current.contains(notificationError) { self.error = current + "\n\n" + notificationError }
-                } else { self.error = notificationError }
-            }
+            if generation == epoch, attemptedNotificationCleanup { updateNotificationWarning(notificationError) }
             return
         }
         await notifications.resume()

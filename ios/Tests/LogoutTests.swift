@@ -39,6 +39,7 @@ struct LogoutTests {
         await session.resume()
         #expect(keys.attempts == 2)
         #expect(session.notifications.previewKeyError == nil)
+        #expect(session.error == (cacheFails ? cacheError.localizedDescription : nil))
     }
 
     @Test("ログアウト後の認証確認が失敗する再起動でも通知鍵の無効化を再試行する")
@@ -66,7 +67,7 @@ struct LogoutTests {
     }
 
     @Test("通知鍵の無効化失敗をログイン画面へ伝え、認証削除の失敗も併記する", arguments: [false, true])
-    @MainActor func logoutReportsPreviewAndAuthenticationFailures(authenticationFails: Bool) throws {
+    @MainActor func logoutReportsPreviewAndAuthenticationFailures(authenticationFails: Bool) async throws {
         let settings = ConnectionSettings(server: "https://logout.test.invalid", clientID: UUID().uuidString)
         let transport = HTTPTransport()
         defer { transport.session.invalidateAndCancel() }
@@ -75,15 +76,17 @@ struct LogoutTests {
             if authenticationFails { throw ZooError.auth(authMessage) }
         })
         let keys = FailingPreviewKeys()
+        let cache = try await SyncCache.open(inMemory: true)
         let session = AppSession(settings: settings, transport: transport, authentication: authentication,
-                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys)
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys, syncCache: cache)
         session.logout()
         #expect(session.workspace == nil)
         let error = try #require(session.error)
         #expect(error.contains(keys.message))
         #expect(error.contains(authMessage) == authenticationFails)
         keys.failing = false
-        session.error = nil
+        await session.resume()
+        #expect(session.error == (authenticationFails ? authMessage : nil))
         session.logout()
         #expect(session.error == (authenticationFails ? authMessage : nil))
     }
