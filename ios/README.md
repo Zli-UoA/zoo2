@@ -306,7 +306,7 @@ Xcode Cloudの設定はApple側で管理します。接続・保存しただけ�
 スクリプトはローカルで実行し、Rust 1.99.0による両iOSターゲットのXCFramework生成と、
 Xcode 27.2でのアプリ・通知拡張・通話表示拡張・WatchアプリのReleaseアーカイブ（署名なし）が成功しています。
 Cloud上の署名・アップロード・配布は、スクリプトの反映後に確認します。
-検証したMacにはNixがないため、`nix develop .#ios` の起動確認は未実施です。
+ローカルMacにはNixがないため、`nix develop .#ios` の起動とツールの実行はGitHub ActionsのmacOSランナーで検証し、成功しました。
 GitHub Actionsの[iOSビルド環境の検証](../.github/workflows/ci-ios.yaml)では、macOSの一時ランナーで
 同じ開発シェルを起動し、ツールの実行・固定Rust版・両iOSターゲットの存在を確認します。
 
