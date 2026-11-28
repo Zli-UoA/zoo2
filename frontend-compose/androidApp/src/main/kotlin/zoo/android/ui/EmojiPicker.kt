@@ -2,8 +2,6 @@ package zoo.android.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -15,7 +13,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -143,29 +140,8 @@ internal fun EmojiPicker(
                         text = { Text(choice.title, fontSize = 14.sp, maxLines = 1) }, selectedContentColor = colors.foreground, unselectedContentColor = colors.secondary)
                 }
             }
-            BasicTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("emoji-search")
-                    .semantics { contentDescription = "絵文字を検索" },
-                singleLine = true,
-                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-                cursorBrush = SolidColor(colors.inputText),
-                decorationBox = { field ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                            .background(colors.inputSurface, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        UiGlyph(UiIcon.Search, colors.inputHint, AndroidControlSize.inlineIcon)
-                        Box(Modifier.weight(1f)) {
-                            if (query.isEmpty()) Text("絵文字を検索", color = colors.inputHint, fontSize = 16.sp)
-                            field()
-                        }
-                    }
-                },
-            )
+            SearchInput(query, { query = it }, "絵文字を検索", colors,
+                Modifier.padding(vertical = 8.dp).testTag("emoji-search"))
             if (tab == EmojiTab.Kitchen) {
                 val prefix = first
                 if (prefix == null) Text("最初の絵文字を選ぶ", color = colors.secondary)

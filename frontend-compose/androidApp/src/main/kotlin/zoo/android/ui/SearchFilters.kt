@@ -11,14 +11,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -30,7 +27,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -250,28 +246,7 @@ private fun SearchFilterSheet(
     ) {
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).imePadding().padding(horizontal = 16.dp)) {
             Text(title, color = colors.foreground, fontSize = 17.sp, fontWeight = AndroidWeights.emphasis)
-            BasicTextField(
-                query, { query = it },
-                Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("search-filter-field")
-                    .semantics { contentDescription = hint },
-                singleLine = true,
-                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 15.sp),
-                cursorBrush = SolidColor(colors.inputText),
-                decorationBox = { field ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                            .background(colors.inputSurface, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        UiGlyph(UiIcon.Search, colors.inputHint, AndroidControlSize.inlineIcon)
-                        Box(Modifier.weight(1f)) {
-                            if (query.isEmpty()) Text(hint, color = colors.inputHint, fontSize = 15.sp)
-                            field()
-                        }
-                    }
-                },
-            )
+            SearchInput(query, { query = it }, hint, colors, Modifier.padding(vertical = 8.dp).testTag("search-filter-field"))
             if (full) Text(
                 androidLabel("globalSearch.filters.max", "選べるのは {{count}} 件までです")
                     .replace("{{count}}", MAX_SEARCH_FILTER_IDS.toString()),

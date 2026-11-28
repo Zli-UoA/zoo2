@@ -6,12 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,16 +21,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -175,30 +167,7 @@ private fun SearchField(text: String, colors: AndroidColors, submit: () -> Unit,
     val focusOnOpen = remember { text.isEmpty() }
     LaunchedEffect(Unit) { if (focusOnOpen) runCatching { focus.requestFocus() } }
     val placeholder = androidLabel("globalSearch.placeholder", "メッセージとファイルを検索")
-    BasicTextField(
-        text, change,
-        Modifier.fillMaxWidth().focusRequester(focus).testTag("global-search-field")
-            .semantics { contentDescription = placeholder },
-        singleLine = true,
-        textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-        cursorBrush = SolidColor(colors.inputText),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(onSearch = { submit() }),
-        decorationBox = { field ->
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                    .background(colors.inputSurface, CircleShape).padding(horizontal = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                UiGlyph(UiIcon.Search, colors.inputHint, iconSize = AndroidControlSize.inlineIcon)
-                Box(Modifier.weight(1f)) {
-                    if (text.isEmpty()) Text(placeholder, color = colors.inputHint, fontSize = 16.sp, maxLines = 1)
-                    field()
-                }
-            }
-        },
-    )
+    SearchInput(text, change, placeholder, colors, Modifier.focusRequester(focus).testTag("global-search-field"), submit)
 }
 
 @Composable
