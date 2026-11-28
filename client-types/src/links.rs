@@ -1,8 +1,6 @@
 //! 本文に書いた、このアプリのチャンネル・メッセージへのリンク。仕様は docs/mfm.md の
 //! 「チャンネル・メッセージのリンクの表示」。TUI とデスクトップ版の画面で共有する。
 
-use std::borrow::Cow;
-
 use jiff::civil::DateTime;
 use percent_encoding::percent_decode_str;
 use serde_json::Value;
@@ -77,74 +75,6 @@ pub fn parse_channel_link(value: &str, app_base_url: &str) -> Option<LinkTarget>
     })
 }
 
-/// 本文の中の、記法を解釈しない部分（コードブロック、インラインコード、`<plain>`）かどうかで分ける。
-/// 先に始まった記法を優先するので、`<plain>` の中のコードブロックの開閉も、コードブロックの中の
-/// `<plain>` も文字になる。コードブロックは [`crate::mfm`] の表示と同じく、```` ``` ```` で始まる行で
-/// 開閉し、閉じていなければ末尾まで続く。インラインコードは行をまたがない。
-fn segments(content: &str) -> Vec<(bool, &str)> {
-    let mut result = Vec::new();
-    // 地の文の先頭。
-    let mut text = 0;
-    let mut at = 0;
-    // `</plain>` がもうないと分かったら、後ろで探し直さない。
-    let mut plain_unclosed = false;
-    while at < content.len() {
-        let rest = &content[at..];
-        let literal = if (at == 0 || content[..at].ends_with('\n')) && is_fence(rest) {
-            Some(code_block_length(rest))
-        } else if rest.starts_with("<plain>") && !plain_unclosed {
-            let end = rest.find("</plain>");
-            plain_unclosed = end.is_none();
-            end.map(|end| end + "</plain>".len())
-        } else if let Some(after) = rest.strip_prefix("```") {
-            // 行の途中の ``` は、同じ行で閉じるもの。
-            let line = after.split('\n').next().unwrap_or_default();
-            line.find("```").map(|end| end + 6)
-        } else if let Some(after) = rest.strip_prefix('`') {
-            after
-                .find(['`', '\n'])
-                .filter(|end| after[*end..].starts_with('`'))
-                .map(|end| end + 2)
-        } else {
-            None
-        };
-        match literal {
-            Some(length) => {
-                if text < at {
-                    result.push((false, &content[text..at]));
-                }
-                result.push((true, &content[at..at + length]));
-                at += length;
-                text = at;
-            }
-            None => at += rest.chars().next().map_or(1, char::len_utf8),
-        }
-    }
-    if text < content.len() {
-        result.push((false, &content[text..]));
-    }
-    result
-}
-
-/// `text` の最初の行が、コードブロックを開閉する行か。
-fn is_fence(text: &str) -> bool {
-    text.split('\n')
-        .next()
-        .is_some_and(|line| line.trim_start().starts_with("```"))
-}
-
-/// `text` の先頭の行で開いたコードブロックの長さ（閉じる行まで。なければ末尾まで）。
-fn code_block_length(text: &str) -> usize {
-    let mut length = 0;
-    for (index, line) in text.split_inclusive('\n').enumerate() {
-        length += line.len();
-        if index > 0 && is_fence(line) {
-            break;
-        }
-    }
-    length
-}
-
 /// `[文字](URL)` と `?[文字](URL)` を、文字だけにする。
 fn strip_markdown_links(text: &str) -> String {
     let mut result = String::new();
@@ -209,20 +139,7 @@ fn label_length(text: &str) -> Option<usize> {
 /// 本文の表示（[`crate::mfm`]）でリンクになる部分を、出てくる順に返す。埋め込みと移動は、表示で
 /// 決まった行き先をそのまま使う（装飾の記号などを行き先に含めないため）。
 fn link_spans(content: &str) -> impl Iterator<Item = crate::mfm::Span> {
-    // 表示の解析は行ごとなので、行をまたぐ `<plain>` の中は先に伏せる（Web と同じく、リンクにしない）。
-    let source: String = segments(content)
-        .into_iter()
-        .map(|(literal, part)| {
-            if literal && part.starts_with("<plain>") && part.contains('\n') {
-                part.chars()
-                    .map(|c| if c == '\n' { c } else { '。' })
-                    .collect()
-            } else {
-                Cow::Borrowed(part)
-            }
-        })
-        .collect();
-    crate::mfm::parse(&source, None)
+    crate::mfm::parse(content, None)
         .into_iter()
         .flat_map(|line| line.spans)
         .filter(|span| span.href.is_some())
@@ -317,7 +234,7 @@ pub fn bare_links(content: &str, app_base_url: &str) -> Vec<(String, LinkTarget)
 /// 1 つにまとめ、長いときは切って `…` を付ける。
 pub fn excerpt(content: &str) -> String {
     // `[文字](URL)` は文字だけにする（MFM の解析は URL を後ろに添えるため）。
-    let source: String = segments(content)
+    let source: String = crate::mfm::segments(content)
         .into_iter()
         .map(|(literal, part)| {
             if literal {
@@ -759,6 +676,7 @@ mod tests {
             "https://a(".repeat(4_000),
             "https://a[".repeat(4_000),
             "<plain>".repeat(5_000),
+            "<plain>\n</plain>".repeat(3_000),
         ] {
             app_links(&content, APP);
             embedded_links(&content, APP);

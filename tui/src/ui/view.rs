@@ -1577,6 +1577,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_link_after_a_plain_block_is_shortened() {
+        let plain = "http://127.0.0.1:9/channels/c2?message=literal";
+        let mut app = app_with_link(&format!("<plain>\n```\n{plain}\n</plain>\n{SECRET_LINK}"));
+        linked_row(&mut app, "秘密の話", json!({}));
+        let screen = render(&mut app);
+        assert!(screen.contains("💬 Bobさん: #secret"), "{screen}");
+        assert!(!screen.contains(SECRET_LINK), "{screen}");
+        // `<plain>` の中は文字のまま出し、リンクにしない。
+        assert!(screen.contains(plain), "{screen}");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.mode, Mode::Normal, "開けるリンクは 1 つ");
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+    }
+
+    #[tokio::test]
     async fn encrypted_and_app_messages_do_not_show_content() {
         let mut app = app_with_link(SECRET_LINK);
         linked_row(&mut app, "平文の差し込み", json!({ "ciphertext": "{}" }));

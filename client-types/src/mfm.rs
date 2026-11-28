@@ -2,6 +2,8 @@
 //! メンション、ハッシュタグ、絵文字ショートコードを UI に依存しないスタイル付きスパンへ
 //! 変換し、アニメーションなどの `$[fn ...]` は中身の文字だけを取り出す。
 
+use std::ops::Range;
+
 #[derive(Default)]
 struct EmojiCatalog {
     shortcodes: std::collections::HashMap<String, String>,
@@ -285,31 +287,130 @@ pub fn parse_with_accounts(
 ) -> Vec<Line> {
     let mut lines = Vec::new();
     let mut in_code = false;
-    for raw in content.split('\n') {
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
-        // 制御文字を含む行は、記法を解析する前に置き換える。端末に出力されるのを防ぐ。
-        let line = &*crate::text::sanitize_display(line);
-        if line.trim_start().starts_with("```") {
+    // 制御文字を含む行は、記法を解析する前に置き換える。端末に出力されるのを防ぐ。
+    let sanitized = content
+        .split('\n')
+        .map(|raw| crate::text::sanitize_display(raw.strip_suffix('\r').unwrap_or(raw)));
+    // 行をまたぐ `<plain>` は、行ごとの解析では分からないので、先に範囲を決める。
+    let plain = if content.contains("<plain>") {
+        multiline_plain(&sanitized.clone().collect::<Vec<_>>().join("\n"))
+    } else {
+        Vec::new()
+    };
+    let inline = Inline { me, profiles };
+    // 無害化した本文の中の、行の先頭の位置。
+    let mut start = 0;
+    // まだ終わっていない、最初の範囲。
+    let mut next = 0;
+    for line in sanitized {
+        let line = &*line;
+        let end = start + line.len();
+        while plain.get(next).is_some_and(|block| block.end <= start) {
+            next += 1;
+        }
+        let count = plain[next..]
+            .iter()
+            .take_while(|block| block.start <= end)
+            .count();
+        if count > 0 {
+            let spans = inline.around_plain(line, start, &plain[next..next + count]);
+            // タグだけの行は出さない。
+            if !spans.is_empty() || line.is_empty() {
+                lines.push(Line::from_spans(spans));
+            }
+        } else if line.trim_start().starts_with("```") {
             in_code = !in_code;
-            continue;
-        }
-        if in_code {
+        } else if in_code {
             lines.push(Line::from_spans(vec![Span::styled(line.to_string(), CODE)]));
-            continue;
+        } else {
+            let mut spans = Vec::new();
+            inline.line(line, &mut spans);
+            lines.push(Line::from_spans(spans));
         }
-        let (prefix, body, base) = match line.strip_prefix('>') {
-            Some(rest) => (
-                Some(Span::styled("│ ".to_string(), QUOTE)),
-                rest.strip_prefix(' ').unwrap_or(rest),
-                QUOTE,
-            ),
-            None => (None, line, Style::new()),
-        };
-        let mut spans: Vec<Span> = prefix.into_iter().collect();
-        Inline { me, profiles }.parse(body, base, 0, &mut spans);
-        lines.push(Line::from_spans(spans));
+        start = end + 1;
     }
     lines
+}
+
+/// 本文の中の、記法を解釈しない部分（コードブロック、インラインコード、`<plain>`）かどうかで分ける。
+/// 先に始まった記法を優先するので、`<plain>` の中のコードブロックの開閉も、コードブロックの中の
+/// `<plain>` も文字になる。コードブロックは [`parse`] の表示と同じく、```` ``` ```` で始まる行で
+/// 開閉し、閉じていなければ末尾まで続く。インラインコードは行をまたがない。
+pub(crate) fn segments(content: &str) -> Vec<(bool, &str)> {
+    let mut result = Vec::new();
+    // 地の文の先頭。
+    let mut text = 0;
+    let mut at = 0;
+    // `</plain>` がもうないと分かったら、後ろで探し直さない。
+    let mut plain_unclosed = false;
+    while at < content.len() {
+        let rest = &content[at..];
+        let literal = if (at == 0 || content[..at].ends_with('\n')) && is_fence(rest) {
+            Some(code_block_length(rest))
+        } else if rest.starts_with("<plain>") && !plain_unclosed {
+            let end = rest.find("</plain>");
+            plain_unclosed = end.is_none();
+            end.map(|end| end + "</plain>".len())
+        } else if let Some(after) = rest.strip_prefix("```") {
+            // 行の途中の ``` は、同じ行で閉じるもの。
+            let line = after.split('\n').next().unwrap_or_default();
+            line.find("```").map(|end| end + 6)
+        } else if let Some(after) = rest.strip_prefix('`') {
+            after
+                .find(['`', '\n'])
+                .filter(|end| after[*end..].starts_with('`'))
+                .map(|end| end + 2)
+        } else {
+            None
+        };
+        match literal {
+            Some(length) => {
+                if text < at {
+                    result.push((false, &content[text..at]));
+                }
+                result.push((true, &content[at..at + length]));
+                at += length;
+                text = at;
+            }
+            None => at += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    if text < content.len() {
+        result.push((false, &content[text..]));
+    }
+    result
+}
+
+/// `text` の最初の行が、コードブロックを開閉する行か。
+fn is_fence(text: &str) -> bool {
+    text.split('\n')
+        .next()
+        .is_some_and(|line| line.trim_start().starts_with("```"))
+}
+
+/// `text` の先頭の行で開いたコードブロックの長さ（閉じる行まで。なければ末尾まで）。
+fn code_block_length(text: &str) -> usize {
+    let mut length = 0;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        length += line.len();
+        if index > 0 && is_fence(line) {
+            break;
+        }
+    }
+    length
+}
+
+/// 行をまたぐ `<plain>` の、タグを含む範囲。
+fn multiline_plain(content: &str) -> Vec<Range<usize>> {
+    let mut end = 0;
+    segments(content)
+        .into_iter()
+        .filter_map(|(literal, part)| {
+            let start = end;
+            end += part.len();
+            (literal && part.starts_with("<plain>") && part.contains('\n')).then_some(start..end)
+        })
+        .collect()
 }
 
 /// 入れ子にした記法を解析する深さの上限。これより深い部分は文字のまま表示する。
@@ -333,6 +434,55 @@ const WRAPPERS: &[(&str, &str, Style)] = &[
 ];
 
 impl Inline<'_> {
+    /// 行の先頭からの地の文。引用の記号を縦線にして解析する。
+    fn line(&self, line: &str, out: &mut Vec<Span>) {
+        let (body, base) = match line.strip_prefix('>') {
+            Some(rest) => {
+                out.push(Span::styled("│ ".to_string(), QUOTE));
+                (rest.strip_prefix(' ').unwrap_or(rest), QUOTE)
+            }
+            None => (line, Style::new()),
+        };
+        self.parse(body, base, 0, out);
+    }
+
+    /// 行をまたぐ `<plain>` にかかる行。`start` は本文の中の行の位置で、`blocks` は行にかかる範囲。
+    /// 範囲の中はタグを除いて文字のまま出し、外は解析する。
+    fn around_plain(&self, line: &str, start: usize, blocks: &[Range<usize>]) -> Vec<Span> {
+        let mut spans = Vec::new();
+        // 出し終えた、行の中の位置。
+        let mut done = 0;
+        for block in blocks {
+            let mut literal = done;
+            if block.start >= start {
+                let open = block.start - start;
+                if done == 0 && open > 0 {
+                    self.line(&line[..open], &mut spans);
+                } else {
+                    self.parse(&line[done..open], Style::new(), 0, &mut spans);
+                }
+                literal = open + "<plain>".len();
+            }
+            let closes = block.end <= start + line.len();
+            done = if closes {
+                block.end - start
+            } else {
+                line.len()
+            };
+            let literal_end = if closes {
+                done - "</plain>".len()
+            } else {
+                done
+            };
+            if literal < literal_end {
+                let text = line[literal..literal_end].to_string();
+                spans.push(Span::styled(text, Style::new()));
+            }
+        }
+        self.parse(&line[done..], Style::new(), 0, &mut spans);
+        spans
+    }
+
     fn parse(&self, text: &str, base: Style, depth: usize, out: &mut Vec<Span>) {
         let mut scan = Scan::new(text);
         let mut plain = String::new();
@@ -725,6 +875,51 @@ fn unixtime(body: &str, base: Style) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_over_several_lines_shows_its_content_as_is() {
+        let text = |content: &str| {
+            parse(content, None)
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+        };
+        let hrefs = |content: &str| {
+            parse(content, None)
+                .into_iter()
+                .flat_map(|line| line.spans)
+                .filter_map(|span| span.href)
+                .collect::<Vec<_>>()
+        };
+        // 中のコードブロックの行も記法も文字のままで、終わったら通常の表示に戻る。
+        let content = "<plain>\n```\n**x** https://a.test/in\n\n</plain>\nhttps://a.test/out";
+        assert_eq!(
+            text(content),
+            ["```", "**x** https://a.test/in", "", "https://a.test/out"]
+        );
+        assert_eq!(hrefs(content), ["https://a.test/out"]);
+        // 開く行の前と、閉じる行の後ろは解析する。続けて次の `<plain>` も開ける。
+        let content =
+            "> **前** <plain>a\n**b**</plain> **後** <plain>\n**c**\n</plain> https://a.test/z";
+        assert_eq!(
+            text(content),
+            ["│ 前 a", "**b** 後 ", "**c**", " https://a.test/z"]
+        );
+        assert_eq!(hrefs(content), ["https://a.test/z"]);
+        // コードの中の `<plain>` は文字で、コードのあとは解析する。
+        for content in [
+            "```\n<plain>\n```\nhttps://a.test/after\n</plain>",
+            "`<plain>`\nhttps://a.test/after\n</plain>",
+        ] {
+            assert_eq!(hrefs(content), ["https://a.test/after"], "{content}");
+        }
+        // 閉じていない `<plain>` は文字にする。
+        assert_eq!(
+            hrefs("<plain>\nhttps://a.test/open"),
+            ["https://a.test/open"]
+        );
+        assert_eq!(text("<plain>\r\n\u{1}\r\n</plain>"), ["\u{FFFD}"]);
+    }
 
     fn spans(content: &str) -> Vec<(String, Style)> {
         parse(content, Some("alice"))
