@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -128,17 +129,20 @@ internal fun ConnectedScreens(
         val resolver = androidx.compose.ui.platform.LocalContext.current.contentResolver
         ShareDestinationSheet(incoming.text, incoming.images.size, destinations, AndroidColors(env.dark), busy, error, finishShare, preview = {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(incoming.images, key = { it.toString() }) { uri ->
+                itemsIndexed(incoming.images, key = { _, uri -> uri.toString() }) { index, uri ->
                     val thumbnail by produceState<ImageBitmap?>(null, uri) {
-                        if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                try { resolver.loadThumbnail(uri, android.util.Size(144, 144), null).asImageBitmap() }
-                                catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { null }
-                            }
+                        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            try { resolver.shareThumbnail(uri)?.asImageBitmap() }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { null }
                         }
                     }
-                    thumbnail?.let { Image(it, "共有する画像", Modifier.size(64.dp), contentScale = ContentScale.Crop) }
+                    val label = "画像 ${index + 1}"
+                    Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
+                        val bitmap = thumbnail
+                        if (bitmap == null) Text(label, color = AndroidColors(env.dark).secondary)
+                        else Image(bitmap, label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    }
                 }
             }
         }) { dest ->

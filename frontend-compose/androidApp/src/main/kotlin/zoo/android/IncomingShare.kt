@@ -1,5 +1,8 @@
 package zoo.android
 
+import android.content.ContentResolver
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -24,4 +27,18 @@ internal fun Context.incomingShare(intent: Intent): IncomingShare? {
     }) return null
     val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
     return IncomingShare(text, images).takeIf { text.isNotBlank() || images.isNotEmpty() }
+}
+
+internal fun ContentResolver.shareThumbnail(uri: Uri): Bitmap? {
+    if (android.os.Build.VERSION.SDK_INT >= 29) {
+        try { return loadThumbnail(uri, android.util.Size(144, 144), null) }
+        catch (_: java.io.IOException) { /* Some providers only expose the original stream. */ }
+    }
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = imageSampleSize(bounds.outWidth, bounds.outHeight, 144)
+    }
+    return openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
 }
