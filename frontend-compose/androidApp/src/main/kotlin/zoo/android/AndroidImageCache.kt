@@ -6,7 +6,10 @@ import io.ktor.client.plugins.HttpTimeout
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+
+internal const val FOREGROUND_IMAGE_PARALLELISM = 6
 
 /** Account-local image storage shared by public and signed downloads. */
 internal class AndroidImageCache(
@@ -20,6 +23,7 @@ internal class AndroidImageCache(
     private val bodyDirectory = imageBodyDirectory(directory)
     private val disk = acquire(bodyDirectory, maxBytes, legacyDirectory)
     private val client = OkHttpClient.Builder()
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = FOREGROUND_IMAGE_PARALLELISM })
         .apply(configure)
         .followRedirects(false)
         .followSslRedirects(false)

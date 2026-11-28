@@ -4,6 +4,7 @@ import android.content.Context
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.URLProtocol
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +18,12 @@ import zoo.proxyImageUrl
 import zoo.publicUrl
 
 private val proxyDownloads = Semaphore(2)
+private val directImageHosts = setOf(
+    "attachments.zliusercontent.com",
+    "avater.zliusercontent.com",
+    "emoji.zliusercontent.com",
+    "emoji.zli.works",
+)
 
 internal suspend fun <T> downloadThroughProxy(push: Boolean, load: suspend () -> T): T {
     if (!push) return proxyDownloads.withPermit { load() }
@@ -47,7 +54,11 @@ internal fun normalizedImageSource(base: String, source: String): Url? {
 
 internal fun imageRequest(base: String, source: String, proxy: String): ImageRequest? {
     val url = normalizedImageSource(base, source) ?: return null
-    if (url.protocol.name == "https" && publicUrl(base)?.let { sameImageOrigin(it, url) } == true) return ImageRequest(url.toString())
+    val workspaceOrigin = publicUrl(base)?.let { sameImageOrigin(it, url) } == true
+    val dedicatedOrigin = url.port == URLProtocol.HTTPS.defaultPort && url.host in directImageHosts
+    if (url.protocol == URLProtocol.HTTPS && (workspaceOrigin || dedicatedOrigin)) {
+        return ImageRequest(url.toString())
+    }
     val proxyEndpoint = if (proxy.startsWith('/') && !proxy.startsWith("//")) endpoint(base, proxy) else proxy
     return proxyImageUrl(proxyEndpoint, url.toString())
         ?.takeIf { publicUrl(it)?.protocol?.name == "https" }

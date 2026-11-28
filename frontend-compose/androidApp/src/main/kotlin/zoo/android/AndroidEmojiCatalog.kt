@@ -1,7 +1,11 @@
 package zoo.android
 
 import android.content.Context
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import zoo.Row
@@ -114,6 +118,24 @@ private fun parseKitchen(data: JsonObject): KitchenChoices {
             val code = listOf(first.value, second.value).map(::kitchenComponentCode).sorted().joinToString("_")
             second.copy(value = "kitchen:$code", glyph = first.glyph + second.glyph,
                 image = "https://www.gstatic.com/android/keyboard/emojikitchen/$date/$left/${left}_$right.png")
+        }
+    }
+}
+
+internal suspend fun prefetchEmojiImages(urls: List<String>, load: suspend (String) -> Unit) = coroutineScope {
+    val next = AtomicInteger()
+    repeat(minOf(urls.size, FOREGROUND_IMAGE_PARALLELISM)) {
+        launch {
+            while (true) {
+                val url = urls.getOrNull(next.getAndIncrement()) ?: break
+                try {
+                    load(url)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Keep warming the rest of the catalog if this image is unavailable.
+                }
+            }
         }
     }
 }

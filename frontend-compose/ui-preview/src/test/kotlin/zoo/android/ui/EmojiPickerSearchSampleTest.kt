@@ -29,6 +29,26 @@ class EmojiPickerSearchSampleTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun customTabPrefetchesEveryDistinctImageRegardlessOfSearch() {
+        val images = List(200) { "image-$it" }
+        val custom = (images + images.first()).mapIndexed { index, image ->
+            EmojiChoice(":emoji-$index:", "", "emoji-$index", image)
+        }
+        val batches = mutableListOf<List<String>>()
+        ui.setContent {
+            EmojiPicker(
+                "絵文字", AndroidColors(false), unicode = emptyList(), custom = custom,
+                loadKitchen = { null }, loadImage = { null }, dismiss = {},
+                prefetchCustomImages = { batches.add(it) }, select = {},
+            )
+        }
+        ui.runOnIdle { assertTrue(batches.isEmpty()) }
+        ui.onNodeWithText("カスタム").performClick()
+        ui.onNodeWithTag("emoji-search").performTextInput("emoji-199")
+        ui.runOnIdle { assertEquals(listOf(images), batches) }
+    }
+
+    @Test
     fun customEmojiSearchShowsTheExactMatchFirst() {
         val image = Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888).apply { eraseColor(AndroidColor.rgb(255, 128, 0)) }
         val names = listOf("xkusa", "kusa_hayasu", "kusa", "kusaa")

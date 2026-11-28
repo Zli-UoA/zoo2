@@ -45,6 +45,19 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun differentImagesOnTheSameHostReuseTheConnection() = runBlocking {
+        Fixture().use { fixture ->
+            repeat(2) { fixture.server.enqueue(MockResponse().setBody("emoji")) }
+            fixture.cache().use { cache ->
+                for (path in listOf("/first.png", "/second.png")) {
+                    assertEquals("emoji", cache.download(ImageRequest(fixture.server.url(path).toString()), 1024).decodeToString())
+                }
+            }
+            assertEquals(0, assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS)).sequenceNumber)
+            assertEquals(1, assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS)).sequenceNumber)
+        }
+    }
+
     @Test fun cachedImageDoesNotWaitForABusyNetworkDispatcher() = runBlocking {
         Fixture().use { fixture ->
             fixture.cache { dispatcher(Dispatcher().apply { maxRequests = 1 }) }.use { cache ->

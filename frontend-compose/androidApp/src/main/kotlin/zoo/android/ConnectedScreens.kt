@@ -909,6 +909,10 @@ internal fun ConnectedScreens(
             customError = session.workspaceEmojiError,
             retryCustom = { session.scope.launch { session.loadWorkspaceEmojis(force = true) } },
             loadKitchen = emojiCatalog::kitchen,
+            prefetchCustomImages = { images ->
+                val urls = images.mapNotNull { timelineImageUrl(session.config.apiBaseUrl, it) }.distinct()
+                prefetchEmojiImages(urls) { session.image(it) }
+            },
             loadImage = { url ->
                 try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }
                 catch (cancelled: CancellationException) { throw cancelled }
