@@ -237,12 +237,11 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                     withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
                         val profile = format.mentionProfiles[username]
                             ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
-                        if (profile == null) append(mention)
+                        if (profile == null) append(username)
                         else {
                             val label = profile.text("display_name").ifEmpty { username }
-                            append('@')
                             pushStringAnnotation(mentionAvatarTag, username)
-                            appendInlineContent("$mentionAvatarTag:$username", username)
+                            appendInlineContent("$mentionAvatarTag:$username", "\uFFFC")
                             pop()
                             append(" $label")
                         }
@@ -405,5 +404,5 @@ internal fun EntryBody(
 }
 
 internal fun AndroidColors.mentionStyle() = SpanStyle(
-    color = mentionText, background = mentionSurface, fontWeight = AndroidWeights.label,
+    color = mentionText, fontWeight = AndroidWeights.label,
 )

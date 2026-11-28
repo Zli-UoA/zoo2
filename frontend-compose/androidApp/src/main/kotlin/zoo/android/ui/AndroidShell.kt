@@ -65,8 +65,7 @@ internal class AndroidColors(dark: Boolean) {
     val renote = if (dark) Color(0xff52d9a1) else Color(0xff007747)
     val unread = if (dark) Color(0xffff9494) else Color(0xffb91c1c)
     val accent = Color(0xffffd400)
-    val mentionSurface = if (dark) Color(0xff303030) else Color(0xfffff6cc)
-    val mentionText = if (dark) Color(0xffe5e5e5) else Color.Black
+    val mentionText = if (dark) Color(0xffffd58a) else Color(0xff785000)
     val suggestionSelected = if (dark) Color(0xff2e2e2e) else Color(0xfffffbe8)
     val messageMention = Color(0xfff0b232)
     val messageTarget = if (dark) Color(0xff6ea8ff) else Color(0xff3b82f6)

@@ -43,11 +43,11 @@ class EntryTextTest {
             "**Rust** と `rust` と \$[x2 rust] と @rust と [Rust の本](https://example.test) と <plain>**rust**</plain>\n```\nrust\n```",
             highlight = EntryHighlight(listOf("rust"), mark),
         )
-        assertEquals("Rust と rust と rust と @rust と Rust の本 と **rust**\nrust\n", text.text)
+        assertEquals("Rust と rust と rust と rust と Rust の本 と **rust**\nrust\n", text.text)
         // The bold, effect, link-label and `<plain>` words are marked (the `<plain>` syntax stays literal, as on Web);
         // inline code, the mention and the code fence are not.
         val marked = text.spanStyles.filter { it.item == mark }.map { it.start until it.end }
-        assertEquals(listOf(0 until 4, 14 until 18, 29 until 33, 41 until 45), marked)
+        assertEquals(listOf(0 until 4, 14 until 18, 28 until 32, 40 until 44), marked)
     }
 
     @Test
@@ -66,8 +66,8 @@ class EntryTextTest {
             mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
         )
 
-        assertEquals("@alice Alice. @bob @HERE", result.text)
-        assertEquals(listOf("@alice Alice", "@HERE"), result.spanStyles.filter { it.item == style }
+        assertEquals("\uFFFC Alice. @bob HERE", result.text)
+        assertEquals(listOf("\uFFFC Alice", "HERE"), result.spanStyles.filter { it.item == style }
             .map { result.text.substring(it.start, it.end) })
     }
     @Test
@@ -77,8 +77,17 @@ class EntryTextTest {
         val result = formatEntry("@alice. @alice", mentionStyle = style,
             allowedMentions = setOf("alice."), mentionUsernames = usernames)
         val span = result.spanStyles.single { it.item == style }
-        assertEquals("@alice.", result.text.substring(span.start, span.end))
+        assertEquals("alice.", result.text.substring(span.start, span.end))
     }
+    @Test
+    fun mentionDisplayPreservesLiteralAtSignsAndRemoteHosts() {
+        val result = formatEntry("@nagi@social.example と desk@example.test と `@nagi`")
+        assertEquals("nagi@social.example と desk@example.test と @nagi", result.text)
+        for (dark in listOf(false, true)) {
+            assertEquals(Color.Unspecified, AndroidColors(dark).mentionStyle().background)
+        }
+    }
+
     @Test
     fun rowHighlightUsesOnlyRenderedAndAllowedMentions() {
         assertFalse(bodyMentionsUser("`example: @alice`", "alice", setOf("alice"), null, emptySet()))

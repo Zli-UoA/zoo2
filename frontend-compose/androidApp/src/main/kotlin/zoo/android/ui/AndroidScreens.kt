@@ -1063,14 +1063,11 @@ private fun Timeline(
                                 val accentWidth = 3.dp.toPx()
                                 val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
                                     else size.width - accentWidth
-                                fun highlight(color: Color, backgroundAlpha: Float, intensity: Float) {
-                                    drawRoundRect(color.copy(alpha = backgroundAlpha * intensity),
-                                        cornerRadius = CornerRadius(8.dp.toPx()))
-                                    drawRect(color.copy(alpha = intensity), topLeft = Offset(start, 0f),
-                                        size = Size(accentWidth, size.height))
-                                }
-                                if (entry.mentionsCurrentUser) highlight(colors.messageMention, .08f, 1f)
-                                if (entry.id == focusMessage) highlight(colors.messageTarget, .16f, focusIntensity())
+                                val focus = if (entry.id == focusMessage) focusIntensity() else 0f
+                                if (focus > 0f) drawRoundRect(colors.messageTarget.copy(alpha = .16f * focus),
+                                    cornerRadius = CornerRadius(8.dp.toPx()))
+                                val stripe = if (entry.mentionsCurrentUser) colors.messageMention else colors.messageTarget.copy(alpha = focus)
+                                drawRect(stripe, topLeft = Offset(start, 0f), size = Size(accentWidth, size.height))
                             } else Modifier)
                             .then(if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
