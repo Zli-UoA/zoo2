@@ -58,6 +58,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import zoo.codePointCount
 
 internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false, val mentions: List<zoo.CompletionOption> = emptyList(),
     val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false, val focusRequest: Int = 0,
@@ -65,6 +66,7 @@ internal data class InputState(val text: String = "", val expanded: Boolean = fa
     val notices: List<String> = emptyList(),
     val lastSend: String? = null,
     val failedFiles: Set<String> = emptySet(),
+    val characterLimit: Int = 40_000,
 )
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
@@ -266,6 +268,7 @@ internal fun ConversationInput(
                 },
                 {
                     Column(Modifier.fillMaxWidth()) {
+                        CharacterCount(state.text, state.characterLimit, colors)
                         if (state.files.isNotEmpty()) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -342,7 +345,7 @@ internal fun ConversationInput(
 
 @Composable
 private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputTool) -> Unit) {
-    val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend
+    val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend && (state.live || state.text.codePointCount() <= state.characterLimit)
     UiIconButton(
         if (state.live) UiIcon.Delete else UiIcon.Send,
         if (state.live) "入力を消去" else "送信", if (enabled) Color.Black else colors.inputHint,
@@ -368,4 +371,12 @@ internal fun FormattingDialog(onDismiss: () -> Unit, onSelect: (String) -> Unit)
         },
         confirmButton = {},
     )
+}
+
+@Composable
+internal fun CharacterCount(text: String, limit: Int, colors: AndroidColors) {
+    if (text.length < limit - 100) return
+    val remaining = limit - text.codePointCount()
+    if (remaining <= 100) Text(if (remaining < 0) "${-remaining}文字超過" else "残り${remaining}文字",
+        Modifier.padding(horizontal = 12.dp), color = if (remaining < 0) colors.unread else colors.secondary, fontSize = 12.sp)
 }

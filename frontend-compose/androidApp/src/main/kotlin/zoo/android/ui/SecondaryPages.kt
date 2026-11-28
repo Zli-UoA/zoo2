@@ -137,6 +137,7 @@ internal fun NewPostPage(
                 }
             },
         )
+        CharacterCount(input.text, 1000, colors)
         if (screen.showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("最近の写真", Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
@@ -174,7 +175,7 @@ internal fun NewPostPage(
             UiIconButton(UiIcon.Attach, "写真", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))
-            val enabled = input.canSend && (input.text.isNotBlank() || screen.attached.isNotEmpty())
+            val enabled = input.canSend && input.text.codePointCount(0, input.text.length) <= 1000 && (input.text.isNotBlank() || screen.attached.isNotEmpty())
             TextAction("投稿", colors, enabled, icon = UiIcon.Send) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
         }
     }

@@ -261,6 +261,8 @@ class AndroidSamplesTest {
         val gallery = galleryMap()
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
+            "edit-original" to AndroidScreen.EditEntry(InputState("受付は10時半です。", expanded = true), "受付は10時です。"),
+            "composer-limit" to AndroidScreen.NewPost(InputState("展示のご案内。".repeat(159)), emptyList(), false, "public"),
             "embedded-post" to AndroidScreen.Home(listOf(illustratedPost.copy(media = emptyList(), body = "会場からのお知らせです。"))),
             "shared-post-link" to conversation.copy(entries = listOf(posts.first().copy(body = "昨日のお知らせです。", postLinks = listOf("https://zli.chat/home/posts/42" to "42")))),
             "article-preview" to conversation.copy(entries = listOf(posts.first().copy(body = "当日の行き方はこちらです。",

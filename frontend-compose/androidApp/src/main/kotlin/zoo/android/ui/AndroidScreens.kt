@@ -187,7 +187,7 @@ internal sealed interface AndroidScreen {
         val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
         val scopeId: String? = null,
     ) : AndroidScreen
-    data class EditEntry(val input: InputState) : AndroidScreen
+    data class EditEntry(val input: InputState, val original: String? = null) : AndroidScreen
     data class Search(val state: SearchScreenState) : AndroidScreen
     data class Profile(
         val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null,
@@ -479,6 +479,12 @@ private fun RenderAndroidScreen(
             }
             is AndroidScreen.EditEntry -> {
                 PageHeader("編集", colors, onBack = back)
+                screen.original?.takeIf { it != screen.input.text }?.let {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text("編集前", color = colors.secondary, fontSize = 12.sp)
+                        Text(it, color = colors.secondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
                 ConversationInput(screen.input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
                     { dispatch(AndroidUiAction.UseInputTool(it)) }, Modifier.weight(1f),
                     onSelection = { dispatch(AndroidUiAction.SelectInput(it)) }, canResize = false)

@@ -566,12 +566,12 @@ internal fun ConnectedScreens(
         )
         state.overlay == "edit-entry" -> AndroidScreen.EditEntry(
             InputState(state.editDraft, expanded = true, canSend = env.online && !state.saving && state.editDraft.isNotBlank(),
-                selection = state.editSelection))
+                selection = state.editSelection, characterLimit = if (state.editing?.item?.postHeader != null) 1000 else 40_000), original = state.editing?.item?.body)
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
             AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving && root.postHeader?.audience != null,
-                selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend),
+                characterLimit = 1000, selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend),
                 loadFailed = state.postLoadFailed, online = env.online, loading = state.postPending)
         }
         state.overlay == "post" -> AndroidScreen.PostLoading(env.online, state.postLoadFailed)
@@ -580,7 +580,7 @@ internal fun ConnectedScreens(
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
             loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
         route == "/notifications" -> state.inbox.screen(state.followResponses)
-        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
+        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true, characterLimit = 1000), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, fullScreenAllowed))
         channel != null && (threadRoot != null || deletedRoot) -> {
           // 暗号化の境目は、スレッドの画面に出す親と返信の中で決める。
