@@ -422,6 +422,14 @@ class AndroidSamplesTest {
             for (night in listOf(false, true)) {
                 ui.runOnIdle { screen = example; dark = night }
                 ui.waitForIdle()
+                if (name == "post-attachment-retry" || name == "chat-attachment-retry") {
+                    fun target(label: String) = ui.onNodeWithContentDescription("展示.png" + label)
+                        .fetchSemanticsNode().touchBoundsInRoot
+                    check(!target("のアップロードを再試行").overlaps(target("を添付から外す")))
+                    if (name == "post-attachment-retry") {
+                        check(!target("の説明を編集").overlaps(target("をセンシティブに指定")))
+                    }
+                }
                 if (name in setOf("conversation-idle", "thread")) {
                     ui.onNodeWithContentDescription("入力欄を広げる").assertDoesNotExist()
                 }
@@ -1301,6 +1309,7 @@ class AndroidSamplesTest {
     }
 
     private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {
+        if (!name.startsWith("motion-")) ui.recordControlBounds(name)
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
