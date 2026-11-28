@@ -187,7 +187,9 @@ make test DESTINATION='platform=iOS Simulator,name=iPhone 18 Pro'
 
 実機向けの署名には、チーム `F82XB5KFX2` の App ID `works.zli.zoo` と
 Push Notifications の機能設定が必要です。Debug は APNs のサンドボックス環境、Release は本番環境を使います。
-デバイスコード認証に Associated Domains や AASA は不要です。
+ログインは AuthZ のパスキーに対応した認可コード＋PKCE方式を使います。
+暗号メッセージの鍵解錠には Associated Domains と AuthZ の AASA が必要です。
+本番設定は [ネイティブ認証とプッシュ通知の配備](docs/native-auth-push.md) を参照してください。
 
 ## 利用できる機能
 
