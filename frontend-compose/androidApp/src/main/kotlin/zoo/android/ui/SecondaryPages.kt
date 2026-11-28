@@ -50,7 +50,7 @@ internal data class SelectionItem(
     val isUserName: Boolean = false,
     val selected: Boolean? = null,
 )
-internal data class RecentPhoto(val id: String, val label: String)
+internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false)
 
 @Composable
 internal fun DirectoryPage(
@@ -161,6 +161,7 @@ internal fun NewPostPage(
             items(screen.attached, key = { it.id }) { item ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+                    if (item.failed) TextAction("再試行", colors, icon = UiIcon.Refresh) { dispatch(AndroidUiAction.RetryFile(item.id)) }
                     TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
                 }
             }

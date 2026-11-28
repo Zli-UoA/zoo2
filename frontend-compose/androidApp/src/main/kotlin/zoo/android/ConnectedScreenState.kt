@@ -694,6 +694,7 @@ internal class ConnectedScreenState(
             mentions = zoo.completionOptions(mention, people, people.map { it.text("id") }.toSet()),
             canSend = canPost && !saving && (files == null || files.canSend(draft.text)),
             hasAttachments = files?.items?.isNotEmpty() == true,
+            failedFiles = files?.items?.filter { it.failed }?.map { it.file.text("id") }?.toSet().orEmpty(),
             files = files?.items?.map { it.file.text("id") to it.name }.orEmpty(),
         )
     }
@@ -1081,6 +1082,7 @@ internal class ConnectedScreenState(
                     drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(selection = action.range)
                 else -> Unit
             }
+            is AndroidUiAction.RetryFile -> (if (screen is AndroidScreen.NewPost) postFiles else channelFiles[draftKey])?.retry(action.id)
             is AndroidUiAction.RemoveFile -> {
                 val attachments = if (screen is AndroidScreen.NewPost) postFiles else channelFiles[draftKey]
                 attachments?.items?.firstOrNull { it.file.text("id") == action.id }?.let { attachments.remove(it) }

@@ -501,7 +501,7 @@ internal fun ConnectedScreens(
         state.overlay == "new-post" -> AndroidScreen.NewPost(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,
-            state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name) },
+            state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name, it.failed) },
             state.federatePost.takeIf { state.federationAvailable },
         )
         state.overlay == "edit-entry" -> AndroidScreen.EditEntry(

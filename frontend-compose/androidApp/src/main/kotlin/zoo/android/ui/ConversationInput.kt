@@ -64,6 +64,7 @@ internal data class InputState(val text: String = "", val expanded: Boolean = fa
     /** 暗号化チャンネルの送信画面の表示（増えた配布先と、鍵を配れない相手。#565）。何もなければ空。 */
     val notices: List<String> = emptyList(),
     val lastSend: String? = null,
+    val failedFiles: Set<String> = emptySet(),
 )
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
@@ -76,6 +77,7 @@ internal fun ConversationInput(
     modifier: Modifier = Modifier,
     onMention: (String) -> Unit = {},
     onSelection: (TextRange) -> Unit = {},
+    onRetryFile: (String) -> Unit = {},
     onRemoveFile: (String) -> Unit = {},
     hideIdleHandle: Boolean = false,
     canResize: Boolean = true,
@@ -268,6 +270,7 @@ internal fun ConversationInput(
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 state.files.forEach { (id, name) ->
+                                    if (id in state.failedFiles) TextAction("再試行", colors, icon = UiIcon.Refresh) { onRetryFile(id) }
                                     TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
                                 }
                             }

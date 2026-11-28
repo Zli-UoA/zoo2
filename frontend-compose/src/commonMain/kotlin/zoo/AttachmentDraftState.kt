@@ -237,6 +237,8 @@ class AttachmentDraft(val file: Row, val name: String, val type: String) {
     var sensitive by mutableStateOf(false)
     var uploaded by mutableStateOf<Row?>(null)
     var bitmap by mutableStateOf<ImageBitmap?>(null)
+    var failed by mutableStateOf(false)
+        internal set
     var previewJob: Job? = null
 }
 
@@ -334,52 +336,64 @@ class AttachmentDrafts(
                             throw e
                         } catch (_: Exception) {}
                     }
-            scope.launch {
-                try {
-                    if (upload != null) {
-                        val result = upload(file)
-                        if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
-                    } else {
-                        app.requirePlaintextChannel(channel)
-                        val presign =
-                            attachmentPayload(
-                                app.api.request(
-                                    "/api/attachments/presign",
-                                    "POST",
-                                    buildJsonObject {
-                                        put("channel_id", channel)
-                                        put("file_name", draft.name)
-                                        put("file_size", file.text("size").toLong())
-                                        put("content_type", mime)
-                                    },
-                                )
-                            )
-                        if (draft !in items) return@launch
-                        require(presign.text("attachment_id").isNotEmpty())
-                        app.platform.invoke(
-                            "filePut",
-                            obj(
-                                    "id" to file.text("id"),
-                                    "url" to presign.text("upload_url"),
-                                    "type" to mime,
-                                )
-                                .toString(),
-                        )
-                        if (draft in items)
-                            draft.uploaded = obj("id" to presign.text("attachment_id"))
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    if (draft in items) {
-                        remove(draft)
-                        error = app.t("attachments.uploadError")
-                    }
-                }
-            }
+            startUpload(draft)
         }
         if (handled) error = batchError
         return handled
+    }
+
+    fun retry(id: String) {
+        val draft = items.firstOrNull { it.file.text("id") == id && it.failed } ?: return
+        draft.failed = false
+        startUpload(draft)
+    }
+
+    private fun startUpload(draft: AttachmentDraft) {
+        val file = draft.file
+        val mime = draft.type
+        scope.launch {
+            try {
+                if (upload != null) {
+                    val result = upload(file)
+                    if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
+                } else {
+                    app.requirePlaintextChannel(channel)
+                    val presign =
+                        attachmentPayload(
+                            app.api.request(
+                                "/api/attachments/presign",
+                                "POST",
+                                buildJsonObject {
+                                    put("channel_id", channel)
+                                    put("file_name", draft.name)
+                                    put("file_size", file.text("size").toLong())
+                                    put("content_type", mime)
+                                },
+                            )
+                        )
+                    if (draft !in items) return@launch
+                    require(presign.text("attachment_id").isNotEmpty())
+                    app.platform.invoke(
+                        "filePut",
+                        obj(
+                                "id" to file.text("id"),
+                                "url" to presign.text("upload_url"),
+                                "type" to mime,
+                            )
+                            .toString(),
+                    )
+                    if (draft in items)
+                        draft.uploaded = obj("id" to presign.text("attachment_id"))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (draft in items) {
+                    draft.failed = true
+                    error = app.t("attachments.uploadError")
+                }
+            }
+        }
     }
 
     private var picking = false
