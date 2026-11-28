@@ -143,6 +143,48 @@ it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit", "middle-with
   },
 );
 
+it("keeps bottom-follow off when a calendar change shrinks the remaining distance", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const today = new Date(2026, 9, 19, 12);
+  vi.setSystemTime(today);
+  try {
+    const replies = Array.from({ length: 20 }, (_, i) =>
+      message({ id: String(i), created_at: today.toISOString() }),
+    );
+    const pane = (items: FeedMessage[]) => (
+      <LocaleProvider>
+        <ThreadPane {...paneProps({ replies: items })} />
+      </LocaleProvider>
+    );
+    const view = render(pane(replies));
+    const scroll = view.container.querySelector<HTMLElement>("[data-scroll-restoration-id]")!;
+    scroll.style.cssText = "height: 180px; flex: none; overflow-anchor: none";
+    scroll.style.height = scroll.scrollHeight - 30 + "px";
+    const changeDate = (date: Date) =>
+      act(() => {
+        vi.setSystemTime(date);
+        window.dispatchEvent(new Event("focus"));
+      });
+    changeDate(new Date(2026, 9, 20, 12));
+    scroll.scrollTop = 0;
+    fireEvent.scroll(scroll);
+    expect(scroll.scrollHeight - scroll.clientHeight).toBeGreaterThan(48);
+    changeDate(today);
+    expect(scroll.scrollHeight - scroll.clientHeight).toBe(30);
+    fireEvent.scroll(scroll);
+    const updated = [...replies, message({ id: "new", created_at: today.toISOString() })];
+    view.rerender(pane(updated));
+    expect(scroll.scrollTop).toBe(0);
+    scroll.scrollTop = scroll.scrollHeight;
+    fireEvent.scroll(scroll);
+    view.rerender(pane([...updated, message({ id: "next", created_at: today.toISOString() })]));
+    expect(scroll.scrollTop).toBe(scroll.scrollHeight - scroll.clientHeight);
+    view.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 /** 呼び出し元のボタンを残したまま ThreadPane を開閉する。 */
 function Harness({ onClose }: { onClose?: () => void }) {
   const [open, setOpen] = useState(false);

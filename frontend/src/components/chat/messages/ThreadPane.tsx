@@ -39,7 +39,7 @@ import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 
 type ReplyListProps = {
   calendar: ReturnType<typeof useLocalCalendar>;
-  onPositionChange: (scroll: HTMLElement) => void;
+  onPositionRestored: (scroll: HTMLElement) => void;
   firstReplyId: string;
   lastReplyId: string;
   children: ReactNode;
@@ -79,7 +79,7 @@ class ThreadReplyList extends Component<ReplyListProps> {
       const offset = anchor.row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
       scroll.scrollTop += offset - anchor.offset;
     }
-    this.props.onPositionChange(scroll);
+    this.props.onPositionRestored(scroll);
   }
 
   render() {
@@ -308,6 +308,7 @@ export function ThreadPane({
     targetMessageId && replies.some((reply) => reply.id === targetMessageId),
   );
   const atBottomRef = useRef(!hasTargetInReplies);
+  const restoredScrollTop = useRef<number | null>(null);
   function updateBottomPosition(element: HTMLElement) {
     atBottomRef.current = isNearBottom(
       element.scrollTop,
@@ -327,6 +328,7 @@ export function ThreadPane({
   useLayoutEffect(() => {
     if (prevRootIdRef.current !== root.id) {
       prevRootIdRef.current = root.id;
+      restoredScrollTop.current = null;
       scrolledTarget.current = undefined;
       atBottomRef.current = !hasTargetInReplies;
     }
@@ -567,7 +569,10 @@ export function ThreadPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
-          updateBottomPosition(element);
+          if (element.scrollTop !== restoredScrollTop.current) {
+            restoredScrollTop.current = null;
+            updateBottomPosition(element);
+          }
           if (element.scrollTop <= 48 && hasOlder && !isLoadingOlder) {
             onLoadOlder?.();
           }
@@ -599,7 +604,11 @@ export function ThreadPane({
           <ThreadReplyList
             key={root.id}
             calendar={calendar}
-            onPositionChange={updateBottomPosition}
+            onPositionRestored={(element) => {
+              // 復元による scroll イベントで、停止中の末尾追従を再開しない。
+              restoredScrollTop.current = element.scrollTop;
+              if (atBottomRef.current) updateBottomPosition(element);
+            }}
             firstReplyId={replies[0].id}
             lastReplyId={replies[replies.length - 1].id}
           >
