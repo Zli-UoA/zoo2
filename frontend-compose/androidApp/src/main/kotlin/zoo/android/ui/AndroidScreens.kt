@@ -462,25 +462,13 @@ private fun RenderAndroidScreen(
             is AndroidScreen.OpeningConversation -> {
                 PageHeader(screen.title, colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    when {
-                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
-                        screen.failed -> screen.retry?.let { retry ->
-                            TextAction(androidLabel("offline.retry", "再試行"), colors, click = retry)
-                        }
-                        else -> CircularProgressIndicator(color = colors.accent)
-                    }
+                    LoadingStatus(screen.online, screen.failed, colors, screen.retry)
                 }
             }
             is AndroidScreen.PostLoading -> {
                 PageHeader("投稿", colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    when {
-                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
-                        screen.failed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
-                            dispatch(AndroidUiAction.RetryPost)
-                        }
-                        else -> CircularProgressIndicator(color = colors.accent)
-                    }
+                    LoadingStatus(screen.online, screen.failed, colors, { dispatch(AndroidUiAction.RetryPost) })
                 }
             }
             is AndroidScreen.Post -> {
@@ -528,13 +516,7 @@ private fun RenderAndroidScreen(
                         }
                         if (screen.postsPending) {
                             Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                when {
-                                    !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
-                                    screen.postsLoadFailed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
-                                        dispatch(AndroidUiAction.RetryProfile)
-                                    }
-                                    else -> CircularProgressIndicator(color = colors.accent)
-                                }
+                                LoadingStatus(screen.online, screen.postsLoadFailed, colors, { dispatch(AndroidUiAction.RetryProfile) })
                             }
                         }
                     }
@@ -597,6 +579,15 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                     action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
             }
         }
+    }
+}
+
+@Composable
+private fun LoadingStatus(online: Boolean, failed: Boolean, colors: AndroidColors, retry: (() -> Unit)?) {
+    when {
+        !online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+        failed -> retry?.let { TextAction(androidLabel("offline.retry", "再試行"), colors, click = it) }
+        else -> CircularProgressIndicator(color = colors.accent)
     }
 }
 
