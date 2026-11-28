@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export const WORKFLOWS = ['ci-backend', 'ci-home-query-budget', 'ci-read-state-worker-budget', 'ci-phone-query-budget', 'ci-search-query-budget', 'ci-components-query-budget', 'ci-frontend', 'ci-frontend-auth-e2e', 'ci-frontend-e2ee-e2e', 'ci-tui', 'ci-desktop-tauri', 'ci-crypto', 'ci-github-bot', 'ci-flux-status', 'ci-db-erd', 'terraform-r2', 'ci-android'];
+export const WORKFLOWS = ['ci-backend', 'ci-home-query-budget', 'ci-read-state-worker-budget', 'ci-phone-query-budget', 'ci-search-query-budget', 'ci-components-query-budget', 'ci-frontend', 'ci-frontend-auth-e2e', 'ci-frontend-e2ee-e2e', 'ci-tui', 'ci-desktop-tauri', 'ci-crypto', 'ci-ios', 'ci-github-bot', 'ci-flux-status', 'ci-db-erd', 'terraform-r2', 'ci-android'];
 
 // These workflows are called by PR CI and use the same paths as main.
 export const PR_WORKFLOWS = ['ci-backend', 'ci-frontend', 'ci-tui', 'ci-github-bot'];

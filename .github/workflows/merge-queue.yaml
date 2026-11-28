@@ -33,6 +33,7 @@ jobs:
       ci-tui: ${{ steps.match.outputs.ci-tui }}
       ci-desktop-tauri: ${{ steps.match.outputs.ci-desktop-tauri }}
       ci-crypto: ${{ steps.match.outputs.ci-crypto }}
+      ci-ios: ${{ steps.match.outputs.ci-ios }}
       ci-github-bot: ${{ steps.match.outputs.ci-github-bot }}
       ci-flux-status: ${{ steps.match.outputs.ci-flux-status }}
       ci-db-erd: ${{ steps.match.outputs.ci-db-erd }}
@@ -123,6 +124,11 @@ jobs:
       contents: read
       packages: write
 
+  ci-ios:
+    needs: changes
+    if: needs.changes.outputs.ci-ios == 'true'
+    uses: ./.github/workflows/ci-ios.yaml
+
   ci-flux-status:
     needs: changes
     if: needs.changes.outputs.ci-flux-status == 'true'
@@ -165,6 +171,7 @@ jobs:
       - ci-tui
       - ci-desktop-tauri
       - ci-crypto
+      - ci-ios
       - ci-github-bot
       - ci-flux-status
       - ci-db-erd

@@ -307,6 +307,8 @@ Xcode Cloudの設定はApple側で管理します。接続・保存しただけ�
 Xcode 27.2でのアプリ・通知拡張・通話表示拡張・WatchアプリのReleaseアーカイブ（署名なし）が成功しています。
 Cloud上の署名・アップロード・配布は、スクリプトの反映後に確認します。
 検証したMacにはNixがないため、`nix develop .#ios` の起動確認は未実施です。
+GitHub Actionsの[iOSビルド環境の検証](../.github/workflows/ci-ios.yaml)では、macOSの一時ランナーで
+同じ開発シェルを起動し、ツールの実行・固定Rust版・両iOSターゲットの存在を確認します。
 
 clone後のスクリプトは、`rust-toolchain.toml` の固定版RustとiOS向けターゲットをrustupで用意し、
 既存の `ios/Scripts/build-crypto-xcframework.sh` で `ZooCrypto` を生成します。
