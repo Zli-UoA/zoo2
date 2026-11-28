@@ -1105,6 +1105,22 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testDirectoryWaitsForPinsAndAllowsUseWhenSyncIsSlow() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-pins-loading", "--uitesting-chat-details"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["channel-section-list"].exists)
+        XCTAssertFalse(app.buttons["channel-section-pinned"].exists)
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
+        XCTAssertTrue(app.buttons["channel-section-list"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["ピン留めの取得に時間がかかっています。一覧を表示し、取得を続けています。"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["directory-loading"].firstMatch.exists)
+        app.descendants(matching: .any)["channel-11111111-1111-4111-8111-111111111111"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testDirectoryWaitsForCachedMemberships() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-cache-loading"]

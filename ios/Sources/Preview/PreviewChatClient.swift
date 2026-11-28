@@ -312,7 +312,10 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channelPins(allowOfflineFallback: Bool) async throws -> ChannelPins {
-        pins
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-pins-loading") {
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        return pins
     }
     func observeChannelPinChanges(receive: @MainActor () -> Void) async throws {
         let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))

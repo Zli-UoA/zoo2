@@ -213,6 +213,11 @@ actor SyncCache {
         }
         let id = account + "|" + resource
         if let row = try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first {
+            // ピン操作後に遅れたGETが届いても、次回起動用の一覧を古い版へ戻さない。
+            if resource == "rest:api/channel-pins",
+               let previous = try? JSONDecoder().decode(ChannelPins.self, from: row.payload),
+               let incoming = try? JSONDecoder().decode(ChannelPins.self, from: payload),
+               previous.version > incoming.version { return }
             row.payload = payload
         } else {
             modelContext.insert(CachedSyncRecord(account: lease.account, resource: resource, channelID: channelID, payload: payload))
