@@ -366,8 +366,15 @@ class AndroidSamplesTest {
         var foreground by mutableStateOf(false)
         var emojiPicker by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
+        val sharedPost = object : PostPreviewSource {
+            override fun watch(id: String) {}
+            override fun release(id: String) {}
+            override fun retry(id: String) {}
+            override fun read(id: String) = PostPreview.Loaded("なぎ", "会場は北口から徒歩5分です。受付は10時に開きます。", "fixture-avatar",
+                listOf(TimelineMedia("photo", "会場案内図", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f)))
+        }
         ui.setContent {
-            CompositionLocalProvider(LocalTimelineImage provides { when (it.key) { "fixture-emoji" -> reactionEmoji; "photo" -> gallery; else -> avatar } }) {
+            CompositionLocalProvider(LocalPostPreviews provides sharedPost, LocalTimelineImage provides { when (it.key) { "fixture-emoji" -> reactionEmoji; "photo" -> gallery; else -> avatar } }) {
                 AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
                     actions.add(action)
                     if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true

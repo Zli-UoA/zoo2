@@ -725,6 +725,7 @@ internal fun ConnectedScreens(
             for (url in previewLinks) session.previews.load(previewService, url)
         }
     }
+    val linkedPosts = rememberPostPreviews(session, env.visible && env.online)
     val compactCall = callScreen?.takeIf { !showFullCall }
     Column(Modifier.fillMaxSize().then(if (compactCall != null) Modifier.statusBarsPadding() else Modifier)) {
         if (compactCall != null) {
@@ -751,6 +752,7 @@ internal fun ConnectedScreens(
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                     LocalChannelLinks provides channelLinks,
+                    LocalPostPreviews provides linkedPosts,
                     LocalMentionProfiles provides mentionProfiles,
                     LocalMentionUsernames provides mentionUsernames,
                 ) {

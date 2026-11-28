@@ -143,19 +143,45 @@ private fun SummalyCard(card: EntryCard, colors: AndroidColors, open: ((String) 
     }
 }
 
+internal sealed interface PostPreview {
+    data object Loading : PostPreview
+    data object Unavailable : PostPreview
+    data object Failed : PostPreview
+    data class Loaded(val author: String, val body: String, val avatar: String?, val media: List<TimelineMedia>) : PostPreview
+}
+
+internal interface PostPreviewSource {
+    fun watch(id: String)
+    fun release(id: String)
+    fun read(id: String): PostPreview
+    fun retry(id: String)
+}
+
+internal val LocalPostPreviews = androidx.compose.runtime.staticCompositionLocalOf<PostPreviewSource?> { null }
+
 @Composable
-internal fun PostLinkCard(url: String, colors: AndroidColors, open: () -> Unit) {
-    val parsed = zoo.publicUrlString(url)?.let(android.net.Uri::parse) ?: return
-    val shape = RoundedCornerShape(12.dp)
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(shape).border(1.dp, colors.inputBoundary, shape)
-        .clickable(role = Role.Button, onClickLabel = "投稿を開く", onClick = open).padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        UiGlyph(UiIcon.Bubble, colors.secondary, 18.dp)
-        Column(Modifier.weight(1f)) {
-            Text("Zoo の投稿", color = colors.foreground, fontSize = 15.sp, fontWeight = AndroidWeights.emphasis)
-            Text(parsed.host + parsed.encodedPath, color = colors.secondary, fontSize = 12.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+internal fun PostLinkCard(url: String, id: String, colors: AndroidColors, open: () -> Unit) {
+    val source = LocalPostPreviews.current
+    androidx.compose.runtime.DisposableEffect(source, id) {
+        source?.watch(id)
+        onDispose { source?.release(id) }
+    }
+    when (val preview = source?.read(id) ?: PostPreview.Loading) {
+        is PostPreview.Loaded -> TimelineQuoteCard(
+            TimelineQuote(url, id, preview.author, preview.body, preview.media, avatar = preview.avatar, local = true),
+            colors, open, openMedia = { open() },
+        )
+        else -> {
+            val shape = RoundedCornerShape(12.dp)
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(shape).border(1.dp, colors.inputBoundary, shape)
+                .padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(when (preview) {
+                    PostPreview.Unavailable -> "この投稿は表示できません"
+                    PostPreview.Failed -> "投稿を読み込めませんでした"
+                    else -> "投稿を読み込み中"
+                }, Modifier.weight(1f), color = colors.secondary, fontSize = 14.sp)
+                if (preview == PostPreview.Failed) TextAction("再試行", colors, style = TextActionStyle.Plain) { source?.retry(id) }
+            }
         }
-        UiGlyph(UiIcon.Next, colors.secondary, 16.dp)
     }
 }

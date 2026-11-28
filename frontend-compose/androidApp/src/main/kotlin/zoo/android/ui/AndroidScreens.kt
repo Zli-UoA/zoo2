@@ -1103,7 +1103,7 @@ private fun Timeline(
                                 }
                                 entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
                                 entry.postLinks.forEach { (url, id) ->
-                                    PostLinkCard(url, colors) { dispatch(AndroidUiAction.OpenPost(id)) }
+                                    PostLinkCard(url, id, colors) { dispatch(AndroidUiAction.OpenPost(id)) }
                                 }
                                 EntryCards(listOfNotNull(entry.linkCard), colors) { url ->
                                     dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url))
