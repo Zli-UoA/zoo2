@@ -14,7 +14,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,7 +28,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.paneTitle
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -186,20 +184,10 @@ private fun TypeChip(type: GlobalSearchType, colors: AndroidColors, select: (Glo
             Column(Modifier.selectableGroup()) {
                 for (kind in GlobalSearchType.entries) {
                     val chosen = kind == type
-                    DropdownMenuItem(
-                        text = {
-                            Text(androidLabel(kind.labelKey, kind.fallback), color = colors.foreground,
-                                fontWeight = if (chosen) AndroidWeights.emphasis else AndroidWeights.label)
-                        },
-                        // The chosen kind keeps its check; the others keep the same indent.
-                        leadingIcon = {
-                            Box(Modifier.size(AndroidControlSize.inlineIcon)) {
-                                if (chosen) UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon)
-                            }
-                        },
-                        onClick = { expanded = false; if (!chosen) select(kind) },
-                        modifier = Modifier.semantics { selected = chosen; role = Role.RadioButton },
-                    )
+                    MenuOption(androidLabel(kind.labelKey, kind.fallback), colors, chosen = chosen) {
+                        expanded = false
+                        if (!chosen) select(kind)
+                    }
                 }
             }
         }

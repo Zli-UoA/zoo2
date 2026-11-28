@@ -17,7 +17,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -335,18 +335,13 @@ private fun PostAudienceButton(visibility: String, colors: AndroidColors, dispat
     Box {
         UiIconButton(audience.icon, "${androidLabel("home.audience", "公開範囲")}：${audience.localizedLabel()}", colors.foreground, { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
-            for (option in PostAudience.composerOptions) {
-                DropdownMenuItem(
-                    text = { Text(option.localizedLabel(), color = colors.foreground) },
-                    leadingIcon = { UiGlyph(option.icon, colors.secondary, AndroidControlSize.inlineIcon) },
-                    trailingIcon = if (option == audience) {
-                        { UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon) }
-                    } else null,
-                    onClick = {
+            Column(Modifier.selectableGroup()) {
+                for (option in PostAudience.composerOptions) {
+                    MenuOption(option.localizedLabel(), colors, option.icon, chosen = option == audience) {
                         expanded = false
                         dispatch(AndroidUiAction.SelectPostVisibility(option.apiValue))
-                    },
-                )
+                    }
+                }
             }
         }
     }

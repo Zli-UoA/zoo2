@@ -44,7 +44,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -615,11 +614,10 @@ private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction)
                 Triple("チャンネルを探す", UiIcon.Search, AndroidUiAction.Browse),
                 Triple("チャンネルを作成", UiIcon.Add, AndroidUiAction.CreateChannel),
             ).forEach { (label, icon, action) ->
-                DropdownMenuItem(
-                    text = { Text(label, color = colors.foreground) },
-                    leadingIcon = { UiGlyph(icon, colors.secondary, AndroidControlSize.inlineIcon) },
-                    onClick = { expanded = false; dispatch(action) },
-                )
+                MenuOption(label, colors, icon) {
+                    expanded = false
+                    dispatch(action)
+                }
             }
         }
     }
