@@ -1470,6 +1470,7 @@ internal class ConnectedScreenState(
         val id = platform.uuid()
         val entry = TimelineItem(id, "", listOf(text, sent.joinToString("、") { it.name })
             .filter { it.isNotBlank() }.joinToString("\n"), "", delivery = "送信中…")
+        val releaseSubmission = files?.takeIf { sent.isNotEmpty() }?.retainForSubmission()
         val pending = Outgoing(destination, entry)
         outgoing.add(pending)
         files?.items?.clear()
@@ -1504,7 +1505,7 @@ internal class ConnectedScreenState(
                 if (index >= 0) outgoing[index] = pending.copy(entry = entry.copy(delivery = "送信を確認できませんでした",
                     recoverDraft = {
                         val current = if (homePost) postDraft else drafts[key]?.text.orEmpty()
-                        if (current.isNotEmpty() || !files?.items.isNullOrEmpty()) app.toast = "編集中の下書きを先に送信してください"
+                        if (current.isNotEmpty() || (homePost && quoteDraft != null) || !files?.items.isNullOrEmpty()) app.toast = "編集中の下書きを先に送信してください"
                         else {
                             if (homePost) {
                                 quoteDraft = quoted
@@ -1518,6 +1519,7 @@ internal class ConnectedScreenState(
                         }
                     }))
             } finally {
+                releaseSubmission?.invoke()
                 if (outgoing.none { it.destination == destination && it.entry.delivery == "送信中…" }) sendLocks.remove(destination)
             }
         }

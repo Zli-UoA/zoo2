@@ -439,7 +439,7 @@ class AttachmentDrafts(
     }
 
     /** Keep uploaded files owned until an in-flight post finishes, even if its editor is removed. */
-    internal fun retainForSubmission(): () -> Unit {
+    fun retainForSubmission(): () -> Unit {
         check(!closeRequested)
         submissions++
         var released = false
