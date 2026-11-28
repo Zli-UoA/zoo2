@@ -396,11 +396,7 @@ internal class AndroidPlatform(
         }
         withContext(Dispatchers.Main) {
             val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
-            val share = Intent(Intent.ACTION_SEND).apply {
-                this.type = type.ifEmpty { "application/octet-stream" }
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+            val share = fileShareIntent(activity.contentResolver, uri, name, type)
             activity.startActivity(Intent.createChooser(share, name))
         }
     }
@@ -490,3 +486,13 @@ internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
 
 /** ログアウトの確認で、終わっていない失効があることを知らせる（鍵の件数の代わりに渡す値）。 */
 internal const val REVOCATION_PENDING_PROMPT = Int.MIN_VALUE
+
+
+internal fun fileShareIntent(resolver: android.content.ContentResolver, uri: Uri, name: String, mime: String): Intent =
+    Intent(Intent.ACTION_SEND).apply {
+        type = mime.ifEmpty { "application/octet-stream" }
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_TITLE, name)
+        clipData = android.content.ClipData.newUri(resolver, name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
