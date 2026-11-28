@@ -323,12 +323,11 @@ class SyncedTable(
         )
     }
 
-    private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
+    private suspend fun fetchSubset(subset: SubsetParams): SubsetSnapshot {
         val source = streamReady.await()
         val snapshot = subsetRequests.request { source.requestSnapshot(subset) }
         snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
         // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
-        if (main && !accepting.value) accepting.value = true
         if (accepting.value) acceptNow()
         return snapshot
     }
@@ -355,7 +354,7 @@ class SyncedTable(
         pages.update { it + (scope to current.copy(loading = true)) }
         val epoch = refetchEpoch
         try {
-            val snapshot = fetchSubset(scope == PageScope.Main, pageSubset(scope, current.oldest))
+            val snapshot = fetchSubset(pageSubset(scope, current.oldest))
             // 取り直しが始まった: 範囲の状態は取り直しが作り直す。この結果では進めない。
             if (epoch != refetchEpoch) return false
             val values = snapshot.data.mapNotNull { it.jsonObject["value"] as? JsonObject }
@@ -368,7 +367,11 @@ class SyncedTable(
                     oldest = oldest,
                 ))
             }
-            if (scope == PageScope.Main) saveMainCache()
+            if (scope == PageScope.Main) {
+                accepting.value = true
+                acceptNow()
+                saveMainCache()
+            }
             return true
         } catch (e: CancellationException) {
             if (epoch == refetchEpoch) pages.update { it + (scope to current) }
@@ -390,7 +393,7 @@ class SyncedTable(
                     limit = 1,
                     orderBy = "created_at DESC, id DESC",
                 )
-            Result.success(fetchSubset(false, subset).data.isNotEmpty())
+            Result.success(fetchSubset(subset).data.isNotEmpty())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
