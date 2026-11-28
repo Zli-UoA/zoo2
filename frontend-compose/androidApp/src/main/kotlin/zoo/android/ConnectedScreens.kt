@@ -403,6 +403,7 @@ internal fun ConnectedScreens(
         when {
             state.mediaPreview != null -> state.mediaPreview = null
             state.documentPreview != null -> state.documentPreview = null
+            state.decryptedFile != null -> state.decryptedFile = null
             showFullCall -> background()
             sipRoute && state.overlay == null -> {
                 platform.navigate("/settings")
@@ -461,6 +462,10 @@ internal fun ConnectedScreens(
     // スレッドに返信できるか（アーカイブ済み・親が削除済み・参加が必要で未参加なら返信できない）。入力欄と入力中の通知で共有する。
     val canReplyInThread = canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
         (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined")
+    // チャンネル一覧は、チャンネル・メンバー・未読・ピン・スレッドが変わったときだけ作り直す（下書きの入力では作り直さない）。
+    val channelSections by remember(state, channels, usersById, memberships) {
+        derivedStateOf { state.channelSections(channels, usersById, memberships) }
+    }
     val screen = when {
         showFullCall -> checkNotNull(callScreen)
         state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
@@ -585,7 +590,7 @@ internal fun ConnectedScreens(
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
-        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
+        else -> AndroidScreen.Channels(channelSections, state.joinedThreads.hasMore,
             threadsFailed = state.joinedThreads.error)
     }
     // 幅の広い画面では、会話・スレッドの横にもチャンネル一覧を出す（AndroidScreens の ListDetail が幅で決める）。
@@ -593,7 +598,7 @@ internal fun ConnectedScreens(
     val listBeside = wideWindow && (screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread ||
         screen is AndroidScreen.OpeningConversation)
     val sidebar = if (listBeside || (wideWindow && screen is AndroidScreen.Channels)) AndroidScreen.Channels(
-        state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
+        channelSections, state.joinedThreads.hasMore,
         selected = currentThread ?: channelId, threadsFailed = state.joinedThreads.error,
     ) else null
     // 参加中のスレッド。チャンネル一覧を表示している間だけ、開いたときと 60 秒ごとに取り直す（iOS と同じ）。
@@ -835,6 +840,10 @@ internal fun ConnectedScreens(
     }
     state.documentPreview?.takeIf { env.visible && !showFullCall }?.let { source ->
         key(source) { DocumentPreview(session, platform, source, env.dark) { state.documentPreview = null } }
+    }
+    state.decryptedFile?.takeIf { env.visible }?.let { file ->
+        DecryptedFileDialog(file.name, { session.t(it) }, save = { state.saveDecryptedFile(share = false) },
+            share = { state.saveDecryptedFile(share = true) }, dismiss = { state.decryptedFile = null })
     }
     if (phone.error) {
         AlertDialog(

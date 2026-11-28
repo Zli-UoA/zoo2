@@ -3,6 +3,7 @@ package zoo.android.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -176,7 +177,9 @@ internal object AndroidLayout {
 @Composable
 private fun NavigationRailColumn(section: TopPage?, colors: AndroidColors, onSelect: (TopPage) -> Unit) {
     Column(
+        // 横向きのスマートフォンなど高さが足りないときも、すべてのタブに届くよう縦にスクロールできるようにする。
         Modifier.width(AndroidLayout.railWidth).fillMaxHeight().background(colors.quietSurface)
+            .verticalScroll(androidx.compose.foundation.rememberScrollState())
             .padding(vertical = 12.dp).selectableGroup().testTag("navigation-rail"),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),

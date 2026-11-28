@@ -92,3 +92,15 @@ private fun DocumentPages(
 }
 
 private const val A4_RATIO = 1.414f
+
+/** 復号した添付（PDF 以外）の扱いを選ぶ。「ダウンロード」に保存するか、共有で別のアプリに渡す。 */
+@Composable
+internal fun DecryptedFileDialog(name: String, t: (String) -> String, save: () -> Unit, share: () -> Unit, dismiss: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = dismiss,
+        modifier = Modifier.testTag("decrypted-file-dialog"),
+        title = { Text(name, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+        confirmButton = { DialogAction(t("attachments.downloadShort"), UiIcon.Download, click = save) },
+        dismissButton = { DialogAction(t("attachments.share"), UiIcon.External, click = share) },
+    )
+}

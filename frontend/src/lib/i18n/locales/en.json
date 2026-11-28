@@ -315,6 +315,7 @@
     "open": "Open {{name}}",
     "download": "Download {{name}}",
     "downloadShort": "Download",
+    "share": "Share",
     "downloadError": "Could not download the file.",
     "previewSaveUnsupported": "This file cannot be saved by the app. Open the link in a new tab to save it.",
     "downloadSaved": "Saved as {{name}}.",

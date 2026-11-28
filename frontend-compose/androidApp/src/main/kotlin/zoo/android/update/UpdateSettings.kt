@@ -71,7 +71,7 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
             Shizuku.removeRequestPermissionResultListener(permission)
         }
     }
-    AndroidShell(null, dark, {}, language) { colors ->
+    AndroidShell(null, dark, {}, language, allowRail = false) { colors ->
         PageHeader("アプリの更新", colors, onBack = back)
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),

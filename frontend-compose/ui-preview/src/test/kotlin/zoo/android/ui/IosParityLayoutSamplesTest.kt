@@ -176,6 +176,40 @@ class IosParityLayoutSamplesTest {
         ui.onNodeWithText("ホーム").assertExists()
     }
 
+    @Test
+    fun decryptedFilesOfferSaveAndShare() {
+        var chosen = ""
+        var dark by mutableStateOf(false)
+        val labels = mapOf("attachments.downloadShort" to "ダウンロード", "attachments.share" to "共有")
+        ui.setContent {
+            if (dark) androidx.compose.material3.MaterialTheme(androidx.compose.material3.darkColorScheme()) {
+                DecryptedFileDialog("議事録-2026-11.zip", { labels.getValue(it) }, { chosen = "save" }, { chosen = "share" }, {})
+            } else DecryptedFileDialog("議事録-2026-11.zip", { labels.getValue(it) }, { chosen = "save" }, { chosen = "share" }, {})
+        }
+        ui.onNodeWithText("議事録-2026-11.zip").assertExists()
+        capture("decrypted-file-light", dialog = true)
+        ui.runOnIdle { dark = true }
+        capture("decrypted-file-dark", dialog = true)
+        ui.onNodeWithText("ダウンロード").performClick()
+        ui.runOnIdle { assertEquals("save", chosen) }
+        ui.onNodeWithText("共有").performClick()
+        ui.runOnIdle { assertEquals("share", chosen) }
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w800dp-h360dp-xhdpi")
+    fun landscapePhoneCanScrollTheRailToEveryTab() {
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Conversation("dev", "開発", "", messages, InputState()), false, true,
+                dispatch = { actions += it }, language = "ja", sidebar = null) { _, _ -> }
+        }
+        ui.onNodeWithTag("navigation-rail").assertExists()
+        ui.onNodeWithText("設定").performScrollTo().performClick()
+        ui.runOnIdle { assertEquals(AndroidUiAction.Navigate(TopPage.Settings), actions.last()) }
+        capture("landscape-rail-scrolled-light")
+    }
+
     private fun capture(name: String, dialog: Boolean = false) {
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)

@@ -428,17 +428,14 @@ internal class AndroidPlatform(
         }
 
     /**
-     * 端末の非公開キャッシュにファイルを書き、共有の画面で開く（プレビューの保存と、復号した暗号化の添付。
-     * 暗号化の添付は平文を文字列にしないで、そのまま書く）。キャッシュは 64 MiB と 1 日までに保つ。
-     */
-    /**
      * 添付を端末の「ダウンロード」に保存する（iOS の「ファイルに保存」に当たる）。Android 10 以降は DownloadManager が
      * 保存先の権限なしで書き込み、完了を通知する。それより前は保存先に権限が要るので、従来どおりブラウザーで開く。
      */
     private fun downloadAttachment(url: String, name: String) {
         val absolute = if (url.startsWith('/')) endpoint(base, url) else url
-        require(Url(absolute).protocol == URLProtocol.HTTPS)
+        // ブラウザーに渡す経路は open() の検証（HTTP・HTTPS）に任せる。開発用の HTTP のストレージもここで開ける。
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) { open(absolute); return }
+        require(Url(absolute).protocol == URLProtocol.HTTPS)
         val fileName = downloadFileName(name)
         val request = android.app.DownloadManager.Request(Uri.parse(absolute))
             .setTitle(fileName)
@@ -480,6 +477,10 @@ internal class AndroidPlatform(
         sharedFileName(name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_"))
             .ifBlank { "attachment" }
 
+    /**
+     * 端末の非公開キャッシュにファイルを書き、共有の画面で開く（プレビューの保存と、復号した暗号化の添付。
+     * 暗号化の添付は平文を文字列にしないで、そのまま書く）。キャッシュは 64 MiB と 1 日までに保つ。
+     */
     suspend fun shareFile(bytes: ByteArray, name: String, type: String) {
         require(bytes.size <= 64 * 1024 * 1024)
         val target = withContext(Dispatchers.IO) {

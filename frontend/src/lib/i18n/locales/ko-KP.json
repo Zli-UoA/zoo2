@@ -315,6 +315,7 @@
     "open": "{{name}} 열기",
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
+    "share": "공유",
     "downloadError": "내려받지 못했습니다.",
     "previewSaveUnsupported": "이 파일은 앱에서 저장할 수 없습니다. 링크를 새 탭에서 열어 저장하십시오.",
     "downloadSaved": "{{name}}(으)로 저장했습니다.",

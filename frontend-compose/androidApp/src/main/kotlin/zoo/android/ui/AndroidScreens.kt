@@ -92,6 +92,8 @@ internal data class TimelineItem(
     val editable: Boolean = false, val canReact: Boolean = false, val canRepost: Boolean = false,
     val reposted: Boolean = false, val reactions: List<TimelineReaction> = emptyList(),
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
+    /** `content_type` が PDF の添付の ID（名前に拡張子がなくてもアプリ内で開く）。 */
+    val pdfAttachments: Set<String> = emptySet(),
     val entryKey: String = id,
     val media: List<TimelineMedia> = emptyList(),
     val quote: TimelineQuote? = null, val repostedBy: String? = null,
