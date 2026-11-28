@@ -18,6 +18,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -34,6 +36,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -62,6 +65,12 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1060,17 +1069,17 @@ private fun Timeline(
                     val continuesGroup = allowThreads && entry.continuesGroup
                     val edited = allowThreads && entry.edited
                     val confirmed = entry.delivery == null
+                    val sending = entry.delivery == EntryDelivery.Sending
+                    val awaitingSync = entry.delivery == EntryDelivery.AwaitingSync
+                    val sentLabel = "送信済み"
                     val showAddReaction = confirmed && !posts && !allowThreads && entry.canReact
                     entry.dateDivider?.let { ConversationDivider(it, colors) }
                     entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
-                            .then(when (entry.delivery) {
-                                EntryDelivery.Sending, EntryDelivery.AwaitingSync -> Modifier.semantics {
-                                    stateDescription = "送信中"
-                                }
-                                else -> Modifier
-                            })
+                            .then(if (sending || awaitingSync) Modifier.semantics {
+                                stateDescription = if (sending) "送信中" else sentLabel
+                            } else Modifier)
                             .then(if (entry.mentionsCurrentUser || entry.id == focusMessage) Modifier.drawBehind {
                                 val accentWidth = 3.dp.toPx()
                                 val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
@@ -1088,6 +1097,7 @@ private fun Timeline(
                                 open = if (allowThreads) ({ dispatch(AndroidUiAction.OpenThread(entry.id)) }) else null,
                                 menu = { menuId = entry.id },
                                 swipeReply = swipeReply,
+                                keyboardFocusColor = colors.foreground.takeIf { allowThreads },
                             ))
                             .padding(start = 16.dp, end = 16.dp, top = if (continuesGroup) 4.dp else 12.dp,
                                 bottom = if (posts || continuesGroup) 4.dp else 12.dp),
@@ -1098,7 +1108,7 @@ private fun Timeline(
                             { dispatch(AndroidUiAction.OpenProfile(author)) }
                         }
                         Row(
-                            modifier = if (confirmed) Modifier else Modifier.drawWithCache {
+                            modifier = if (confirmed || awaitingSync) Modifier else Modifier.drawWithCache {
                                 val paint = Paint().apply {
                                     alpha = .62f
                                     colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
@@ -1195,7 +1205,10 @@ private fun Timeline(
                                 }
                             }
                         }
-                        if (entry.delivery == EntryDelivery.Failed) {
+                        if (awaitingSync) {
+                            Text(sentLabel, color = colors.secondary, fontSize = metadataTextSize,
+                                modifier = Modifier.semantics { hideFromAccessibility() })
+                        } else if (entry.delivery == EntryDelivery.Failed) {
                             Text("送信を確認できませんでした", color = colors.secondary, fontSize = metadataTextSize,
                                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                             entry.recoverDraft?.let { restore ->
@@ -1319,11 +1332,27 @@ internal fun swipeReplyGesture(open: (() -> Unit)?): Modifier {
 }
 
 @Composable
-private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeReply: Boolean): Modifier {
+private fun conversationGestures(
+    open: (() -> Unit)?, menu: () -> Unit, swipeReply: Boolean, keyboardFocusColor: Color?,
+): Modifier {
     val currentOpen by rememberUpdatedState(open)
     val currentMenu by rememberUpdatedState(menu)
     val haptics = LocalHapticFeedback.current
+    var keyboardFocused by remember { mutableStateOf(false) }
     return swipeReplyGesture(if (swipeReply) open else null)
+        .then(if (keyboardFocusColor == null) Modifier else Modifier
+            .then(if (keyboardFocused) Modifier.border(2.dp, keyboardFocusColor, RoundedCornerShape(8.dp)) else Modifier)
+            .onFocusChanged { keyboardFocused = it.isFocused }
+            .onKeyEvent { event ->
+                val activatesMenu = when (event.key) {
+                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.DirectionCenter -> true
+                    else -> false
+                }
+                if (!keyboardFocused || !activatesMenu) return@onKeyEvent false
+                if (event.type == KeyEventType.KeyUp) currentMenu()
+                true
+            }
+            .focusable())
         .pointerInput(haptics) {
             detectTapGestures(onLongPress = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)

@@ -1219,7 +1219,7 @@ internal class ConnectedScreenState(
                 is AndroidScreen.Bubble -> bubble.edit(action.text)
                 else -> drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(text = action.text)
             }
-            is AndroidUiAction.UseInputTool -> inputTool(action.tool, screen, channelId, draftKey, rows)
+            is AndroidUiAction.UseInputTool -> inputTool(action.tool, screen, channel, draftKey, rows)
             is AndroidUiAction.OpenPost -> openPost(action.id)
             AndroidUiAction.RetryPost -> postReloadRequest++
             AndroidUiAction.RetryProfile -> profileReloadRequest++
@@ -1491,7 +1491,7 @@ internal class ConnectedScreenState(
         return if (newestFirst) pending.asReversed() + confirmed else confirmed + pending
     }
 
-    private fun queueSend(homePost: Boolean, channelId: String, key: String) {
+    private fun queueSend(homePost: Boolean, channelId: String, key: String, sensitiveChannel: Boolean) {
         if (!platform.env.online) return
         val destination = if (homePost) "/home" else key
         val files = if (homePost) postFiles else channelFiles[key]
@@ -1513,7 +1513,7 @@ internal class ConnectedScreenState(
         )
         val attachments = sent.zip(uploaded) { draft, upload ->
             obj("id" to upload.text("id"), "file_name" to draft.name,
-                "content_type" to draft.type.takeUnless { encrypted }, "is_sensitive" to draft.sensitive,
+                "content_type" to draft.type.takeUnless { encrypted }, "is_sensitive" to (draft.sensitive || sensitiveChannel),
                 "width" to draft.bitmap?.width, "height" to draft.bitmap?.height)
         }
         val localImages = sent.zip(uploaded).associate { (draft, upload) -> upload.text("id") to draft.bitmap }
@@ -1586,9 +1586,11 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun inputTool(tool: InputTool, screen: AndroidScreen, channelId: String, key: String, rows: List<Row>) {
+    private fun inputTool(tool: InputTool, screen: AndroidScreen, channel: Row?, key: String, rows: List<Row>) {
+        val channelId = channel?.text("id").orEmpty()
         if (tool == InputTool.Send && (screen is AndroidScreen.NewPost || screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread)) {
-            queueSend(screen is AndroidScreen.NewPost, channelId, key)
+            val homePost = screen is AndroidScreen.NewPost
+            queueSend(homePost, channelId, key, sensitiveChannel = !homePost && channel?.flag("is_nsfw") == true)
             return
         }
         when (tool) {

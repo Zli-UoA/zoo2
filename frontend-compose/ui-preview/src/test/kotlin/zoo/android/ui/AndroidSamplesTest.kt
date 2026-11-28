@@ -21,6 +21,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -1142,12 +1144,30 @@ class AndroidSamplesTest {
     )
 
     @Test
+    fun keyboardCanOpenReactionMenuOnATextOnlyChannelMessage() {
+        val post = TimelineItem("plain", "はる", "本文", "12:05", canReact = true)
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Conversation("dev", "開発", "", listOf(post), InputState("")),
+                false, true, dispatch = actions::add, language = "ja") { _, _ -> }
+        }
+        val row = ui.onNodeWithTag("timeline-entry-plain")
+        row.performSemanticsAction(SemanticsActions.RequestFocus)
+        row.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
+        ui.onNodeWithText("リアクション").performClick()
+        ui.runOnIdle {
+            assertEquals(AndroidUiAction.ActOnEntry(post, EntryOperation.React, ""),
+                actions.filterIsInstance<AndroidUiAction.ActOnEntry>().single())
+        }
+    }
+
+    @Test
     fun reactionsCanBeSelectedRemovedAndAddedOnHomeAndChannel() {
         var channel by mutableStateOf(false)
         var dark by mutableStateOf(false)
         var selected by mutableStateOf(false)
         var hasReactions by mutableStateOf(true)
-        var sendingFollowUp by mutableStateOf(false)
+        var followUpDelivery by mutableStateOf<EntryDelivery?>(null)
         var editedFollowUp by mutableStateOf(false)
         var openPicker = 0
         ui.setContent {
@@ -1161,7 +1181,7 @@ class AndroidSamplesTest {
                 ),
             )
             val followUp = TimelineItem("follow-up", "はる", "入口でお待ちしています。", "12:07",
-                canReact = !sendingFollowUp, continuesGroup = true, delivery = EntryDelivery.Sending.takeIf { sendingFollowUp },
+                canReact = followUpDelivery == null, continuesGroup = true, delivery = followUpDelivery,
                 edited = editedFollowUp)
             val screen = if (channel) AndroidScreen.Conversation("dev", "開発", "", listOf(post, followUp), InputState(""))
                 else AndroidScreen.Home(listOf(post))
@@ -1219,13 +1239,17 @@ class AndroidSamplesTest {
                     assertEquals(firstBody.getUnclippedBoundsInRoot().left, nextBody.getUnclippedBoundsInRoot().left)
                     ui.onNodeWithContentDescription("リアクションを追加").assertDoesNotExist()
                     val postedBounds = nextBody.getUnclippedBoundsInRoot()
-                    ui.runOnIdle { sendingFollowUp = true }
+                    ui.runOnIdle { followUpDelivery = EntryDelivery.Sending }
                     assertEquals(postedBounds, nextBody.getUnclippedBoundsInRoot())
                     ui.onNodeWithTag("timeline-entry-follow-up")
                         .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "送信中"))
                     capture("sending-channel-${if (night) "dark" else "light"}")
+                    ui.runOnIdle { followUpDelivery = EntryDelivery.AwaitingSync }
+                    ui.onNodeWithText("送信済み").assertIsDisplayed()
+                    ui.onNodeWithTag("timeline-entry-follow-up")
+                        .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "送信済み"))
                     ui.runOnIdle {
-                        sendingFollowUp = false
+                        followUpDelivery = null
                         editedFollowUp = true
                     }
                     val time = ui.onNodeWithText("12:07").getUnclippedBoundsInRoot()
