@@ -2000,6 +2000,7 @@
       "after": "开始日期",
       "before": "结束日期",
       "reversed": "开始日期不能晚于结束日期。",
+      "apply": "应用",
       "reset": "重置条件",
       "me": "{{name}}（我）",
       "searchPeople": "按名称搜索",

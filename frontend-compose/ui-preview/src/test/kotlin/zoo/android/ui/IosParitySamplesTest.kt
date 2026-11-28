@@ -52,13 +52,13 @@ class IosParitySamplesTest {
             }, language = "ja") { _, _ -> }
         }
         ui.onNodeWithTag("typing-indicator").assertTextEquals("みずき、なぎが入力中…")
-        ui.onNodeWithContentDescription("「screen.png」のセンシティブ指定を外す").assertHeightIsAtLeast(48.dp)
+        ui.onNodeWithContentDescription("screen.png: センシティブ").assertHeightIsAtLeast(48.dp).assertIsOn()
         capture("conversation-typing-sensitive-light")
         ui.runOnIdle { dark = true }
         capture("conversation-typing-sensitive-dark")
-        ui.onNodeWithContentDescription("「draft.pdf」をセンシティブにする").performClick()
+        ui.onNodeWithContentDescription("draft.pdf: センシティブ").assertIsOff().performClick()
         ui.runOnIdle { assertEquals(AndroidUiAction.ToggleFileSensitive("f2"), actions.last()) }
-        ui.onNodeWithContentDescription("「draft.pdf」のセンシティブ指定を外す").assertExists()
+        ui.onNodeWithContentDescription("draft.pdf: センシティブ").assertIsOn()
     }
 
     @Test
@@ -96,6 +96,33 @@ class IosParitySamplesTest {
         ui.runOnIdle {
             assertEquals(listOf(AndroidUiAction.OpenChannelThread("dev", "t1"), AndroidUiAction.LoadMoreThreads), actions.takeLast(2))
         }
+    }
+
+    @Test
+    fun aFailedThreadLoadOffersRetry() {
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Channels(listOf(ChannelSection("参加中", listOf(ChannelItem("dev", "開発")))),
+                moreThreads = true, threadsFailed = true), false, true, dispatch = { actions += it }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithTag("threads-error").assertExists()
+        ui.onNodeWithText("さらに表示").assertDoesNotExist()
+        ui.onNodeWithText("再試行").performClick()
+        ui.runOnIdle { assertEquals(AndroidUiAction.RetryThreads, actions.last()) }
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w640dp-h360dp-xhdpi")
+    fun theCustomPeriodCanBeAppliedOnALowScreen() {
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Search(SearchScreenState("会議", "会議", GlobalSearchType.All, loaded = true,
+                filters = SearchFilterState(period = SearchPeriod.Custom, after = "1999-01-05", endDay = "2026-11-20", today = "2026-11-28"))),
+                false, true, dispatch = { actions += it }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithTag("search-filter-period").performScrollTo().performClick()
+        ui.onNodeWithTag("search-period-apply").performScrollTo().performClick()
+        ui.runOnIdle { assertEquals(AndroidUiAction.SelectSearchPeriod("1999-01-05", "2026-11-21"), actions.last()) }
     }
 
     @Test

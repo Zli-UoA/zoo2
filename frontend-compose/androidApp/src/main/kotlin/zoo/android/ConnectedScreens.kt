@@ -458,6 +458,9 @@ internal fun ConnectedScreens(
             }.value
         }
     } else null
+    // スレッドに返信できるか（アーカイブ済み・親が削除済み・参加が必要で未参加なら返信できない）。入力欄と入力中の通知で共有する。
+    val canReplyInThread = canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
+        (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined")
     val screen = when {
         showFullCall -> checkNotNull(callScreen)
         state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
@@ -558,8 +561,7 @@ internal fun ConnectedScreens(
             channel.text("channel_name"),
             thread.first(),
             thread.drop(1),
-            state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
-                (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
+            state.input("$channelId:$currentThread", canReplyInThread,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines, typing = typingLine), threadFocus,
             focusRequest = focusRequest.takeIf { threadFocus != null },
             loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
@@ -583,7 +585,8 @@ internal fun ConnectedScreens(
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
-        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore)
+        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
+            threadsFailed = state.joinedThreads.error)
     }
     // 幅の広い画面では、会話・スレッドの横にもチャンネル一覧を出す（AndroidScreens の ListDetail が幅で決める）。
     val wideWindow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp >= ListDetailWindowWidth
@@ -591,7 +594,7 @@ internal fun ConnectedScreens(
         screen is AndroidScreen.OpeningConversation)
     val sidebar = if (listBeside || (wideWindow && screen is AndroidScreen.Channels)) AndroidScreen.Channels(
         state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
-        selected = currentThread ?: channelId,
+        selected = currentThread ?: channelId, threadsFailed = state.joinedThreads.error,
     ) else null
     // 参加中のスレッド。チャンネル一覧を表示している間だけ、開いたときと 60 秒ごとに取り直す（iOS と同じ）。
     val showingChannels = (screen is AndroidScreen.Channels || listBeside) && env.online && env.visible
@@ -604,7 +607,7 @@ internal fun ConnectedScreens(
     // 入力中（Web の useTyping）。会話かスレッドを表示していて、書き込めるときだけ送受信する。
     val typingScope = when (screen) {
         is AndroidScreen.Conversation -> channelId?.let { it to null }
-        is AndroidScreen.Thread -> channelId?.let { id -> currentThread?.let { id to it } }
+        is AndroidScreen.Thread -> channelId?.takeIf { canReplyInThread }?.let { id -> currentThread?.let { id to it } }
         else -> null
     }?.takeIf { canPost && env.online && env.visible }
     LaunchedEffect(state, typingScope) {

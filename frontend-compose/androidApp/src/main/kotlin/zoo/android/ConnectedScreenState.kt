@@ -280,14 +280,22 @@ internal class ConnectedScreenState(
     /**
      * 会話とスレッドの下書き。本文だけを端末（アカウント単位の保存先）にも残し、アプリを閉じても戻せるようにする
      * （iOS と同じ）。まだ触っていない会話は、保存した本文から始める。送信すると消す。
+     * 暗号化チャンネル・DM の下書きは平文で端末に残さず、メモリにだけ持つ（docs/e2ee.md の「平文を残さない」）。
      */
-    private fun draft(key: String): InputState = drafts[key] ?: InputState(text = platform.readDraft(key))
+    private fun draft(key: String): InputState =
+        drafts[key] ?: InputState(text = if (encryptedDraft(key)) "" else platform.readDraft(key))
 
     private fun putDraft(key: String, value: InputState) {
         val previous = draft(key).text
         drafts[key] = value
-        if (value.text != previous) platform.writeDraft(key, value.text)
+        when {
+            // 平文のときに保存した下書きが残っていれば、暗号化に切り替わった時点で消す。
+            encryptedDraft(key) -> platform.writeDraft(key, "")
+            value.text != previous -> platform.writeDraft(key, value.text)
+        }
     }
+
+    private fun encryptedDraft(key: String): Boolean = app.isEncryptedChannel(key.substringBefore(':'))
 
     fun collapseInput(channelId: String?, threadId: String?): Boolean {
         val key = channelId?.let { it + (threadId?.let { ":$it" } ?: "") } ?: return false
@@ -1172,9 +1180,14 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.OpenChannelThread -> {
                 overlay = null
-                app.openChannelLink(ChannelLinkTarget(action.channelId, threadId = action.threadId), action.threadId)
+                // スレッドだけを指定する（`message` を付けると、親の投稿日時までチャンネルの履歴をさかのぼって取得する）。
+                // 親と返信は、スレッドの表示の取得に任せる。
+                if (app.channelId == action.channelId) app.thread = action.threadId
+                app.navigate(channelLinkDestination(ChannelLinkTarget(action.channelId), action.threadId,
+                    kotlin.time.Clock.System.now().toEpochMilliseconds()))
             }
             AndroidUiAction.LoadMoreThreads -> app.scope.launch { joinedThreads.loadMore() }
+            AndroidUiAction.RetryThreads -> app.scope.launch { joinedThreads.retry() }
             is AndroidUiAction.ToggleFileSensitive -> if (draftKey !in encryptedFileKeys) {
                 channelFiles[draftKey]?.items?.firstOrNull { it.file.text("id") == action.id }?.let { it.sensitive = !it.sensitive }
             }
@@ -1562,7 +1575,10 @@ internal class ConnectedScreenState(
                                 channelId, draft.text, app.thread, attachmentIds = ids, sensitiveAttachmentIds = sensitiveIds,
                                 encryptedAttachments = encryptedFiles,
                             )) {
-                                putDraft(key, InputState(lastSend = platform.uuid()))
+                                // 応答を待つ間に書き足した本文は残す（ホームの投稿・返信と同じ）。
+                                val current = draft(key)
+                                putDraft(key, if (current.text == draft.text) InputState(lastSend = platform.uuid())
+                                    else current.copy(lastSend = platform.uuid()))
                                 files?.items?.clear()
                                 files?.release(sent)
                             }

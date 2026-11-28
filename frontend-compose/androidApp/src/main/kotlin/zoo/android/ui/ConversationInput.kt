@@ -53,6 +53,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -288,10 +290,14 @@ internal fun ConversationInput(
                                         horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
                                         state.sensitiveFiles?.let { sensitive ->
                                             val hidden = id in sensitive
+                                            // 読み上げは「添付名: センシティブ」と、スイッチのオン・オフ（言語は翻訳辞書に従う）。
                                             UiIconButton(if (hidden) UiIcon.EyeOff else UiIcon.Eye,
-                                                if (hidden) "「$name」のセンシティブ指定を外す" else "「$name」をセンシティブにする",
+                                                "$name: ${androidLabel("attachments.sensitiveShort", "センシティブ")}",
                                                 if (hidden) colors.foreground else colors.inputHint, { onToggleFileSensitive(id) },
-                                                modifier = Modifier.testTag("file-sensitive"))
+                                                modifier = Modifier.testTag("file-sensitive").semantics {
+                                                    toggleableState = androidx.compose.ui.state.ToggleableState(hidden)
+                                                    role = androidx.compose.ui.semantics.Role.Switch
+                                                })
                                         }
                                         TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
                                     }
