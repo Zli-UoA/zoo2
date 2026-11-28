@@ -8,11 +8,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useAllUsers } from "../../hooks/useRealtime";
 import { useMediaQuery } from "../layout/useMediaQuery";
 import { AppAvatar } from "./AppIdentity";
-import {
-  ComposerField,
-  composerTextareaClassName,
-  composerTextareaFitClass,
-} from "./messages/ComposerField";
+import { ComposerField } from "./messages/ComposerField";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
@@ -21,6 +17,12 @@ import { PaneHeader, ScreenHeader } from "../layout/PaneHeader";
 
 export const FADE_DURATION_MS = 3000;
 export const POP_DURATION_MS = FADE_DURATION_MS;
+
+// ComposerField と同じ入力欄スタイルを、静的クラスとしてここでも保持する。
+const COMPOSER_TEXTAREA_CLASS =
+  "min-w-0 flex-1 resize-none rounded-none border-0 text-base leading-6 shadow-none focus-visible:ring-0 md:text-sm";
+const COMPOSER_TEXTAREA_FIT_EMPTY = "field-sizing-fixed overflow-y-hidden";
+const COMPOSER_TEXTAREA_FIT_CONTENT = "field-sizing-content overflow-y-auto";
 
 interface DisplayedOtherEntry {
   userId: string;
@@ -232,25 +234,23 @@ export function BubbleChatScreen() {
             <div className="flex items-center gap-1.5">
               <span className="truncate text-xs font-semibold">{p.displayName}</span>
               {p.isSelf ? (
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.2 text-[10px] font-medium text-muted-foreground">
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground">
                   {t("bubbleChat.you")}
                 </span>
               ) : null}
             </div>
             {p.userName ? (
-              <span className="block truncate text-[11px] text-muted-foreground">
-                @{p.userName}
-              </span>
+              <span className="block truncate text-micro text-muted-foreground">@{p.userName}</span>
             ) : null}
           </div>
           <div className="shrink-0">
             {p.isTyping ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-brand-muted px-2 py-0.5 text-[10px] font-medium text-brand-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded-full bg-brand-muted px-2 py-0.5 text-2xs font-medium text-brand-muted-foreground">
                 <span className="size-1.5 animate-pulse rounded-full bg-brand motion-reduce:animate-none" />
                 {t("bubbleChat.typing")}
               </span>
             ) : (
-              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-2xs text-muted-foreground">
                 {t("bubbleChat.active")}
               </span>
             )}
@@ -273,7 +273,6 @@ export function BubbleChatScreen() {
             size="sm"
             aria-label={`${t("bubbleChat.participants")} ${participants.length}`}
             title={t("bubbleChat.participantsTitle", { count: participants.length })}
-            className="gap-1.5"
             onClick={() => setIsParticipantsOpen((prev) => !prev)}
           >
             <UsersIcon className="size-4" aria-hidden="true" />
@@ -373,7 +372,7 @@ export function BubbleChatScreen() {
                   value={content}
                   placeholder={t("bubbleChat.placeholder")}
                   aria-label={t("bubbleChat.inputLabel")}
-                  className={`${composerTextareaClassName} ${composerTextareaFitClass(content)} max-h-[180px] min-h-11 px-2 py-2.5`}
+                  className={`${COMPOSER_TEXTAREA_CLASS} ${content.length === 0 ? COMPOSER_TEXTAREA_FIT_EMPTY : COMPOSER_TEXTAREA_FIT_CONTENT} max-h-[180px] min-h-11 px-2 py-2.5`}
                   onCompositionStart={() => {
                     composingRef.current = true;
                   }}
@@ -417,7 +416,7 @@ export function BubbleChatScreen() {
                 </Button>
               </ComposerField>
               {!isTouch ? (
-                <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
+                <p className="mt-1.5 px-1 text-micro text-muted-foreground">
                   {t("bubbleChat.hint")}
                 </p>
               ) : null}

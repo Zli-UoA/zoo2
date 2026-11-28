@@ -6,7 +6,6 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
-import { inputClassName } from "../ui/input-styles";
 import { Button } from "../ui/button";
 import { apiPath } from "../../lib/api/path";
 
@@ -144,7 +143,7 @@ export function AppConnections({
             .map((s) => (
               <div key={s.id} className="flex items-center gap-2 rounded-lg bg-muted/40 p-2">
                 <Input
-                  className={`${inputClassName()} min-w-0 flex-1`}
+                  className="min-w-0 flex-1"
                   disabled={busy}
                   aria-label={t("apps.assistant.title")}
                   maxLength={200}

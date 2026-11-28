@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -356,9 +357,9 @@ function Node({ c }: { c: Component }): ReactNode {
             c.level === "error"
               ? "border-destructive/50 bg-destructive/10"
               : c.level === "warning"
-                ? "border-amber-500/50 bg-amber-500/10"
+                ? "border-warning/50 bg-warning/10"
                 : c.level === "success"
-                  ? "border-emerald-500/50 bg-emerald-500/10"
+                  ? "border-success/50 bg-success/10"
                   : "bg-muted/50"
           }`}
         >
@@ -393,8 +394,8 @@ function Node({ c }: { c: Component }): ReactNode {
               {row.map((item, i) => (
                 <div
                   key={i}
-                  style={{ flexGrow: item.width ?? 2 }}
-                  className={`min-w-0 basis-0 ${item.align === "center" ? "text-center" : item.align === "end" ? "text-right" : ""}`}
+                  style={{ "--row-grow": item.width ?? 2 } as CSSProperties}
+                  className={`min-w-0 basis-0 grow-(--row-grow) ${item.align === "center" ? "text-center" : item.align === "end" ? "text-right" : ""}`}
                 >
                   <Node c={item.component} />
                 </div>
@@ -452,8 +453,8 @@ function Container({ c }: { c: Component }) {
   );
   return (
     <div
-      className="min-w-0 max-w-xl rounded-lg border border-l-4 bg-card p-3"
-      style={{ borderLeftColor: color ?? "var(--color-primary)" }}
+      className="min-w-0 max-w-xl rounded-lg border border-l-4 border-l-(--container-accent) bg-card p-3"
+      style={{ "--container-accent": color ?? "var(--color-primary)" } as CSSProperties}
     >
       {c.title ? (
         c.collapsible ? (
@@ -492,7 +493,7 @@ function FileLink({ c }: { c: Component }) {
       <Button
         type="button"
         variant="link"
-        className="h-auto justify-start p-0"
+        className="h-auto justify-start"
         onClick={() => download(file.id)}
       >
         {file.name}
@@ -681,7 +682,13 @@ function Chart({ c }: { c: Component }) {
           {c.segments?.map((s, i) => (
             <span
               key={i}
-              style={{ width: `${(Math.max(0, s.value) / total) * 100}%`, background: color(i) }}
+              style={
+                {
+                  "--segment-width": `${(Math.max(0, s.value) / total) * 100}%`,
+                  "--segment-color": color(i),
+                } as CSSProperties
+              }
+              className="w-(--segment-width) bg-(--segment-color)"
               title={`${s.label}: ${s.value}`}
             />
           ))}
@@ -689,7 +696,10 @@ function Chart({ c }: { c: Component }) {
         <ul className="flex flex-wrap gap-x-3 text-xs">
           {c.segments?.map((s, i) => (
             <li key={i} className="flex items-center gap-1">
-              <span className="inline-block size-2 rounded-full" style={{ background: color(i) }} />
+              <span
+                className="inline-block size-2 rounded-full bg-(--segment-color)"
+                style={{ "--segment-color": color(i) } as CSSProperties}
+              />
               {s.label}: {s.value}
             </li>
           ))}
@@ -754,7 +764,10 @@ function Chart({ c }: { c: Component }) {
       <ul className="flex flex-wrap gap-x-3 text-xs">
         {c.series?.map((s, i) => (
           <li key={i} className="flex items-center gap-1">
-            <span className="inline-block size-2 rounded-full" style={{ background: color(i) }} />
+            <span
+              className="inline-block size-2 rounded-full bg-(--segment-color)"
+              style={{ "--segment-color": color(i) } as CSSProperties}
+            />
             {s.name}
           </li>
         ))}
@@ -911,8 +924,7 @@ function InteractiveControl({
           <Button
             type="button"
             size="sm"
-            variant={BUTTON_VARIANT[c.style ?? 2] ?? "outline"}
-            className={c.style === 3 ? "bg-emerald-600 text-white hover:bg-emerald-700" : undefined}
+            variant={c.style === 3 ? "success-solid" : (BUTTON_VARIANT[c.style ?? 2] ?? "outline")}
             disabled={disabled}
             onClick={() => confirm.run(() => void ctx.invoke("action", id, c.value ?? ""))}
           >

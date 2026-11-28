@@ -26,7 +26,6 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { Skeleton } from "../ui/skeleton";
 import { AppAvatar } from "./AppIdentity";
 import { MemberRow } from "./MemberRow";
@@ -333,7 +332,7 @@ function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
                         badge={
                           unreadableReason ? (
                             <span
-                              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[0.65rem] font-medium text-amber-800 dark:text-amber-300"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-2xs font-medium text-warning-strong dark:text-warning-strong"
                               title={t(`e2ee.memberUnreadable.${unreadableReason}Description`)}
                             >
                               <ShieldAlertIcon className="size-3" aria-hidden="true" />
@@ -347,9 +346,8 @@ function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
                         actions={
                           canKick ? (
                             <Button
-                              variant="ghost"
+                              variant="destructive"
                               size="icon-xs"
-                              className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
                               aria-label={t("moderation.kickLabel", { name: label })}
                               title={t("moderation.kick")}
                               disabled={busy}
@@ -380,7 +378,7 @@ function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
                     className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                   />
                   <Input
-                    className={cn(inputClassName(), "w-full pl-8")}
+                    className="w-full pl-8"
                     placeholder={t("members.search")}
                     value={query}
                     onChange={handleQueryChange}

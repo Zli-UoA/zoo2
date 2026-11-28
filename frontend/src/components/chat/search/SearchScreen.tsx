@@ -276,7 +276,6 @@ export function SearchScreen() {
               if (next !== kind) go({ q: query, type: next, ...filters });
             }}
             aria-label={t("globalSearch.filters.kind")}
-            className="h-8 w-40 text-sm"
           >
             {SEARCH_KINDS.map((value) => (
               <option key={value} value={value}>
@@ -306,9 +305,8 @@ export function SearchScreen() {
           />
           <Button
             type="button"
-            variant="outline"
+            variant={filters.mine ? "secondary" : "outline"}
             aria-pressed={!!filters.mine}
-            className="h-8 text-sm aria-pressed:border-primary aria-pressed:text-primary"
             onClick={() => filter({ mine: !filters.mine || undefined })}
           >
             <MessagesSquareIcon aria-hidden="true" />
@@ -316,9 +314,8 @@ export function SearchScreen() {
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant={filters.noBots ? "secondary" : "outline"}
             aria-pressed={!!filters.noBots}
-            className="h-8 text-sm aria-pressed:border-primary aria-pressed:text-primary"
             onClick={() => filter({ noBots: !filters.noBots || undefined })}
           >
             <BotOffIcon aria-hidden="true" />
@@ -328,7 +325,6 @@ export function SearchScreen() {
             value={period}
             onChange={(event) => choosePeriod(event.target.value as SearchPeriod)}
             aria-label={t("globalSearch.filters.period")}
-            className="h-8 w-40 text-sm"
           >
             {SEARCH_PERIODS.map((value) => (
               <option key={value} value={value}>

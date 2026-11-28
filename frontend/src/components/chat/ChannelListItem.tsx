@@ -112,7 +112,7 @@ export function ChannelListItem({
             role="img"
             title={t("call.inCall")}
             aria-label={t("call.inCall")}
-            className="flex items-center text-emerald-500"
+            className="flex items-center text-success"
           >
             <HeadphonesIcon className="size-3 animate-pulse" />
           </span>

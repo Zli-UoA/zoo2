@@ -75,8 +75,8 @@ export function SearchFilterPicker({
         render={
           <Button
             type="button"
-            variant="outline"
-            className={`h-8 max-w-56 text-sm ${selected.length ? "border-primary text-primary" : ""}`}
+            variant={selected.length ? "default" : "outline"}
+            className="max-w-56"
             aria-label={summary}
           />
         }

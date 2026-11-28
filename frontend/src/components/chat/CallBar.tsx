@@ -147,11 +147,11 @@ export function CallBar({ channels = [] }: CallBarProps) {
         <div className="relative flex size-3 shrink-0 items-center justify-center">
           {connectionState === "connected" ? (
             <>
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex size-2.5 rounded-full bg-emerald-500" />
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-75" />
+              <span className="relative inline-flex size-2.5 rounded-full bg-success" />
             </>
           ) : (
-            <span className="relative inline-flex size-2.5 animate-pulse rounded-full bg-amber-500" />
+            <span className="relative inline-flex size-2.5 animate-pulse rounded-full bg-warning" />
           )}
         </div>
 
@@ -173,7 +173,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
           {channelOutgoing.map((invite) => (
             <div
               key={invite.id}
-              className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"
+              className="mt-0.5 flex items-center gap-1 text-micro text-muted-foreground"
             >
               <span className="min-w-0 truncate">
                 {t("call.calling", { name: userName(invite.invitee_id) })}
@@ -191,7 +191,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
           ))}
 
           <div className="mt-0.5 flex items-center gap-1">
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-micro text-muted-foreground">
               {connectionState === "connecting"
                 ? t("call.connecting")
                 : t("call.participantCount", { count: participants.length })}
@@ -213,14 +213,14 @@ export function CallBar({ channels = [] }: CallBarProps) {
                     role="img"
                     aria-label={label}
                     title={label}
-                    className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium transition-shadow ${
-                      isSpeaking ? "ring-2 ring-emerald-500" : ""
+                    className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-2xs font-medium transition-shadow ${
+                      isSpeaking ? "ring-2 ring-success" : ""
                     }`}
                   >
                     <AppAvatar
                       label={p.display_name}
                       src={users.find((user) => user.id === p.user_id)?.avatar_url}
-                      className="size-5 text-[10px]"
+                      className="size-5"
                     />
                     {p.is_muted ? (
                       <span
@@ -234,7 +234,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
                 );
               })}
               {participants.length > 4 ? (
-                <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">
+                <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-3xs text-muted-foreground">
                   +{participants.length - 4}
                 </div>
               ) : null}
@@ -251,8 +251,8 @@ export function CallBar({ channels = [] }: CallBarProps) {
                 <Button
                   type="button"
                   variant="secondary"
-                  size="icon-sm"
-                  className="size-9 rounded-full"
+                  size="icon-lg"
+                  shape="circle"
                   aria-label={t("call.inviteButton")}
                   title={t("call.inviteButton")}
                   disabled={connectionState !== "connected"}
@@ -286,8 +286,8 @@ export function CallBar({ channels = [] }: CallBarProps) {
               <Button
                 type="button"
                 variant="secondary"
-                size="icon-sm"
-                className="size-9 rounded-full"
+                size="icon-lg"
+                shape="circle"
                 aria-label={t("call.statusButton")}
                 title={t("call.statusButton")}
               />
@@ -313,8 +313,8 @@ export function CallBar({ channels = [] }: CallBarProps) {
               <Button
                 type="button"
                 variant="secondary"
-                size="icon-sm"
-                className="size-9 rounded-full"
+                size="icon-lg"
+                shape="circle"
                 aria-label={t("call.devicesButton")}
                 title={t("call.devicesButton")}
               />
@@ -342,8 +342,8 @@ export function CallBar({ channels = [] }: CallBarProps) {
         <Button
           type="button"
           variant={isMuted ? "destructive" : "secondary"}
-          size="icon-sm"
-          className="size-9 rounded-full"
+          size="icon-lg"
+          shape="circle"
           aria-label={isMuted ? t("call.unmute") : t("call.mute")}
           title={isMuted ? t("call.unmute") : t("call.mute")}
           onClick={() => void toggleMute()}
@@ -354,8 +354,8 @@ export function CallBar({ channels = [] }: CallBarProps) {
         <Button
           type="button"
           variant="destructive"
-          size="icon-sm"
-          className="size-9 rounded-full"
+          size="icon-lg"
+          shape="circle"
           aria-label={t("call.leave")}
           title={t("call.leave")}
           onClick={() => void leaveCall()}

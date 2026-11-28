@@ -10,8 +10,11 @@ import type { ChannelRow } from "../../lib/electric/types";
 import { describeApiError } from "../../hooks/useChannelAdmin";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { apiPath } from "../../lib/api/path";
+
+// ネイティブ select は Input の内部スタイルを継承しないため共通クラスを持つ。
+const SELECT_CLASS =
+  "h-8 rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
 export interface ChannelWebhook {
   id: string;
@@ -49,7 +52,7 @@ export function Credential({
       {label}
       <span className="flex items-center gap-1">
         <Input
-          className={`${inputClassName()} min-w-0 flex-1 font-mono text-xs`}
+          className="min-w-0 flex-1 font-mono text-xs"
           readOnly
           value={value}
           type={secret && !visible ? "password" : "text"}
@@ -187,7 +190,6 @@ export function ChannelWebhooksDialog({
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
                 {t("webhooks.name")}
                 <Input
-                  className={inputClassName()}
                   value={name}
                   maxLength={80}
                   disabled={busy || channel.archive_at !== null}
@@ -380,7 +382,7 @@ function WebhookAppSelection({
         <label className="flex flex-col gap-1 text-xs">
           {t("apps.postingApp")}
           <select
-            className={inputClassName()}
+            className={SELECT_CLASS}
             disabled={busy}
             value={apps.find((app) => app.bot_user_id === hook.bot_user_id)?.id ?? ""}
             onChange={(event) => void associate(event.target.value)}

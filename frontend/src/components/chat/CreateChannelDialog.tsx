@@ -16,7 +16,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { Textarea } from "../ui/textarea";
 import { channelDescriptionLength, MAX_CHANNEL_DESCRIPTION_LENGTH } from "./channelDescription";
 import { channelNameLength, MAX_CHANNEL_NAME_LENGTH, validateChannelName } from "./channelName";
@@ -139,7 +138,6 @@ export function CreateChannelDialog({
         <form autoComplete="off" className="flex flex-col gap-3" onSubmit={submit}>
           <div className="flex flex-col gap-1.5">
             <Input
-              className={inputClassName()}
               name="channel_name"
               placeholder={t("channels.newName")}
               value={name}

@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownIcon, ArrowUpIcon, MoreHorizontalIcon, PinIcon, PinOffIcon } from "lucide-react";
 
 import { usePinnedChannels } from "../../hooks/usePinnedChannels";
-import { buttonVariants } from "../ui/button";
+import { Button } from "../ui/button";
 import { cn } from "cn";
 import {
   DropdownMenu,
@@ -49,20 +49,19 @@ export function ChannelPinMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={label}
-        title={label}
-        // 書き込み中もトリガーは無効にしない。ネイティブの `disabled` を付けると、メニューを
-        // 閉じたときにフォーカスを戻せず `document.body` へ落ちる。二重操作は項目側で止める。
-        className={cn(
-          buttonVariants({ variant: "ghost", size: "icon-sm" }),
-          "size-9 md:size-7",
-          pending && "opacity-50",
-          className,
-        )}
-      >
-        <MoreHorizontalIcon />
-      </DropdownMenuTrigger>
+      {/* 書き込み中もトリガーは無効にしない。ネイティブの `disabled` を付けると、
+          メニューを閉じたときにフォーカスを戻せず `document.body` へ落ちる。二重操作は項目側で止める。 */}
+      <span className={cn("inline-flex", pending && "opacity-50", className)}>
+        <DropdownMenuTrigger
+          aria-label={label}
+          title={label}
+          render={
+            <Button type="button" variant="ghost" size="icon-sm" className="size-9 md:size-7" />
+          }
+        >
+          <MoreHorizontalIcon />
+        </DropdownMenuTrigger>
+      </span>
       <DropdownMenuContent align="end">
         <DropdownMenuItem
           className="min-h-11"
