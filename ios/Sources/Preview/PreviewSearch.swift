@@ -35,7 +35,10 @@ extension PreviewChatClient {
     }
 
     private func base(id: String, at: String) -> [String: Any] {
-        ["id": id.hasPrefix("raw:") ? String(id.dropFirst(4)) : "preview-\(id)", "channel_id": Self.channelID, "channel_name": "general", "is_dm": false, "user_id": "44444444-4444-4444-8444-444444444444",
+        let unjoined = ProcessInfo.processInfo.arguments.contains("--uitesting-unjoined-search")
+        return ["id": id.hasPrefix("raw:") ? String(id.dropFirst(4)) : "preview-\(id)",
+         "channel_id": unjoined ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" : Self.channelID,
+         "channel_name": unjoined ? "雑談" : "general", "is_dm": false, "user_id": "44444444-4444-4444-8444-444444444444",
          "author": ["id": "44444444-4444-4444-8444-444444444444", "user_name": "sakura", "display_name": "さくら", "is_bot": false],
          "emojis": ["stamp": ["url": "https://ui.test.invalid/stamp.png"]], "created_at": at]
     }

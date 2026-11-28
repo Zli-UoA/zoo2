@@ -123,6 +123,7 @@ private struct InboxCard: View {
         case "mention": ("メンション", "at")
         case "dm": ("ダイレクトメッセージ", "bubble.left.and.bubble.right")
         case "reply": (entry.channelID == nil ? "投稿への返信" : "スレッドへの返信", "arrowshape.turn.up.left")
+        case "channel_message": ("チャンネルのメッセージ", "bubble.left")
         case "reaction", "like": ("リアクション", "face.smiling")
         case "missed_call": ("不在着信", "phone.down")
         case "follow_request": ("フォロー申請", "person.badge.plus")

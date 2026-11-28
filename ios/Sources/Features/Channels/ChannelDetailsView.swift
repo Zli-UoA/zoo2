@@ -11,6 +11,7 @@ struct ChannelDetailsView: View {
     @State private var error: String?
 
     private var pinned: Bool { workspace.pinnedChannelIDs.contains(channel.id) }
+    private var notifications: ChannelNotifications { workspace.channelNotifications }
     private var currentChannel: Channel { workspace.channels.first { $0.id == channel.id } ?? channel }
 
     var body: some View {
@@ -40,6 +41,35 @@ struct ChannelDetailsView: View {
                     if let error = workspace.pinUpdateError {
                         Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
                     }
+                }
+                if channel.deleted_at == nil, workspace.joinedChannelIDs.contains(channel.id) {
+                    Section {
+                        if let level = notifications.level(for: channel.id) {
+                            Picker("通知", selection: Binding(get: { notifications.level(for: channel.id) ?? level }, set: { value in
+                                Task { await notifications.save(value, channelID: channel.id) }
+                            })) {
+                                ForEach(ChannelNotificationLevel.allCases, id: \.self) { level in
+                                    Text(level.title).tag(level)
+                                }
+                            }
+                            .accessibilityIdentifier("channel-notification-level")
+                            .accessibilityValue(notifications.level(for: channel.id)?.title ?? level.title)
+                            .disabled(notifications.loading.contains(channel.id) || notifications.saving.contains(channel.id))
+                        } else if notifications.errors[channel.id] == nil {
+                            ProgressView("通知設定を読み込み中…")
+                        }
+                        if notifications.saving.contains(channel.id) { ProgressView("保存中…") }
+                        if let error = notifications.errors[channel.id] {
+                            Text(error).foregroundStyle(.red)
+                            Button("通知設定を再読み込み") { Task { await notifications.load(channel.id) } }
+                        }
+                        if let error = notifications.syncError { Text(error).foregroundStyle(.secondary) }
+                    } header: {
+                        Text("この会話の通知")
+                    } footer: {
+                        Text("既定ではメンション・参加中スレッドの返信・DM・リアクションを通知します。ミュート中も、自分宛てやチャンネル全体への明示メンションと不在着信は届きます。暗号化された会話でもすべてのメッセージを選べます。端末で復号できる場合は通知に本文が表示されます。")
+                    }
+                    .task { await notifications.load(channel.id) }
                 }
                 if channel.canManage(by: workspace.user) {
                     Section("チャンネルの管理") {

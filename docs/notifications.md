@@ -19,7 +19,7 @@
 - `mute` には明示メンション（`@user` / `@channel` / `@here` と E2EE の `explicit_mentions.user_ids`）だけを届ける。`reply` / `reaction` / `dm` / `channel_message` は作らない。`@channel` / `@here` は `mute` でも届く例外なので、設定画面の文言もそのことが分かるようにする（文言の変更は React 側で行う）。未読カウントの扱いは変えない。
 - `missed_call` はレベルの対象外で、従来どおり届ける。
 - 退出（`channel_user` 行の削除）で `channel_user_notification_settings_sync` トリガーが設定行も削除する。再参加すると設定行は `mentions` で作り直され、退出前の `all` / `mute` は引き継がれない。
-- APNs でも `channel_message` を通常通知（`notificationType: channel_message`）として届ける。暗号化チャンネルでは本文を解析せず既存のプレースホルダを使う。iOS アプリ側の通知レベル設定は #742 で未対応のため、iOS ではこの設定を変更できない。
+- APNs でも `channel_message` を通常通知（`notificationType: channel_message`）として届ける。暗号化チャンネルでは本文を解析せず既存のプレースホルダを使う。iOS はチャンネル・DM の詳細から通知レベルを変更でき、暗号化された会話でも `all` を選べる。設定は本人の専用 Shape をアカウントごとに1本購読し、非表示時に停止する。詳細を開いたときだけ GET、変更時だけ PATCH を使い、ポーリングは追加しない。通知一覧と Watch では `reply` と `channel_message` の種類を表示する。
 
 `channel_user.notification_level` は旧アプリ互換列で、実際の設定は入れず常に `mentions`。旧アプリがこの列へ書いた値は `channel_user_notification_level_legacy` トリガーが `user_channel_notification_settings` へ移送し、旧列は既定値へ戻す。撤去するのは、この列を読み書きする旧アプリが本番と preview の両方で配布されなくなったことを確認した後。参加・退出時の設定行の作成・削除をバックエンドの参加・退出処理へ移し、2つのトリガー（`channel_user_notification_level_legacy` と `channel_user_notification_settings_sync`）を外してから、別PRで列を削除する。列の削除は旧アプリが動いたままだと壊れるため、移行と削除を同じPRで行わない。
 

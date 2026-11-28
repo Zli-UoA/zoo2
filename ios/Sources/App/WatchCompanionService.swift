@@ -44,6 +44,7 @@ final class WatchCompanionService {
             case "dm": title = "ダイレクトメッセージ"
             case "mention": title = "メンション"
             case "reply": title = "返信"
+            case "channel_message": title = "チャンネルのメッセージ"
             case "reaction", "like": title = "リアクション"
             case "missed_call": title = "不在着信"
             case "follow_request": title = "フォロー申請"
