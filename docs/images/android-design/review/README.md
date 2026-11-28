@@ -109,7 +109,7 @@ shared-post-link-light, typing-channel-dark, typing-channel-light, os-notificati
 
 ## 比較したAndroid APK
 
-- Slack 26.11.40.0 の外部共有プレビューでは、正方形の画像に対して右上に media_cancel を配置する。APK内の external_media_upload_holder.xml で上下左右の制約とリソースIDを照合した。中央の video_icon は動画用。Zooの中央の再試行ボタンは失敗した画像を直接操作するための配置。
+- Slack 26.11.40.0 の外部共有プレビューでは、正方形の画像に対して右上に media_cancel を配置する。APK内の external_media_upload_holder.xml で上下左右の制約とリソースIDを照合した。中央の video_icon は動画用。Zooの画像内の再試行ボタンは失敗した画像を直接操作するための配置。
 - X 12.46.1-prod.01 のDEXには返信・リポスト・ハートのアウトラインアイコンへの参照があり、文字列テーブルには quote_tweet がある。Zooでは通常のリノートと、コメントを書く引用リノートを同じ入口から選択する。緑の色値はZooの背景に合わせたもの。
 - Discord 355.10 Stable のリソースではリアクション背景に既定・参加済みと各テーマの組があり、ic_reaction_icon_16dp と add_reaction がある。Zooの操作アイコンやロゴには他社の画像を使っていない。
 
@@ -126,3 +126,11 @@ Zooではホームの先頭から安全に再表示できる公開投稿を最�
 API 35のエミュレーターで、同じホームのCompose画面をライトとダークで撮影した。上端までアプリの背景色を敷き、時計・電池アイコンは背景に合わせて明暗を切り替える。
 
 ![Androidの時計・電池アイコンとホームの背景](system-bars.png)
+
+## 投稿操作の図柄と大きさ
+
+左が変更前、右が変更後。同じ投稿を同じ倍率で描画した。返信・リノート・リアクション追加・その他の図柄は20dp、透明な操作列は高さ36dp。添付の再試行と削除は操作範囲が重ならないように離した。
+
+![投稿操作の変更前後](post-controls-before-after.png)
+
+[149状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
