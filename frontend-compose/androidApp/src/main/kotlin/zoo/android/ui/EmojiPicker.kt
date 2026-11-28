@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 internal data class EmojiChoice(
     val value: String, val glyph: String, val name: String,
     val image: String? = null, val keywords: String = "", val category: String = "",
+    val localizedName: String = "",
 )
 
 internal class KitchenChoices(
@@ -35,7 +36,8 @@ internal class KitchenChoices(
 
 /**
  * Keeps only the choices matching every word of [query]. With a query, ranks (lower first):
- * 0 exact name, 1 name prefix, 2 name substring, then 3 exact / 4 prefix / 5 substring over the
+ * 0 exact name, 1 name prefix, 2 name substring (including the localized name), then
+ * 3 exact / 4 prefix / 5 substring over the
  * keywords, and 6 anything else (e.g. the glyph). Shorter names first within a rank, then the
  * original order. An empty query keeps the original order.
  */
@@ -44,14 +46,14 @@ internal fun rankEmojiChoices(choices: List<EmojiChoice>, query: String): List<E
     if (words.isEmpty()) return choices
     val whole = words.joinToString(" ")
     return choices.withIndex().mapNotNull { (index, choice) ->
-        val searchable = "${choice.name} ${choice.glyph} ${choice.keywords.replace('_', ' ')}"
+        val names = listOf(choice.name, choice.localizedName).map { it.replace('_', ' ').trim(':', ' ') }
+        val searchable = "${choice.name} ${choice.localizedName} ${choice.glyph} ${choice.keywords.replace('_', ' ')}"
         if (!words.all { searchable.contains(it, ignoreCase = true) }) return@mapNotNull null
-        val name = choice.name.replace('_', ' ').trim(':', ' ')
         val keywords = choice.keywords.replace('_', ' ').split(',', ' ').filter { it.isNotEmpty() }
         val rank = when {
-            name.equals(whole, ignoreCase = true) -> 0
-            name.startsWith(whole, ignoreCase = true) -> 1
-            name.contains(whole, ignoreCase = true) -> 2
+            names.any { it.equals(whole, ignoreCase = true) } -> 0
+            names.any { it.startsWith(whole, ignoreCase = true) } -> 1
+            names.any { it.contains(whole, ignoreCase = true) } -> 2
             keywords.any { it.equals(whole, ignoreCase = true) } -> 3
             keywords.any { it.startsWith(whole, ignoreCase = true) } -> 4
             keywords.any { it.contains(whole, ignoreCase = true) } -> 5
@@ -110,6 +112,12 @@ internal fun EmojiPicker(
     val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
     val sections = remember(filtered, tab, query, unicode, recentUnicode, recentCategory) {
         when {
+            tab == EmojiTab.Unicode && query.isNotBlank() -> {
+                val matchesByCategory = filtered.groupBy { it.category }
+                unicode.map { it.category }.distinct().mapNotNull { category ->
+                    matchesByCategory[category]?.let { category to it }
+                }
+            }
             query.isNotBlank() || tab == EmojiTab.Kitchen -> listOf("" to filtered)
             tab == EmojiTab.Unicode -> buildList {
                 if (recentUnicode.isNotEmpty()) add(recentCategory to recentUnicode)
