@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     ipc::LinkedMessage,
     links::{self, EncryptionCheck, LinkState, LinkTarget, LinkedFetch},
+    rows::Message,
     shape::ShapeId,
     store::Store,
 };
@@ -78,6 +79,63 @@ pub fn anchor(store: &Store, channel_id: &str, message_id: &str) -> Option<(Stri
             .filter(|parent| parent.parent_id.is_none())
             .map(|parent| (parent.id.clone(), true)),
         None => Some((message.id.clone(), false)),
+    }
+}
+
+/// 別のチャンネルのメッセージへ移る前に確かめた、送る先の行。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Destination {
+    /// 表示できる。
+    Ready,
+    /// 取得を待つ。そのあいだ取り続けるリンク先（返信は親も）。
+    Waiting(Vec<LinkedMessage>),
+    Unavailable,
+    /// 取得できなかった。
+    Failed,
+}
+
+enum Looked<'a> {
+    Shown(&'a Message),
+    Waiting,
+    Unavailable,
+    Failed,
+}
+
+fn look<'a>(fetched: &'a Fetched, key: &LinkedMessage) -> Looked<'a> {
+    match fetched.get(key) {
+        None | Some(LinkedFetch::Loading { stalled: false }) => Looked::Waiting,
+        Some(LinkedFetch::Loading { stalled: true } | LinkedFetch::Failed) => Looked::Failed,
+        Some(LinkedFetch::Found(message))
+            if message.id == key.message_id
+                && message.channel_id == key.channel_id
+                && message.deleted_at.is_none() =>
+        {
+            Looked::Shown(message)
+        }
+        Some(LinkedFetch::Missing | LinkedFetch::Found(_)) => Looked::Unavailable,
+    }
+}
+
+/// 取得した結果で、`message_id` へ移れるか。返信は、送る先になる親の行も確かめる。
+pub fn destination(fetched: &Fetched, channel_id: &str, message_id: &str) -> Destination {
+    let key = |message_id: &str| LinkedMessage {
+        channel_id: channel_id.to_owned(),
+        message_id: message_id.to_owned(),
+    };
+    let message = match look(fetched, &key(message_id)) {
+        Looked::Shown(message) => message,
+        Looked::Waiting => return Destination::Waiting(vec![key(message_id)]),
+        Looked::Unavailable => return Destination::Unavailable,
+        Looked::Failed => return Destination::Failed,
+    };
+    let Some(parent_id) = &message.parent_id else {
+        return Destination::Ready;
+    };
+    match look(fetched, &key(parent_id)) {
+        Looked::Shown(parent) if parent.parent_id.is_none() => Destination::Ready,
+        Looked::Shown(_) | Looked::Unavailable => Destination::Unavailable,
+        Looked::Waiting => Destination::Waiting(vec![key(message_id), key(parent_id)]),
+        Looked::Failed => Destination::Failed,
     }
 }
 
@@ -326,6 +384,38 @@ mod tests {
         assert_eq!(anchor("r1"), Some(("m1".into(), true)));
         assert_eq!(anchor("r2"), None, "削除された親へは移動しない");
         assert_eq!(anchor("gone"), None);
+    }
+
+    #[test]
+    fn another_channel_is_opened_only_when_its_row_is_shown() {
+        let mut fetched = Fetched::new();
+        let check = |fetched: &Fetched, id| destination(fetched, "there", id);
+        assert_eq!(
+            check(&fetched, "a"),
+            Destination::Waiting(vec![key("there", "a")])
+        );
+        fetched.insert(key("there", "a"), found("a", "there", json!({})));
+        assert_eq!(check(&fetched, "a"), Destination::Ready);
+        // 返信は、親の行も表示できるときだけ移る。
+        let reply = found("r", "there", json!({ "parent_id": "p" }));
+        fetched.insert(key("there", "r"), reply);
+        assert_eq!(
+            check(&fetched, "r"),
+            Destination::Waiting(vec![key("there", "r"), key("there", "p")])
+        );
+        fetched.insert(key("there", "p"), LinkedFetch::Missing);
+        assert_eq!(check(&fetched, "r"), Destination::Unavailable);
+        let deleted = json!({ "deleted_at": "2026-11-24 00:00:00" });
+        fetched.insert(key("there", "p"), found("p", "there", deleted.clone()));
+        assert_eq!(check(&fetched, "r"), Destination::Unavailable);
+        fetched.insert(key("there", "p"), found("p", "there", json!({})));
+        assert_eq!(check(&fetched, "r"), Destination::Ready);
+        fetched.insert(key("there", "a"), found("a", "there", deleted));
+        assert_eq!(check(&fetched, "a"), Destination::Unavailable);
+        for failed in [LinkedFetch::Failed, LinkedFetch::Loading { stalled: true }] {
+            fetched.insert(key("there", "p"), failed);
+            assert_eq!(check(&fetched, "r"), Destination::Failed);
+        }
     }
 
     #[test]

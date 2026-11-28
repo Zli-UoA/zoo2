@@ -175,8 +175,8 @@ struct Session {
     me: Me,
     events: mpsc::UnboundedSender<ShapeEvent>,
     tasks: Vec<JoinHandle<()>>,
-    /// 開いているチャンネルと、そのメッセージの Shape を購読するタスク。
-    messages: Option<(String, JoinHandle<()>)>,
+    /// 開いているチャンネルのメッセージの購読。
+    messages: Option<OpenMessages>,
     replica: Replica,
     store: Store,
     /// (a) 本文のリンクが指すメッセージの取得。
@@ -185,6 +185,14 @@ struct Session {
     link_events: mpsc::UnboundedSender<(u64, LinkedEvent)>,
     /// 画面の近くのリンク先を入れ替えたとき、時刻の予定を立て直してもらう合図。
     links_changed: Arc<Notify>,
+}
+
+/// 開いているチャンネルと、そのメッセージの Shape の購読。
+struct OpenMessages {
+    channel_id: String,
+    task: JoinHandle<()>,
+    /// 同期が停止した理由。画面を読み込み直しても、停止したことを伝える。
+    failure: Option<String>,
 }
 
 struct EndingSession {
@@ -197,8 +205,8 @@ impl Drop for Session {
         for task in &self.tasks {
             task.abort();
         }
-        if let Some((_, task)) = &self.messages {
-            task.abort();
+        if let Some(open) = &self.messages {
+            open.task.abort();
         }
     }
 }
@@ -521,7 +529,7 @@ impl Core {
                     }
                     ShapeEvent::Failed(id, message) => {
                         if let ShapeId::Messages(channel) = &id {
-                            core.reject_links(generation, channel).await;
+                            core.stop_messages(generation, channel, &message).await;
                         }
                         let _ = core
                             .app
@@ -575,6 +583,11 @@ impl Core {
                     }
                     Wake::Changed => {}
                 }
+                // 購読が停止したり閉じたりして枠が空いたら、上限で待っているリンク先を取り始める。
+                if session.links.can_start_waiting() {
+                    let fetcher = core.link_fetcher(session);
+                    session.links.sync(now, fetcher);
+                }
                 // ほかの結果と重なって過ぎた時間切れも含めて、変わった状態を送る。
                 core.emit_links(&mut session.links, now);
                 deadline = session.links.next_deadline(now);
@@ -612,14 +625,24 @@ impl Core {
         }
     }
 
-    /// 開いているチャンネルの同期が停止した。権限を失ったかもしれないので、リンク先として覚えた内容も
-    /// 出さない。
-    async fn reject_links(&self, generation: u64, channel_id: &str) {
+    /// メッセージの同期が停止した。権限を失ったかもしれないので、リンク先として覚えた内容を出さない。
+    /// 開いているチャンネルなら届いていた行も捨てて、画面を読み込み直しても戻さない。
+    async fn stop_messages(&self, generation: u64, channel_id: &str, message: &str) {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation || self.ui != UiMode::Leptos {
             return;
         }
         if let Some(session) = inner.session.as_mut() {
+            if let Some(open) = session
+                .messages
+                .as_mut()
+                .filter(|open| open.channel_id == channel_id)
+            {
+                open.failure = Some(message.to_owned());
+                let id = ShapeId::Messages(channel_id.to_owned());
+                session.replica.forget(&id);
+                session.store.forget(&id);
+            }
             session.links.reject(channel_id);
             self.emit_links(&mut session.links, Instant::now());
             session.links_changed.notify_one();
@@ -704,10 +727,16 @@ impl Core {
                 return;
             };
             // チャンネルを切り替えた後に届いた、前のチャンネルの行は捨てる。
-            if let ShapeId::Messages(channel) = &id
-                && session.messages.as_ref().map(|(open, _)| open) != Some(channel)
-            {
-                return;
+            if let ShapeId::Messages(channel) = &id {
+                let Some(open) = session
+                    .messages
+                    .as_mut()
+                    .filter(|open| &open.channel_id == channel)
+                else {
+                    return;
+                };
+                // 停止した購読からは届かない。停止は、前の購読の知らせが遅れて届いたもの。
+                open.failure = None;
             }
             // 判定は適用より前に行う (適用した後では、新しく届いた行を区別できない)。
             let toasts = if id == ShapeId::Notifications {
@@ -1385,12 +1414,17 @@ impl Core {
         let base = self.api_base_url().unwrap_or_default().to_string();
         let mut inner = self.inner.lock().await;
         let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
-        if session.messages.as_ref().map(|(open, _)| open) == Some(&channel_id) {
+        // 停止したチャンネルを開き直したときは、購読し直す。
+        if session
+            .messages
+            .as_ref()
+            .is_some_and(|open| open.channel_id == channel_id && open.failure.is_none())
+        {
             return Ok(());
         }
-        if let Some((old, task)) = session.messages.take() {
-            task.abort();
-            let id = ShapeId::Messages(old);
+        if let Some(old) = session.messages.take() {
+            old.task.abort();
+            let id = ShapeId::Messages(old.channel_id);
             session.replica.forget(&id);
             session.store.forget(&id);
         }
@@ -1407,7 +1441,11 @@ impl Core {
             self.emit_links(&mut session.links, Instant::now());
             session.links_changed.notify_one();
         }
-        session.messages = Some((channel_id, task));
+        session.messages = Some(OpenMessages {
+            channel_id,
+            task,
+            failure: None,
+        });
         Ok(())
     }
 
@@ -1420,6 +1458,15 @@ impl Core {
         self.emit_links(&mut session.links, Instant::now());
         for (shape, batch) in session.replica.snapshot() {
             let _ = self.app.emit(event::SHAPE, ShapeBatch { shape, batch });
+        }
+        if let Some(open) = &session.messages
+            && let Some(message) = &open.failure
+        {
+            let failed = ShapeFailed {
+                shape: ShapeId::Messages(open.channel_id.clone()),
+                message: message.clone(),
+            };
+            let _ = self.app.emit(event::SHAPE_FAILED, failed);
         }
         Ok(())
     }

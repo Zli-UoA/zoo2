@@ -47,6 +47,14 @@ struct Fetching {
     last_wanted: Instant,
     /// 購読ごとの番号。閉じた購読から遅れて届いたものを捨てる。
     generation: u64,
+    /// 権限の失敗などで取得が止まった。
+    stopped: bool,
+}
+
+impl Fetching {
+    fn is_running(&self) -> bool {
+        !self.stopped && !self.requests.is_closed()
+    }
 }
 
 /// リンク先のメッセージの取得。チャンネルごとに 1 本の購読を、画面の近くのリンクで共有する。
@@ -257,6 +265,7 @@ impl LinkedCache {
                     sent: Vec::new(),
                     last_wanted: now,
                     generation: *generation,
+                    stopped: false,
                 }
             });
             fetching.last_wanted = now;
@@ -320,7 +329,7 @@ impl LinkedCache {
                 fetching.sent = order;
             }
             // 権限の失敗などで止まった購読は、閉じるまで作り直さない。
-            if fetching.requests.is_closed() {
+            if !fetching.is_running() {
                 for id in fetching.wanted.keys() {
                     let key = (channel_id.clone(), id.clone());
                     if !results.contains_key(&key) {
@@ -371,11 +380,16 @@ impl LinkedCache {
         }
     }
 
+    /// 上限で待っているリンク先があり、取得を始める空きができたか。そのときは [`Self::sync`] する。
+    pub fn can_start_waiting(&self) -> bool {
+        !self.over_limit.is_empty() && self.running() < MAX_CHANNELS
+    }
+
     /// 動いている購読の数。権限の失敗などで止まった購読は、取り直さないよう残すが、数えない。
     fn running(&self) -> usize {
         self.channels
             .values()
-            .filter(|fetching| !fetching.requests.is_closed())
+            .filter(|fetching| fetching.is_running())
             .count()
     }
 
@@ -385,8 +399,7 @@ impl LinkedCache {
             .channels
             .iter()
             .filter(|(id, fetching)| {
-                !fetching.requests.is_closed()
-                    && !self.visible.iter().any(|(channel, _)| channel == *id)
+                fetching.is_running() && !self.visible.iter().any(|(channel, _)| channel == *id)
             })
             .min_by_key(|(_, fetching)| fetching.last_wanted)
             .map(|(id, _)| id.clone());
@@ -466,6 +479,9 @@ impl LinkedCache {
                 channel_id,
                 message_ids,
             } => {
+                if let Some(fetching) = self.channels.get_mut(&channel_id) {
+                    fetching.stopped = true;
+                }
                 self.reject(&channel_id);
                 for message_id in message_ids {
                     let key = (channel_id.clone(), message_id);
@@ -821,6 +837,42 @@ mod tests {
             [(key("m1"), None), (key("m2"), None)]
         );
         assert!(links.visible.is_empty());
+    }
+
+    #[tokio::test]
+    async fn waiting_links_start_when_a_subscription_stops() {
+        let mut links = LinkedCache::default();
+        let start = Instant::now();
+        links.visible = (0..=MAX_CHANNELS)
+            .map(|n| (format!("c{n}"), "m".to_owned()))
+            .collect();
+        let mut receivers = Vec::new();
+        let mut spawn = |_: String, _, receiver| {
+            receivers.push(receiver);
+            idle()
+        };
+        links.sync(start, &mut spawn);
+        let over = (format!("c{MAX_CHANNELS}"), "m".to_owned());
+        assert_eq!(links.fetch(&over, start), LinkedFetch::Failed);
+        assert!(!links.can_start_waiting());
+        // 受け取り側がまだ残っていても、止まったと分かったら空きにする。
+        let generation = links.generation("c0").unwrap();
+        links.apply(
+            generation,
+            LinkedEvent::Failed {
+                channel_id: "c0".into(),
+                message_ids: vec!["m".into()],
+            },
+        );
+        assert!(links.can_start_waiting());
+        links.sync(start, &mut spawn);
+        assert!(!links.can_start_waiting());
+        assert_eq!(
+            links.fetch(&over, start),
+            LinkedFetch::Loading { stalled: false }
+        );
+        let stopped = ("c0".to_owned(), "m".to_owned());
+        assert_eq!(links.fetch(&stopped, start), LinkedFetch::Failed);
     }
 
     #[tokio::test]

@@ -148,10 +148,14 @@ struct Ctx {
     /// 待ち始めた回数。前の待ちの時間切れを区別する。
     open_waits: StoredValue<u64>,
     /// Rust 側に伝えるリンク先と、伝えている途中かどうか。
-    watched: StoredValue<Option<Vec<LinkedMessage>>>,
+    watched: StoredValue<Option<(u64, Vec<LinkedMessage>)>>,
     watching: StoredValue<bool>,
     /// リンクで開いたメッセージ（その行が届くまで）。
     jump: RwSignal<Option<links::Jump>>,
+    /// 別のチャンネルの行き先で、表示できるか確かめているもの。分かるまで移らない。
+    pending: RwSignal<Option<links::Jump>>,
+    /// 同じリンク先でも、Rust 側に伝え直して結果を送ってもらう回数。
+    watch_round: StoredValue<u64>,
     /// リンクで開けなかったときなどの知らせ。
     notice: RwSignal<Option<&'static str>>,
     /// 同じチャンネルへの PATCH を送信順に直列化するロック。コンポーネントが再生成されても
@@ -210,6 +214,7 @@ impl Ctx {
             self.stopped.set(Default::default());
             self.watched.set_value(None);
             self.jump.set(None);
+            self.pending.set(None);
             self.notice.set(None);
             // 別のアカウントで同じチャンネルを開いても、前の選択値を表示しない。
             self.notification_saved.set(HashMap::new());
@@ -220,6 +225,7 @@ impl Ctx {
     /// チャンネルを切り替える。前のチャンネルの行は捨ててから購読を切り替えてもらう。
     fn open_channel(&self, channel_id: String) {
         self.jump.set(None);
+        self.pending.set(None);
         self.notice.set(None);
         if let Some(old) = self.channel.get_untracked() {
             if old == channel_id {
@@ -384,6 +390,8 @@ fn App() -> impl IntoView {
         watched: StoredValue::new(None),
         watching: StoredValue::new(false),
         jump: RwSignal::new(None),
+        pending: RwSignal::new(None),
+        watch_round: StoredValue::new(0),
         notice: RwSignal::new(None),
         notification_locks: StoredValue::new_local(HashMap::new()),
         notification_saved: RwSignal::new_local(HashMap::new()),
@@ -752,6 +760,7 @@ fn Main() -> impl IntoView {
             ctx.watch_links(Vec::new());
         }
     });
+    links::follow_destination();
     let logout = move |_| {
         spawn_local(async move {
             ctx.report(tauri::invoke0::<()>(command::LOGOUT).await);
@@ -773,7 +782,7 @@ fn Main() -> impl IntoView {
                     Some(channel_id) => view! {
                         <ChannelHeading channel_id=channel_id.clone() />
                         <Timeline channel_id=channel_id.clone() />
-                        <Footer channel_id=channel_id />
+                        <Composer channel_id=channel_id />
                     }
                     .into_any(),
                     None => view! { <p class="empty">"チャンネルを選んでください"</p> }.into_any(),
@@ -808,7 +817,7 @@ fn Notice() -> impl IntoView {
     let notice = move || {
         ctx.notice.get().map(|text| {
             view! {
-                <button type="button" class="notice" title="閉じる" on:click=move |_| ctx.notice.set(None)>
+                <button type="button" class="notice" title="閉じる" on:click=move |_| ctx.dismiss_notice()>
                     <span>{text}</span>
                     <span aria-hidden="true">"×"</span>
                 </button>
@@ -816,31 +825,6 @@ fn Notice() -> impl IntoView {
         })
     };
     view! { <div role="status">{notice}</div> }
-}
-
-/// 入力欄。リンクで開いたアーカイブ済みのチャンネルには投稿できないので、理由を出す。
-#[component]
-fn Footer(channel_id: String) -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    let archived = {
-        let channel_id = channel_id.clone();
-        // 値が変わったときだけ作り直し、入力欄の書きかけを保つ。
-        Memo::new(move |_| {
-            ctx.store.with(|store| {
-                store
-                    .channel(&channel_id)
-                    .is_some_and(|channel| channel.archive_at.is_some())
-            })
-        })
-    };
-    move || {
-        if archived.get() {
-            view! { <p class="composer archived">"アーカイブされたチャンネルには投稿できません"</p> }
-                .into_any()
-        } else {
-            view! { <Composer channel_id=channel_id.clone() /> }.into_any()
-        }
-    }
 }
 
 #[component]
@@ -1246,17 +1230,30 @@ fn local_time(created_at: jiff::civil::DateTime) -> (Option<u32>, String) {
 
 /// 入力欄。日本語の変換中 (`isComposing`) の Enter では送らない。値は DOM が持ち、
 /// 変換中に書き戻さない (候補ウィンドウの位置や確定前の文字を壊さないため)。
+///
+/// アーカイブ済みのチャンネルには投稿できないので、理由を出して読み取り専用にする。入力中に
+/// アーカイブされても書きかけが残るよう、入力欄は作り直さない。
 #[component]
 fn Composer(channel_id: String) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let input = NodeRef::<html::Textarea>::new();
     let sending = RwSignal::new(false);
+    let archived = {
+        let channel_id = channel_id.clone();
+        Memo::new(move |_| {
+            ctx.store.with(|store| {
+                store
+                    .channel(&channel_id)
+                    .is_some_and(|channel| channel.archive_at.is_some())
+            })
+        })
+    };
     let send = move |channel_id: String| {
         let Some(textarea) = input.get() else {
             return;
         };
         let content = textarea.value();
-        if content.trim().is_empty() || sending.get_untracked() {
+        if content.trim().is_empty() || sending.get_untracked() || archived.get_untracked() {
             return;
         }
         sending.set(true);
@@ -1296,10 +1293,16 @@ fn Composer(channel_id: String) -> impl IntoView {
     };
     view! {
         <div class="composer">
+            {move || {
+                archived
+                    .get()
+                    .then(|| view! { <p class="archived">"アーカイブされたチャンネルには投稿できません"</p> })
+            }}
             <textarea
                 node_ref=input
                 rows="2"
                 placeholder="メッセージを送信 (Shift+Enter で改行)"
+                readonly=move || archived.get()
                 on:keydown=on_keydown
             ></textarea>
         </div>
