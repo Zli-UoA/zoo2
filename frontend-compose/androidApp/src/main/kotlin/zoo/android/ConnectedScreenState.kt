@@ -235,8 +235,8 @@ internal class ConnectedScreenState(
     val followState: String? get() = followStates[profile.text("id")]
     var federatePost by mutableStateOf(false)
         private set
-    val federationAvailable: Boolean get() = app.activityPubAvailable == true
-        private set
+    val federationAvailable: Boolean
+        get() = app.activityPubAvailable == true
     var query by mutableStateOf("")
     /** The `/search` field; the controller searches it after typing pauses. */
     var searchText by mutableStateOf(app.globalSearch.query)
