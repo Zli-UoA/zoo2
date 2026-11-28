@@ -398,7 +398,8 @@ internal class AndroidPlatform(
                 "{}"
             }
             "attachmentDownload" -> {
-                open(json.parseToJsonElement(payload).jsonObject.text("url"))
+                val data = json.parseToJsonElement(payload).jsonObject
+                downloadAttachment(data.text("url"), data.text("name"))
                 "{}"
             }
             "recentPhotos" -> recentPhotos.list()
@@ -430,6 +431,55 @@ internal class AndroidPlatform(
      * 端末の非公開キャッシュにファイルを書き、共有の画面で開く（プレビューの保存と、復号した暗号化の添付。
      * 暗号化の添付は平文を文字列にしないで、そのまま書く）。キャッシュは 64 MiB と 1 日までに保つ。
      */
+    /**
+     * 添付を端末の「ダウンロード」に保存する（iOS の「ファイルに保存」に当たる）。Android 10 以降は DownloadManager が
+     * 保存先の権限なしで書き込み、完了を通知する。それより前は保存先に権限が要るので、従来どおりブラウザーで開く。
+     */
+    private fun downloadAttachment(url: String, name: String) {
+        val absolute = if (url.startsWith('/')) endpoint(base, url) else url
+        require(Url(absolute).protocol == URLProtocol.HTTPS)
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) { open(absolute); return }
+        val fileName = downloadFileName(name)
+        val request = android.app.DownloadManager.Request(Uri.parse(absolute))
+            .setTitle(fileName)
+            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+        activity.getSystemService(android.app.DownloadManager::class.java).enqueue(request)
+        toast("${translate("attachments.downloading", emptyMap())}: $fileName")
+    }
+
+    /** 復号した添付などを、端末の「ダウンロード」に書き込む。Android 10 より前は共有から保存先を選ぶ。 */
+    suspend fun saveToDownloads(bytes: ByteArray, name: String, type: String) {
+        require(bytes.size <= 64 * 1024 * 1024)
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) { shareFile(bytes, name, type); return }
+        val fileName = downloadFileName(name)
+        withContext(Dispatchers.IO) {
+            val resolver = activity.contentResolver
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, type.ifEmpty { "application/octet-stream" })
+                put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = checkNotNull(resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values))
+            try {
+                checkNotNull(resolver.openOutputStream(uri)).use { it.write(bytes) }
+                resolver.update(uri, android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                }, null, null)
+            } catch (failure: Exception) {
+                resolver.delete(uri, null, null)
+                throw failure
+            }
+        }
+        withContext(Dispatchers.Main) { toast(translate("attachments.downloadSaved", mapOf("name" to fileName))) }
+    }
+
+    private fun toast(text: String) = android.widget.Toast.makeText(activity, text, android.widget.Toast.LENGTH_SHORT).show()
+
+    private fun downloadFileName(name: String): String =
+        sharedFileName(name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_"))
+            .ifBlank { "attachment" }
+
     suspend fun shareFile(bytes: ByteArray, name: String, type: String) {
         require(bytes.size <= 64 * 1024 * 1024)
         val target = withContext(Dispatchers.IO) {

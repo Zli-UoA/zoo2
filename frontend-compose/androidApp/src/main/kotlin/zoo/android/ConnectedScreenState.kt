@@ -119,7 +119,10 @@ internal class ConnectedScreenState(
                 return@launch
             }
             try {
-                platform.shareFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
+                val name = view.name.ifBlank { "attachment" }
+                // PDF はアプリ内で開く（iOS と同じ）。保存はプレビューの保存ボタンから行う。
+                if (isPdfAttachment(name) || view.mimetype == "application/pdf") documentPreview = DocumentSource.Decrypted(bytes, name)
+                else platform.shareFile(bytes, name, view.mimetype)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { app.toast = app.t("attachments.downloadError") }
         }
@@ -159,6 +162,8 @@ internal class ConnectedScreenState(
     var editing by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
         private set
     var mediaPreview by mutableStateOf<TimelineMediaSelection?>(null)
+    /** アプリ内で開いている PDF。 */
+    var documentPreview by mutableStateOf<DocumentSource?>(null)
     var confirmingEntry by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
     private var editingPost = false
     private var returnOverlay: String? = null
@@ -457,8 +462,9 @@ internal class ConnectedScreenState(
             EntryOperation.Attachment -> {
                 val info = action.item.encryptedFiles[action.value]
                 if (info != null) openEncryptedAttachment(info)
-                else action.item.attachments.firstOrNull { it.first == action.value }?.let {
-                    app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
+                else action.item.attachments.firstOrNull { it.first == action.value }?.let { (id, name) ->
+                    if (!encrypted && isPdfAttachment(name)) documentPreview = DocumentSource.Signed(id, name)
+                    else app.attachmentLinks.download(obj("id" to id, "file_name" to name))
                 }
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")

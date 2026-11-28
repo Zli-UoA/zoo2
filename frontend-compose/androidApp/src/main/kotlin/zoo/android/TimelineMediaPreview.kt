@@ -146,7 +146,7 @@ internal fun TimelineVideoPreview(
     DisposableEffect(media) { onDispose { video?.delete() } }
     LaunchedEffect(session, media) {
         try {
-            video = downloadTimelineVideo(timelineMediaUrl(session, media), cacheDir)
+            video = downloadPreviewFile(timelineMediaUrl(session, media), cacheDir, ".video", MaxVideoBytes, ::supportedVideoContainer)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -210,8 +210,13 @@ private fun isPublicVideoAddress(address: InetAddress): Boolean {
     else first in 0x20..0x3f
 }
 
-/** Download to an app-private bounded file so the platform player never follows a remote redirect. */
-private suspend fun downloadTimelineVideo(rawUrl: String, cacheDir: File): File =
+/**
+ * Download to an app-private bounded file so the platform player (or PDF renderer) never follows a remote redirect.
+ * [accept] checks the first 12 bytes, so only the expected kind of file is opened.
+ */
+internal suspend fun downloadPreviewFile(
+    rawUrl: String, cacheDir: File, suffix: String, maxBytes: Long, accept: (ByteArray) -> Boolean,
+): File =
     suspendCancellableCoroutine { continuation ->
         val url = rawUrl.toHttpUrl()
         val active = AtomicReference<Call?>()
@@ -220,7 +225,7 @@ private suspend fun downloadTimelineVideo(rawUrl: String, cacheDir: File): File 
             if (!continuation.isActive) return
             if (!target.isHttps || target.username.isNotEmpty() || target.password.isNotEmpty() ||
                 target.host.none { it in 'a'..'z' } || ':' in target.host || depth >= 6) {
-                continuation.resumeWithException(IOException("Invalid video destination"))
+                continuation.resumeWithException(IOException("Invalid preview destination"))
                 return
             }
             val call = previewVideoClient.newCall(Request.Builder().url(target).build())
@@ -236,14 +241,14 @@ private suspend fun downloadTimelineVideo(rawUrl: String, cacheDir: File): File 
                         var partial: File? = null
                         try {
                             if (response.isRedirect) {
-                                val next = response.header("Location")?.let(target::resolve) ?: error("Missing video redirect")
+                                val next = response.header("Location")?.let(target::resolve) ?: error("Missing preview redirect")
                                 start(next, depth + 1)
                                 return
                             }
                             require(response.isSuccessful)
                             val body = requireNotNull(response.body)
-                            require(body.contentLength() <= MaxVideoBytes)
-                            val file = File.createTempFile("zoo-preview-", ".video", cacheDir)
+                            require(body.contentLength() <= maxBytes)
+                            val file = File.createTempFile("zoo-preview-", suffix, cacheDir)
                             partial = file
                             var bytes = 0L
                             body.byteStream().use { input ->
@@ -253,7 +258,7 @@ private suspend fun downloadTimelineVideo(rawUrl: String, cacheDir: File): File 
                                         val count = input.read(buffer)
                                         if (count < 0) break
                                         bytes += count
-                                        require(bytes <= MaxVideoBytes)
+                                        require(bytes <= maxBytes)
                                         output.write(buffer, 0, count)
                                     }
                                 }
@@ -262,10 +267,10 @@ private suspend fun downloadTimelineVideo(rawUrl: String, cacheDir: File): File 
                                 val header = file.inputStream().buffered().use { stream ->
                                     ByteArray(12) { stream.read().toByte() }
                                 }
-                                require(supportedVideoContainer(header))
+                                require(accept(header))
                                 continuation.resume(file) { _, unused, _ -> unused.delete() }
                                 partial = null
-                            } else if (continuation.isActive) error("Empty video")
+                            } else if (continuation.isActive) error("Empty preview")
                         } catch (e: Exception) {
                             if (continuation.isActive) continuation.resumeWithException(e)
                         } finally {

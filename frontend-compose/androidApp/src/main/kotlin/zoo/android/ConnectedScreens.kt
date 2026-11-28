@@ -401,6 +401,7 @@ internal fun ConnectedScreens(
     fun back() {
         when {
             state.mediaPreview != null -> state.mediaPreview = null
+            state.documentPreview != null -> state.documentPreview = null
             showFullCall -> background()
             sipRoute && state.overlay == null -> {
                 platform.navigate("/settings")
@@ -805,6 +806,9 @@ internal fun ConnectedScreens(
                 }
             }
         }
+    }
+    state.documentPreview?.takeIf { env.visible && !showFullCall }?.let { source ->
+        key(source) { DocumentPreview(session, platform, source, env.dark) { state.documentPreview = null } }
     }
     if (phone.error) {
         AlertDialog(
