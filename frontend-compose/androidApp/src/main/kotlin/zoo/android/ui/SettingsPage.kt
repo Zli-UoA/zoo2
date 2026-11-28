@@ -9,7 +9,8 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -75,6 +76,16 @@ internal fun SettingsPage(
                             is SettingsEntry.Choice -> if (entry.selected) UiGlyph(UiIcon.Check, colors.foreground, iconSize = AndroidControlSize.inlineIcon)
                             is SettingsEntry.Destination -> UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                             is SettingsEntry.Toggle -> Switch(checked = entry.enabled, onCheckedChange = null)
+                        }
+                    }
+                    if (entry is SettingsEntry.Toggle && entry.id == "swipe" && entry.enabled) {
+                        var tried by rememberSaveable { mutableStateOf(false) }
+                        Row(Modifier.fillMaxWidth().then(swipeReplyGesture { tried = true })
+                            .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            UiGlyph(UiIcon.Bubble, colors.secondary, AndroidControlSize.inlineIcon)
+                            Text(if (tried) "返信ジェスチャーを認識しました" else "ここを左にスワイプして試す",
+                                color = colors.secondary, fontSize = 14.sp)
                         }
                     }
                 }

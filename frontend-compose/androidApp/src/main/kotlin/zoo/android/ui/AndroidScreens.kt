@@ -1215,47 +1215,54 @@ private fun PostActions(
 }
 
 @Composable
+internal fun swipeReplyGesture(open: (() -> Unit)?): Modifier {
+    if (open == null) return Modifier
+    val currentOpen by rememberUpdatedState(open)
+    val haptics = LocalHapticFeedback.current
+    var drag by remember { mutableFloatStateOf(0f) }
+    return Modifier.offset { IntOffset(drag.roundToInt(), 0) }.pointerInput(haptics) {
+        val threshold = 64.dp.toPx()
+        val maxDrag = 96.dp.toPx()
+        val edge = 8.dp.toPx()
+        var reached = false
+        var allowed = false
+        detectHorizontalDragGestures(
+            onDragStart = { start ->
+                drag = 0f
+                reached = false
+                allowed = start.x in edge..(size.width - edge)
+            },
+            onDragCancel = { drag = 0f },
+            onDragEnd = {
+                val openThread = drag <= -threshold
+                drag = 0f
+                if (openThread) currentOpen()
+            },
+        ) { change, dx ->
+            if (allowed) {
+                change.consume()
+                drag = (drag + dx).coerceIn(-maxDrag, 0f)
+                if (!reached && drag <= -threshold) {
+                    reached = true
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeReply: Boolean): Modifier {
     val currentOpen by rememberUpdatedState(open)
     val currentMenu by rememberUpdatedState(menu)
     val haptics = LocalHapticFeedback.current
-    var drag by remember { mutableFloatStateOf(0f) }
-    return Modifier.offset { IntOffset(drag.roundToInt(), 0) }
+    return swipeReplyGesture(if (swipeReply) open else null)
         .pointerInput(haptics) {
             detectTapGestures(onLongPress = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 currentMenu()
             })
         }
-        .then(if (!swipeReply || open == null) Modifier else Modifier.pointerInput(haptics) {
-            val threshold = 64.dp.toPx()
-            val maxDrag = 96.dp.toPx()
-            val edge = 8.dp.toPx()
-            var reached = false
-            var allowed = false
-            detectHorizontalDragGestures(
-                onDragStart = { start ->
-                    drag = 0f
-                    reached = false
-                    allowed = start.x in edge..(size.width - edge)
-                },
-                onDragCancel = { drag = 0f },
-                onDragEnd = {
-                    val openThread = drag <= -threshold
-                    drag = 0f
-                    if (openThread) currentOpen?.invoke()
-                },
-            ) { change, dx ->
-                if (allowed) {
-                    change.consume()
-                    drag = (drag + dx).coerceIn(-maxDrag, 0f)
-                    if (!reached && drag <= -threshold) {
-                        reached = true
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    }
-                }
-            }
-        })
         .semantics {
             customActions = buildList {
                 if (open != null) add(CustomAccessibilityAction("スレッドを開く") {
