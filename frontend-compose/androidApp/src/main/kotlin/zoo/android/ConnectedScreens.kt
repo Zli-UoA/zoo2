@@ -567,7 +567,15 @@ internal fun ConnectedScreens(
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
-        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
+        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore)
+    }
+    // 参加中のスレッド。チャンネル一覧を表示している間だけ、開いたときと 60 秒ごとに取り直す（iOS と同じ）。
+    val showingChannels = screen is AndroidScreen.Channels && env.online && env.visible
+    LaunchedEffect(state, showingChannels) {
+        while (showingChannels) {
+            state.joinedThreads.refresh()
+            delay(60_000)
+        }
     }
     // 入力中（Web の useTyping）。会話かスレッドを表示していて、書き込めるときだけ送受信する。
     val typingScope = when (screen) {

@@ -121,7 +121,10 @@ internal data class ChannelItem(
     val title: String,
     val unread: Boolean = false,
     val isUserName: Boolean = false,
+    /** 参加中のスレッド（返信があり、アーカイブされていないもの）。 */
+    val threads: List<ChannelThreadItem> = emptyList(),
 )
+internal data class ChannelThreadItem(val id: String, val title: String, val replies: Int)
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
@@ -129,7 +132,7 @@ internal sealed interface AndroidScreen {
         val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
         val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
     ) : AndroidScreen
-    data class Channels(val sections: List<ChannelSection>) : AndroidScreen
+    data class Channels(val sections: List<ChannelSection>, val moreThreads: Boolean = false) : AndroidScreen
     data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
@@ -210,6 +213,8 @@ internal sealed interface AndroidUiAction {
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
     data class ToggleFileSensitive(val id: String) : AndroidUiAction
+    data class OpenChannelThread(val channelId: String, val threadId: String) : AndroidUiAction
+    data object LoadMoreThreads : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
     data class Mention(val name: String) : AndroidUiAction
     data class ViewedNotification(val id: String) : AndroidUiAction
@@ -611,7 +616,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                     )
                 }
             }
-            items(section.channels, key = { it.id }) { channel ->
+            section.channels.forEach { channel -> item(key = channel.id) {
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
@@ -634,7 +639,37 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                     )
                 }
             }
+            items(channel.threads, key = { "thread:${it.id}" }) { thread ->
+                ChannelThreadRow(channel.id, thread, colors, dispatch)
+            }
+            }
         }
+        if (screen.moreThreads) item(key = "threads:more") {
+            Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.CenterStart) {
+                TextAction(androidLabel("threads.more", "さらに表示"), colors, style = TextActionStyle.Plain,
+                    icon = UiIcon.Refresh) { dispatch(AndroidUiAction.LoadMoreThreads) }
+            }
+        }
+    }
+}
+
+/** チャンネルの下に字下げして並べる、参加中のスレッド（Web のサイドバーと iOS のチャンネル一覧と同じ）。 */
+@Composable
+private fun ChannelThreadRow(channelId: String, thread: ChannelThreadItem, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
+    val label = androidLabel("threads.sidebarOpen", "スレッドを開く: ${thread.title}（${thread.replies} 件の返信）",
+        "title" to thread.title, "count" to thread.replies.toString())
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
+            .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannelThread(channelId, thread.id)) }
+            .semantics(mergeDescendants = true) { contentDescription = label }
+            .padding(start = AndroidControlSize.inlineIcon + 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        UiGlyph(UiIcon.Bubble, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
+        Text(thread.title, Modifier.weight(1f), color = colors.foreground, fontSize = 14.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(thread.replies.toString(), color = colors.secondary, fontSize = 12.sp)
     }
 }
 

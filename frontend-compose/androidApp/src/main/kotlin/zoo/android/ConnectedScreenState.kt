@@ -220,6 +220,7 @@ internal class ConnectedScreenState(
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
     val bubble = BubbleController(app)
+    val joinedThreads = JoinedThreads { path -> app.api.request(path) }
     val typing = TypingPresence({ path, method, body -> app.api.request(path, method, body) }, platform.uuid())
 
     /** [typing] に渡す、会話・スレッドの下書きの本文（スナップショットの読み取り）。 */
@@ -733,6 +734,7 @@ internal class ConnectedScreenState(
         val result = if (operation == null) app.api.request(path)
             else app.api.request("$path/$operation", "POST")
         if (app.thread == id) threadDetails = result.jsonObject.nested("data")
+        if (operation != null) joinedThreads.refresh()
     }
 
     fun threadSettings(threadId: String, canManage: Boolean, member: Boolean): List<SettingsGroup> {
@@ -749,6 +751,7 @@ internal class ConnectedScreenState(
 
     fun channelSections(channels: List<Row>, users: Map<String, Row>, members: List<Row>): List<ChannelSection> {
         val joined = members.filter { it.text("user_id") == app.config.userId }.map { it.text("channel_id") }.toSet()
+        val threads = joinedThreads.byChannel()
         val active = channels.filter {
             it.text("id") in joined && !it.present("deleted_at") && !it.present("archive_at")
         }.sortedWith { left, right ->
@@ -759,7 +762,11 @@ internal class ConnectedScreenState(
             val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
             val userName = peers.singleOrNull()?.let { users[it.text("user_id")] }?.let(::author)
                 ?.takeIf { row.flag("is_dm") && it.isNotBlank() }
-            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null)
+            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null,
+                threads = threads[id].orEmpty().map {
+                    ChannelThreadItem(it.id, it.content.lineSequence().firstOrNull { line -> line.isNotBlank() }?.trim()
+                        ?: app.t("threads.untitled"), it.replies)
+                })
         }
         val activeById = active.associateBy { it.text("id") }
         val unpinned = active.filterNot { it.text("id") in pins }
@@ -1120,6 +1127,11 @@ internal class ConnectedScreenState(
                 val attachments = if (screen is AndroidScreen.NewPost) postFiles else channelFiles[draftKey]
                 attachments?.items?.firstOrNull { it.file.text("id") == action.id }?.let { attachments.remove(it) }
             }
+            is AndroidUiAction.OpenChannelThread -> {
+                overlay = null
+                app.openChannelLink(ChannelLinkTarget(action.channelId, threadId = action.threadId), action.threadId)
+            }
+            AndroidUiAction.LoadMoreThreads -> app.scope.launch { joinedThreads.loadMore() }
             is AndroidUiAction.ToggleFileSensitive -> if (draftKey !in encryptedFileKeys) {
                 channelFiles[draftKey]?.items?.firstOrNull { it.file.text("id") == action.id }?.let { it.sensitive = !it.sensitive }
             }
