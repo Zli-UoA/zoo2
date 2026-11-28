@@ -52,7 +52,8 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Zoo
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.social-networking
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: YES
+        # App Store Connectで書類不要と確認した申告内容を保つ（docs/e2ee.md）。
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
       configs:
         Release:
           APNS_ENVIRONMENT: production
