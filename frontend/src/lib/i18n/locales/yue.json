@@ -390,7 +390,10 @@
     "participantsFilterPartial": "淨係喺載入咗嘅頭 {{loaded}} 人入面搵（仲有 {{count}} 人搵唔到）。",
     "participantsDescription": "已經加入呢個討論串嘅人。",
     "joinToReply": "參加之後就可以喺呢個討論串回覆。",
-    "reopenAndJoin": "重開並參加"
+    "reopenAndJoin": "重開並參加",
+    "errors": {
+      "busy": "呢個討論串而家好繁忙，稍等一陣再試多次。"
+    }
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",

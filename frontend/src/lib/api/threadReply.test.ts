@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { type AuthGenerations } from "../auth";
 import { ApiError, type ApiClient, type ApiEnvelope } from "./client";
-import { isThreadBusyError, postThreadReply } from "./threadReply";
+import { isThreadBusyError, postThreadReply, RETRY_JITTER_MAX_MS } from "./threadReply";
 
 function busyError(retryAfter?: number, bodyRetryAfter?: number): ApiError {
   const body: Record<string, unknown> = {
@@ -60,6 +60,7 @@ describe("postThreadReply", () => {
 
     await expect(
       postThreadReply(client, body, {
+        jitter: () => 0,
         delay: async (ms) => {
           delays.push(ms);
         },
@@ -80,12 +81,59 @@ describe("postThreadReply", () => {
       client,
       { id: "m1" },
       {
+        jitter: () => 0,
         delay: async (ms) => {
           delays.push(ms);
         },
       },
     );
     expect(delays).toEqual([7000]);
+  });
+
+  it("adds injected jitter to every Retry-After wait", async () => {
+    const delays: number[] = [];
+    const jitter = vi
+      .fn(() => 0)
+      .mockReturnValueOnce(120)
+      .mockReturnValueOnce(480);
+    const { client } = clientReturning([busyError(5), busyError(5), ok]);
+
+    await expect(
+      postThreadReply(
+        client,
+        { id: "m1" },
+        {
+          jitter,
+          delay: async (ms) => {
+            delays.push(ms);
+          },
+        },
+      ),
+    ).resolves.toEqual(ok);
+
+    // 同時に 503 を受けても再送時刻がずれるように、待ちごとにジッタを足す。
+    expect(delays).toEqual([5120, 5480]);
+    expect(jitter).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses a random jitter within the default range when none is injected", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const delays: number[] = [];
+    const { client } = clientReturning([busyError(5), ok]);
+    try {
+      await postThreadReply(
+        client,
+        { id: "m1" },
+        {
+          delay: async (ms) => {
+            delays.push(ms);
+          },
+        },
+      );
+    } finally {
+      random.mockRestore();
+    }
+    expect(delays).toEqual([5000 + RETRY_JITTER_MAX_MS / 2]);
   });
 
   it("gives up after the retry limit and rethrows the last error", async () => {
@@ -98,6 +146,7 @@ describe("postThreadReply", () => {
         client,
         { id: "m1" },
         {
+          jitter: () => 0,
           delay: async (ms) => {
             delays.push(ms);
           },

@@ -390,7 +390,10 @@
     "participantsFilterPartial": "Searching only the first {{loaded}} people loaded ({{count}} more can't be searched).",
     "participantsDescription": "People who have joined this thread.",
     "joinToReply": "Join the thread to reply.",
-    "reopenAndJoin": "Reopen and join"
+    "reopenAndJoin": "Reopen and join",
+    "errors": {
+      "busy": "This thread is busy. Wait a moment and try again."
+    }
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

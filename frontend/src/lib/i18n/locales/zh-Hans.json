@@ -390,7 +390,10 @@
     "participantsFilterPartial": "仅在已加载的前 {{loaded}} 人中筛选（另有 {{count}} 人无法搜索）。",
     "participantsDescription": "已加入此讨论串的人。",
     "joinToReply": "参与后才能回复此讨论串。",
-    "reopenAndJoin": "重新打开并参与"
+    "reopenAndJoin": "重新打开并参与",
+    "errors": {
+      "busy": "该讨论串当前繁忙，请稍后再试。"
+    }
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",

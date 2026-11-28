@@ -390,7 +390,10 @@
     "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
     "participantsDescription": "このスレッドに参加している人です。",
     "joinToReply": "参加するとこのスレッドに返信できます。",
-    "reopenAndJoin": "再Openして参加する"
+    "reopenAndJoin": "再Openして参加する",
+    "errors": {
+      "busy": "スレッドが混み合っています。しばらく待ってからもう一度お試しください。"
+    }
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
