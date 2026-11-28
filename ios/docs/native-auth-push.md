@@ -32,17 +32,25 @@ PRF に対応しない保存先ではリカバリーキーを使います。
 - 暗号鍵を変更する再認証のため、zoo2-infra の `OIDC_REAUTH_AUDIENCES` に iOS クライアント ID を含める。
   インフラ設定は zoo2-infra の PR で管理する。
 
-2026-11-28の読み取り確認では、AuthZ の AASA URL は HTTP 303 で `/login` へ転送されました。
-AuthZ の main（`63f7f237`）にも AASA のルートがなく、middleware の公開文書一覧にも含まれていません。
-この状態ではネイティブの暗号鍵解錠に必要なドメイン関連付けを確認できません。
-同日の未認証の認可要求では、iOS クライアントの `works.zli.zoo:/reauth-callback` は
-`invalid_redirect` として拒否され、既存の `https://zli.chat/ios/oauth/callback` は
-`login_required` を返しました。現在のアプリのコールバックは本番登録の追加が必要です。
-また、zoo2-infra の main（`ef87e551`）の `backend.yaml` にある
-`OIDC_REAUTH_AUDIENCES` には iOS クライアント ID がありません。
-これは Git 上の設定の確認であり、稼働中 Deployment の値は未確認です。
-クライアントのローカル検証と、AuthZ の設定反映後の実機検証は区別します。
-本番の認可コードログイン、パスキーの PRF、別端末での暗号メッセージの復号は実機での確認が必要です。
+2026-11-28に以下の本番反映と確認を完了しました。
+
+- [zoo2-infra #222](https://github.com/Zli-UoA/zoo2-infra/pull/222)（`4189928`）で
+  AASAのアプリIDとiOSの再認証audienceを追加し、AuthZ・ZooのFlux同期成功を確認しました。
+- [AuthZ #121](https://github.com/Zli-UoA/AuthZ/pull/121)（`ccb94da`）でAASAの公開と
+  Publicクライアントのカスタムスキーム登録に対応し、mainのCIと本番配備が成功しました。
+- AuthZ管理画面の既存「Zoo for iOS」に `works.zli.zoo:/reauth-callback` を追加しました。
+  既存のHTTPSコールバック、Public種別、S256必須、スコープ、デバイスコード許可、API設定は維持しています。
+- AuthZ直配信とApple CDNの
+  `https://app-site-association.cdn-apple.com/a/v1/account.zli.works` の両方が
+  HTTP 200・JSONで、`webcredentials.apps` に `F82XB5KFX2.works.zli.zoo` を返しました。
+- 未認証の認可要求（`prompt=none`、認可コード＋S256、iOS専用クライアント）は
+  登録したカスタムスキームへ `login_required` を返し、変更前の `invalid_redirect` は解消しました。
+
+この確認では本人の認可コードやトークンを取得していません。
+コード交換とPKCEの検証はローカルのProvider結合テスト、アプリの取消・nonceなどの検査は
+iOSシミュレーターのテストで確認しています。本番アカウントでのアプリへのログイン完了、
+実機のパスキーPRF、別端末での暗号メッセージの復号は未確認です。
+端末内の関連付けキャッシュはApple CDNと別に更新されるため、既存端末では反映を待つ場合があります。
 
 参考: [Apple の認証ブラウザー](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession)、
 [パスキーの PRF](https://developer.apple.com/documentation/authenticationservices/asauthorizationpublickeycredentialprfassertioninput-swift.struct)。
