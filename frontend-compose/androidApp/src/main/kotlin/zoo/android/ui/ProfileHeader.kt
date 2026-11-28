@@ -1,6 +1,5 @@
 package zoo.android.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -11,7 +10,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -22,17 +20,9 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
         Box(Modifier.fillMaxWidth().height(92.dp)) {
             Box(Modifier.fillMaxWidth().height(72.dp).clip(RoundedCornerShape(20.dp))
                 .background(Brush.horizontalGradient(listOf(colors.headerLight, colors.quietSurface))))
-            Box(
-                Modifier.align(Alignment.BottomStart).padding(start = 12.dp).size(72.dp)
-                    .background(colors.background, CircleShape).padding(4.dp)
-                    .clip(CircleShape).background(colors.headerLight),
-                contentAlignment = Alignment.Center,
-            ) {
-                val avatar = profile.avatar
-                if (avatar != null) Image(avatar, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                else Text(profile.name.take(1), color = colors.foreground, fontSize = 26.sp,
-                    fontWeight = AndroidWeights.emphasis)
-            }
+            UserAvatar(profile.name, profile.avatar, Modifier.align(Alignment.BottomStart).padding(start = 12.dp)
+                .size(72.dp).background(colors.background, CircleShape).padding(4.dp),
+                colors.headerLight, colors.foreground, 26.sp, AndroidWeights.emphasis)
             profile.follow?.let { label ->
                 TextAction(if (profile.followBusy) "処理中" else label, colors, enabled = !profile.followBusy, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp),
                     icon = if (label == "フォロー") UiIcon.UserAdd else UiIcon.Close,

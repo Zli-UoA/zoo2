@@ -6,7 +6,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -15,7 +14,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -203,12 +201,8 @@ private fun InboxAvatar(
             if (initial == null) value = actor.avatar?.let { loadAvatar(it) }
         }
     }
-    Box(Modifier.size(size).clip(CircleShape).background(colors.inputSurface)
-        .semantics { contentDescription = actor.name }, contentAlignment = Alignment.Center) {
-        val loaded = bitmap
-        if (loaded != null) Image(loaded, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else Text(actor.name.take(1), color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.userName)
-    }
+    UserAvatar(actor.name, bitmap, Modifier.size(size).semantics { contentDescription = actor.name },
+        colors.inputSurface, colors.foreground, 13.sp, AndroidWeights.userName)
 }
 
 private fun String?.activityIcon(): UiIcon = when (this) {

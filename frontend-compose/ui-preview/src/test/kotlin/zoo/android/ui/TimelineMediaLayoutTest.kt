@@ -28,6 +28,14 @@ import zoo.GlobalSearchType
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class TimelineMediaLayoutTest {
+    @Test
+    fun avatarInitialKeepsTheFirstVisibleCharacterTogether() {
+        assertEquals("", avatarInitial(""))
+        assertEquals("は", avatarInitial("はる"))
+        assertEquals("👩🏽‍💻", avatarInitial("👩🏽‍💻 開発"))
+        assertEquals("か\u3099", avatarInitial("か\u3099く"))
+    }
+
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val images = List(6) { index ->
         TimelineMedia("key-$index", "photo-$index", TimelineMediaKind.Image,

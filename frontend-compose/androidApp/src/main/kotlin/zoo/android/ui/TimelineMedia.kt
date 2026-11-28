@@ -36,7 +36,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
@@ -439,11 +438,8 @@ internal fun TimelineAvatar(
 ) {
     val image = timelineIcon(url)
     val imageContent: @Composable () -> Unit = {
-        Box(Modifier.size(size).clip(CircleShape).background(colors.background), contentAlignment = Alignment.Center) {
-            if (image == null) Text(author.take(1), Modifier.wrapContentSize(unbounded = true).clearAndSetSemantics {},
-                color = colors.secondary, fontSize = 13.sp, lineHeight = 16.sp, maxLines = 1)
-            else Image(image, contentDescription = null, Modifier.matchParentSize().testTag("timeline-avatar"), contentScale = ContentScale.Crop)
-        }
+        UserAvatar(author, image, Modifier.size(size).then(if (image == null) Modifier else Modifier.testTag("timeline-avatar")),
+            colors.background, colors.secondary, 13.sp)
     }
     if (openProfile == null) imageContent()
     else {
