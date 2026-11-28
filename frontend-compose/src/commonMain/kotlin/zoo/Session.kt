@@ -461,7 +461,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 "chat"
             else "sidebar"
         scope.launch {
-            pollWhileVisible(snapshotFlow { env.online && env.visible }, interval = 10_000) {
+            pollWhileVisible(
+                snapshotFlow { env.online && env.visible },
+                interval = 10_000,
+                onTimeout = { channelReadPositionsChecked = true },
+            ) {
                 try {
                     channelReadMutex.withLock {
                         channelReadPositions = api.request("/api/channel-read-states").rows()
