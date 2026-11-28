@@ -361,7 +361,7 @@ internal class ConnectedScreenState(
             canReact = writable || isPost,
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
-            richContent = richContent, channelLinks = links.channels.map { it.first },
+            richContent = richContent, postLinks = links.posts, channelLinks = links.channels.map { it.first },
             needsWorkspaceEmoji = allowPreview && !data.present("ciphertext") && (
                 ((!isPost || !data.flag("remote")) && (
                     hasMissingWorkspaceEmoji(visibleBody, emoji) || emojiBodies.any { hasMissingWorkspaceEmoji(it, emoji) } ||

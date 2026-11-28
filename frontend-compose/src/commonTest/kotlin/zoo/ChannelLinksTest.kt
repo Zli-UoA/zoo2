@@ -14,6 +14,19 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 class ChannelLinksTest {
+    @Test
+    fun localPostsStayInTheAppAndNeverBecomeExternalPreviews() {
+        val base = "https://zoo.example"
+        val post = "$base/home/posts/42"
+        val note = "$base/api/activitypub/notes/42"
+        val external = "https://elsewhere.example/home/posts/42"
+        val parsed = messageLinks("$post $note $external", base)
+        assertEquals(listOf(post to "42"), parsed.posts)
+        assertEquals(external, parsed.external)
+        assertNull(localPostLink("https://zoo.example:8000/home/posts/42", base))
+        assertNull(localPostLink("$base/home/posts/%2Ffoo", base))
+    }
+
     private val app = "https://zoo.test"
     private val message = ChannelLinkTarget("general", messageId = "m1")
     private val channelRow = obj("id" to "general", "channel_name" to "general", "description" to "雑談")

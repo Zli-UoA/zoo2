@@ -258,6 +258,7 @@ class AndroidSamplesTest {
                 SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", false),
             )),
         ))
+        val gallery = galleryMap()
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
             "channel-rich" to conversation.copy(entries = listOf(richMessage), input = InputState()),
@@ -349,7 +350,7 @@ class AndroidSamplesTest {
         var emojiPicker by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
-            CompositionLocalProvider(LocalTimelineImage provides { if (it.key == "fixture-emoji") reactionEmoji else avatar }) {
+            CompositionLocalProvider(LocalTimelineImage provides { when (it.key) { "fixture-emoji" -> reactionEmoji; "photo" -> gallery; else -> avatar } }) {
                 AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
                     actions.add(action)
                     if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
@@ -1105,6 +1106,27 @@ class AndroidSamplesTest {
         }
         ui.waitForIdle()
         capture("post-offline-large")
+    }
+
+    private fun galleryMap(): ImageBitmap {
+        val bitmap = Bitmap.createBitmap(420, 236, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(0xffe9e2cb.toInt())
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.color = 0xff9ebc98.toInt()
+        canvas.drawRoundRect(26f, 24f, 168f, 116f, 10f, 10f, paint)
+        paint.color = 0xff86b6c5.toInt()
+        paint.strokeWidth = 31f
+        canvas.drawLine(300f, -20f, 205f, 255f, paint)
+        paint.color = android.graphics.Color.WHITE
+        paint.strokeWidth = 14f
+        canvas.drawLine(0f, 192f, 420f, 64f, paint)
+        canvas.drawLine(45f, 0f, 143f, 236f, paint)
+        paint.color = 0xffa84030.toInt()
+        canvas.drawCircle(259f, 114f, 15f, paint)
+        paint.color = android.graphics.Color.WHITE
+        canvas.drawCircle(259f, 114f, 5f, paint)
+        return bitmap.asImageBitmap()
     }
 
     private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {

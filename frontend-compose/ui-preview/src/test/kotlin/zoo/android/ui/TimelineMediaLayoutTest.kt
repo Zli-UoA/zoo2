@@ -108,7 +108,7 @@ class TimelineMediaLayoutTest {
             ui.onNodeWithText(text).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(results) }
             return results.single()
         }
-        for ((text, lines) in listOf(site to 1, title to 1, description to 3)) {
+        for ((text, lines) in listOf("$site · example.test" to 1, title to 2, description to 3)) {
             val layout = textLayout(text)
             assertEquals(lines, layout.layoutInput.maxLines)
             assertEquals(TextOverflow.Ellipsis, layout.layoutInput.overflow)

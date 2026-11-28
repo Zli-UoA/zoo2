@@ -1,5 +1,11 @@
 package zoo.android.ui
 
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -75,11 +81,11 @@ internal fun EntryBlocks(
 }
 
 @Composable
-internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors) {
+internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors, open: ((String) -> Unit)? = null) {
     if (cards.isEmpty()) return
     Column(Modifier.padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         cards.forEach { card ->
-            if (card.summaly) SummalyCard(card, colors)
+            if (card.summaly) SummalyCard(card, colors, open)
             else Column(
                 Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(12.dp)).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -109,21 +115,47 @@ internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors) {
 }
 
 @Composable
-private fun SummalyCard(card: EntryCard, colors: AndroidColors) {
-    Column(Modifier.fillMaxWidth()) {
+private fun SummalyCard(card: EntryCard, colors: AndroidColors, open: ((String) -> Unit)?) {
+    val url = card.url?.let({ zoo.publicUrlString(it) })
+    val host = url?.let { android.net.Uri.parse(it).host }.orEmpty()
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(colors.background).border(1.dp, colors.inputBoundary, shape)
+        .then(if (url != null && open != null) Modifier.clickable(role = Role.Button, onClickLabel = "記事を開く") {
+            open(url)
+        } else Modifier)) {
         card.image?.let { media ->
             val bitmap = rememberTimelineImage(media)
             Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(colors.inputSurface)) {
                 bitmap?.let { Image(it, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop) }
             }
         }
-        if (card.caption.isNotBlank()) {
-            Text(card.caption, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                UiGlyph(UiIcon.External, colors.secondary, 14.dp)
+                Text(listOf(card.caption, host).filter { it.isNotBlank() }.distinctBy { it.lowercase() }.joinToString(" · "),
+                    color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text(card.title.ifBlank { host }, color = colors.foreground, fontSize = 16.sp,
+                fontWeight = AndroidWeights.emphasis, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (card.description.isNotBlank()) Text(card.description, color = colors.secondary, fontSize = 14.sp,
+                maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
-        Text(entryLabel(card.title, card.url), color = colors.foreground, fontSize = 15.sp,
-            fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (card.description.isNotBlank()) {
-            Text(card.description, color = colors.foreground, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+internal fun PostLinkCard(url: String, colors: AndroidColors, open: () -> Unit) {
+    val parsed = zoo.publicUrlString(url)?.let(android.net.Uri::parse) ?: return
+    val shape = RoundedCornerShape(12.dp)
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(shape).border(1.dp, colors.inputBoundary, shape)
+        .clickable(role = Role.Button, onClickLabel = "投稿を開く", onClick = open).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        UiGlyph(UiIcon.Bubble, colors.secondary, 18.dp)
+        Column(Modifier.weight(1f)) {
+            Text("Zoo の投稿", color = colors.foreground, fontSize = 15.sp, fontWeight = AndroidWeights.emphasis)
+            Text(parsed.host + parsed.encodedPath, color = colors.secondary, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        UiGlyph(UiIcon.Next, colors.secondary, 16.dp)
     }
 }

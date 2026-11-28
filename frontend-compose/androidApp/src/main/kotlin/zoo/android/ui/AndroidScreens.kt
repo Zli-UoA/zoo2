@@ -100,6 +100,7 @@ internal data class TimelineItem(
     val linkCard: EntryCard? = null,
     /** 本文に書いた、このアプリのチャンネル・メッセージへのリンク（埋め込みカードを出す。外部には送らない）。 */
     val channelLinks: List<String> = emptyList(),
+    val postLinks: List<Pair<String, String>> = emptyList(),
     val emoji: Map<String, TimelineMedia> = emptyMap(),
     val needsWorkspaceEmoji: Boolean = false,
     val avatar: String? = null,
@@ -1097,7 +1098,12 @@ private fun Timeline(
                                         openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true)) })
                                 }
                                 entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
-                                EntryCards(listOfNotNull(entry.linkCard), colors)
+                                entry.postLinks.forEach { (url, id) ->
+                                    PostLinkCard(url, colors) { dispatch(AndroidUiAction.OpenPost(id)) }
+                                }
+                                EntryCards(listOfNotNull(entry.linkCard), colors) { url ->
+                                    dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url))
+                                }
                                 entry.link?.takeIf { entry.linkCard == null }?.let { url ->
                                     Text(url,
                                         Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
