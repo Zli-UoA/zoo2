@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 
 vi.mock("../../../hooks/useAttachments", () => ({
   useAttachmentUrl: () => ({
@@ -105,23 +105,25 @@ afterEach(async () => {
 function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
   const element = (overrides: Partial<MessageRowProps>) => (
     <LocaleProvider>
-      <MessageRow
-        item={item}
-        isOwn={isOwn}
-        isEditing={false}
-        editingText=""
-        onEditingTextChange={noop}
-        onStartEdit={noop}
-        onCancelEdit={noop}
-        onSaveEdit={noop}
-        onRequestDelete={noop}
-        reactions={[]}
-        kitchenCatalog={null}
-        canReact={false}
-        onReaction={noop}
-        onPickReaction={noop}
-        {...overrides}
-      />
+      <EmojiHistoryFixture>
+        <MessageRow
+          item={item}
+          isOwn={isOwn}
+          isEditing={false}
+          editingText=""
+          onEditingTextChange={noop}
+          onStartEdit={noop}
+          onCancelEdit={noop}
+          onSaveEdit={noop}
+          onRequestDelete={noop}
+          reactions={[]}
+          kitchenCatalog={null}
+          canReact={false}
+          onReaction={noop}
+          onPickReaction={noop}
+          {...overrides}
+        />
+      </EmojiHistoryFixture>
     </LocaleProvider>
   );
   const result = render(element(props));

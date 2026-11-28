@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import { kitchenLabel, type KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
-import { loadRecentEmojis } from "../../../lib/emoji/recents";
+import { useRecentEmojis } from "../../../lib/emoji/history";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import { ReactionEmoji } from "./ReactionEmoji";
 
@@ -19,7 +19,7 @@ export function RecentReactions({
   onSelect: (value: string) => void;
 }) {
   const { t } = useTranslation();
-  const [values] = useState(() => loadRecentEmojis());
+  const values = useRecentEmojis();
   const { emojis } = useWorkspaceEmojis();
   const available = useMemo(
     () =>

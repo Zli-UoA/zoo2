@@ -865,6 +865,19 @@ impl ApiClient {
             .await?)
     }
 
+    pub async fn recent_emojis(&self) -> Result<Vec<String>> {
+        self.get("/api/users/me/recent-emojis").await
+    }
+
+    pub async fn record_recent_emoji(&self, emoji: &str) -> Result<Option<String>> {
+        self.write(
+            Method::POST,
+            "/api/users/me/recent-emojis",
+            Some(json!({"emoji":emoji})),
+        )
+        .await
+    }
+
     pub async fn add_reaction(
         &self,
         reaction_id: &str,

@@ -20,7 +20,7 @@ import {
   useCustomEmojiSearch,
 } from "./EmojiPicker";
 import { RecentReactions } from "./RecentReactions";
-import { addRecentEmoji } from "../../../lib/emoji/recents";
+import { useRecordEmoji } from "../../../lib/emoji/history";
 
 type ReactionTab = "emoji" | "kitchen" | "custom";
 
@@ -38,6 +38,7 @@ export function ReactionPicker({
   onOpenChange: (open: boolean) => void;
   onSelect: (emoji: string) => void;
 }) {
+  const addRecentEmoji = useRecordEmoji();
   const { t } = useTranslation();
   const [tab, setTab] = useState<ReactionTab>("emoji");
   const [query, setQuery] = useState("");
@@ -111,9 +112,7 @@ export function ReactionPicker({
               </Tabs.Tab>
             </Tabs.List>
             <Tabs.Panel value="emoji" className="flex min-h-0 flex-1 flex-col">
-              {open && purpose === "reaction" && tab === "emoji" && !searching ? (
-                <RecentReactions onSelect={select} />
-              ) : null}
+              {open && tab === "emoji" && !searching ? <RecentReactions onSelect={select} /> : null}
               {/* A panel that is leaving must not render a second copy of the results. */}
               {tab === "emoji" ? searchResults : null}
             </Tabs.Panel>

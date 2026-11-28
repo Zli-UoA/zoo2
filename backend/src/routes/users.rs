@@ -68,6 +68,10 @@ pub fn router() -> Router<AppState> {
             "/api/users/me/preferences",
             get(get_preferences).patch(update_preferences),
         )
+        .route(
+            "/api/users/me/recent-emojis",
+            get(get_recent_emojis).post(record_recent_emoji),
+        )
         .route("/api/users/admins", get(list_admin_users))
         .route("/api/users/{id}/admin", patch(update_admin))
         .route("/api/users/{id}", get(get_user_by_id))
@@ -271,6 +275,61 @@ async fn update_preferences(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(ApiResponse::new(payload, txid)))
+}
+
+/// A single row per authenticated account, ordered newest first.
+async fn get_recent_emojis(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let values = crate::apps::one(&mut tx,
+        "SELECT COALESCE((SELECT to_json(emojis) FROM user_recent_emojis WHERE user_id=$1),'[]')::text",
+        &[&user.id]).await?;
+    tx.commit().await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "private, no-store")],
+        Json(values),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecentEmoji {
+    emoji: String,
+}
+
+async fn record_recent_emoji(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(input): Json<RecentEmoji>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    if input.emoji.trim().is_empty()
+        || input.emoji.len() > 256
+        || input.emoji.chars().any(char::is_control)
+    {
+        return Err(AppError::BadRequest("Invalid emoji".into()));
+    }
+    let emoji = if input.emoji.starts_with("kitchen:") {
+        crate::validation::normalize_and_validate_emoji(&input.emoji)?
+    } else {
+        input.emoji
+    };
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let values = crate::apps::one(
+        &mut tx,
+        "INSERT INTO user_recent_emojis (user_id, emojis) VALUES ($1, ARRAY[$2::text])
+         ON CONFLICT (user_id) DO UPDATE SET emojis =
+             (EXCLUDED.emojis || array_remove(user_recent_emojis.emojis, $2::text))[1:16]
+         RETURNING to_json(emojis)::text",
+        &[&user.id, &emoji],
+    )
+    .await?;
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+    Ok(Json(ApiResponse::new(values, txid)))
 }
 
 async fn update_me(

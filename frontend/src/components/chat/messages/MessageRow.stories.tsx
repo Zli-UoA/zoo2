@@ -7,7 +7,7 @@ import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import encryptedAttachmentImage from "../../../../.storybook/fixtures/encrypted-attachment.png?inline";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import {
   EncryptedChannelContext,
   MentionUserNamesContext,
@@ -783,6 +783,13 @@ export const EncryptedWithAttachments: Story = {
 };
 
 export const TouchActionSheet: Story = {
+  decorators: [
+    (Story) => (
+      <EmojiHistoryFixture>
+        <Story />
+      </EmojiHistoryFixture>
+    ),
+  ],
   globals: { viewport: { value: "mobile" } },
   parameters: { a11y: { test: "error" } },
   args: {

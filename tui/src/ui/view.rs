@@ -970,7 +970,7 @@ fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect) {
         Target::Edit(_) => " メッセージを編集 ".to_string(),
     };
     let hint = if insert {
-        " Enter: 送信 / Alt+Enter: 改行 / Esc: 戻る "
+        " Enter: 送信 / Alt+Enter: 改行 / Alt+e: 絵文字 / Esc: 戻る "
     } else {
         " i: 書く "
     };
@@ -1008,13 +1008,24 @@ fn typing_line(app: &App) -> Option<String> {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let line = if let Mode::React { input, .. } = &app.mode {
+    let line = if let Mode::React { input, message_id } = &app.mode {
         Line::from(vec![
-            Span::styled(" リアクション: ", Style::new().fg(ACCENT)),
+            Span::styled(
+                if message_id.is_some() {
+                    " リアクション: "
+                } else {
+                    " 絵文字を挿入: "
+                },
+                Style::new().fg(ACCENT),
+            ),
             Span::raw(input.clone()),
             Span::styled("▏", Style::new().fg(ACCENT)),
             Span::styled(
-                "  例: thumbsup, :tada:, 👍  Enter: 付ける/外す / Esc: やめる",
+                if app.recent_emojis.is_empty() {
+                    "  例: thumbsup, :tada:, 👍  Enter: 決定 / Esc: やめる"
+                } else {
+                    "  Tab: 最近使った絵文字 / Enter: 決定 / Esc: やめる"
+                },
                 DIM,
             ),
         ])

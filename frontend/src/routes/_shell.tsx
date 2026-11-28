@@ -1,3 +1,4 @@
+import { EmojiHistoryProvider } from "../lib/emoji/history";
 import { SipProvider } from "../components/sip/SipProvider";
 import { SipCallBanner } from "../components/sip/SipPanel";
 import { HomeLiveProvider } from "../hooks/useHomeLive";
@@ -40,9 +41,11 @@ function ShellLayout() {
               <NotificationsProvider>
                 <UnreadProvider>
                   <PinnedChannelsProvider>
-                    <AppShell>
-                      <Outlet />
-                    </AppShell>
+                    <EmojiHistoryProvider>
+                      <AppShell>
+                        <Outlet />
+                      </AppShell>
+                    </EmojiHistoryProvider>
                     <SasVerificationHost />
                     <IncomingCallDialog />
                   </PinnedChannelsProvider>

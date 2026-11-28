@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { ComposerEmojiButton } from "./ComposerEmojiButton";
 import { HomeReactionPicker } from "../../home/HomeReactionPicker";
@@ -58,7 +59,11 @@ function Editor({ composing = false }: { composing?: boolean }) {
 
 describe("Kitchen in message bodies", () => {
   it("replaces the saved selection with an MFM shortcode and renders the image", async () => {
-    render(<Editor />);
+    render(
+      <EmojiHistoryFixture>
+        <Editor />
+      </EmojiHistoryFixture>,
+    );
     const input = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
     input.focus();
     input.setSelectionRange(7, 14);
@@ -68,6 +73,9 @@ describe("Kitchen in message bodies", () => {
     fireEvent.load(image);
     await userEvent.click(screen.getByRole("button", { name: "この組み合わせを追加" }));
     await waitFor(() => expect(input.value).toBe("before :kitchen_1f431_1f600: after"));
+    expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual([
+      "kitchen:1f431_1f600",
+    ]);
     const rendered = screen.getByRole("img", { name: "🐱 + 😀" });
     expect(rendered.getAttribute("src")).toContain("u1f600_u1f431.png");
     expect(input.selectionStart).toBe("before :kitchen_1f431_1f600:".length);

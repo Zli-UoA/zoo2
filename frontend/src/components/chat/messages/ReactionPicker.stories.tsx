@@ -9,7 +9,7 @@ import {
   manyCustomEmojiFixtures,
 } from "../../../../.storybook/preference-fixtures";
 
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import { Button } from "../../ui/button";
 import { ReactionPicker } from "./ReactionPicker";
 
@@ -89,6 +89,13 @@ export const SearchEmpty: Story = {
 };
 
 export const Recents: Story = {
+  decorators: [
+    (Story) => (
+      <EmojiHistoryFixture>
+        <Story />
+      </EmojiHistoryFixture>
+    ),
+  ],
   beforeEach: () => {
     const previous = localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY);
     localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify(["🎉", "👍"]));

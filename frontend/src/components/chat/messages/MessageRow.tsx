@@ -28,7 +28,7 @@ export { MessageBody } from "./MessageBody";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
-import { addRecentEmoji } from "../../../lib/emoji/recents";
+import { useRecordEmoji } from "../../../lib/emoji/history";
 import { RecentReactions } from "./RecentReactions";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
@@ -247,6 +247,7 @@ export function MessageRow({
   unencryptedAfterEncrypted,
   highlightRun,
 }: MessageRowProps) {
+  const addRecentEmoji = useRecordEmoji();
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;

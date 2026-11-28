@@ -101,7 +101,9 @@ struct ComposerView: View {
         }
         .sheet(isPresented: $showingEmoji, onDismiss: { focused = true }) {
             ReactionPicker(workspace: workspace) { value in
-                insert(value, replacing: draft.wrappedValue == emojiInsertionText ? emojiInsertionRange : nil)
+                workspace.recentEmojis.record(value)
+                let insertion = value.hasPrefix("kitchen:") ? ":kitchen_" + value.dropFirst(8) + ":" : value
+                insert(insertion, replacing: draft.wrappedValue == emojiInsertionText ? emojiInsertionRange : nil)
                 showingEmoji = false
             }
         }

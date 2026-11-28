@@ -70,6 +70,7 @@ enum SyncWait {
 #[derive(Debug)]
 pub enum AppEvent {
     Notice(String),
+    RecentEmojis(Vec<String>),
     /// 本文のリンクが指すメッセージの取得の結果と、届けた購読の番号。
     Linked(u64, LinkedEvent),
     AccountProfiles(zoo2_client_core::store::AccountProfiles),
@@ -212,7 +213,7 @@ pub enum Mode {
     Insert,
     /// リアクションの絵文字 (ショートコードか絵文字そのもの) を入力している。
     React {
-        message_id: String,
+        message_id: Option<String>,
         input: String,
     },
     /// 削除の確認。
@@ -282,6 +283,7 @@ pub struct App {
 
     pub focus: Focus,
     pub mode: Mode,
+    pub recent_emojis: Vec<String>,
     pub sidebar_index: usize,
     pub active_threads: Vec<ThreadSummary>,
     pub archived_threads: Vec<ThreadSummary>,
@@ -416,6 +418,7 @@ impl App {
             app_tx,
             focus: Focus::Sidebar,
             mode: Mode::Normal,
+            recent_emojis: Vec::new(),
             sidebar_index: 0,
             active_threads: Vec::new(),
             archived_threads: Vec::new(),
@@ -981,6 +984,12 @@ impl App {
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
+            }
+            AppEvent::RecentEmojis(values) => {
+                self.recent_emojis = values
+                    .into_iter()
+                    .filter(|value| resolve_emoji(value).is_some() && !value.starts_with("apub:"))
+                    .collect();
             }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 crate::mfm::set_emoji_catalog(shortcodes, custom)
@@ -1761,10 +1770,7 @@ impl App {
                 if let Some((_, message_id)) = self.focused_message()
                     && self.can_change_message(&message_id)
                 {
-                    self.mode = Mode::React {
-                        message_id,
-                        input: String::new(),
-                    };
+                    self.open_emoji_picker(Some(message_id));
                 }
             }
             KeyCode::Char('p') => self.toggle_pin(),
@@ -1888,6 +1894,9 @@ impl App {
 
     fn on_insert_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::ALT => {
+                self.open_emoji_picker(None)
+            }
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter
                 if !key
@@ -2574,15 +2583,55 @@ impl App {
         }
     }
 
-    fn on_react_key(&mut self, key: KeyEvent, message_id: String, mut input: String) {
+    fn open_emoji_picker(&mut self, message_id: Option<String>) {
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(values) = api.recent_emojis().await {
+                let _ = tx.send(AppEvent::RecentEmojis(values));
+            }
+        });
+        self.mode = Mode::React {
+            message_id,
+            input: String::new(),
+        };
+    }
+
+    fn on_react_key(&mut self, key: KeyEvent, message_id: Option<String>, mut input: String) {
+        let previous = if message_id.is_some() {
+            Mode::Normal
+        } else {
+            Mode::Insert
+        };
         match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Esc => self.mode = previous,
             KeyCode::Enter => {
-                self.mode = Mode::Normal;
-                match resolve_emoji(&input) {
-                    Some(emoji) => self.toggle_reaction(message_id, emoji),
-                    None => self.notify(format!("絵文字が見つかりません: {input}")),
+                self.mode = previous;
+                if let Some(emoji) = resolve_emoji(&input) {
+                    if let Some(id) = message_id {
+                        self.toggle_reaction(id, emoji);
+                    } else {
+                        self.composer.insert_str(&emoji);
+                        self.touch_typing();
+                        let api = self.api.clone();
+                        self.spawn_api("絵文字履歴の保存", async move {
+                            api.record_recent_emoji(&emoji).await
+                        });
+                    }
+                } else {
+                    self.notify(format!("絵文字が見つかりません: {input}"));
                 }
+            }
+            KeyCode::Tab if !self.recent_emojis.is_empty() => {
+                let index = self
+                    .recent_emojis
+                    .iter()
+                    .position(|v| v == &input)
+                    .map_or(0, |i| (i + 1) % self.recent_emojis.len());
+                self.mode = Mode::React {
+                    message_id,
+                    input: self.recent_emojis[index].clone(),
+                };
             }
             KeyCode::Backspace => {
                 input.pop();
@@ -2617,7 +2666,9 @@ impl App {
         } else {
             let id = uuid::Uuid::new_v4().to_string();
             self.spawn_api("リアクション", async move {
-                api.add_reaction(&id, &message_id, &emoji).await
+                let result = api.add_reaction(&id, &message_id, &emoji).await?;
+                let _ = api.record_recent_emoji(&emoji).await;
+                Ok(result)
             });
         }
     }
@@ -4946,7 +4997,7 @@ mod tests {
         )));
         assert_eq!(app.mode, Mode::Normal);
         app.mode = Mode::React {
-            message_id: "root".into(),
+            message_id: Some("root".into()),
             input: "thumbsup".into(),
         };
         app.on_terminal_event(Event::Key(KeyEvent::new(

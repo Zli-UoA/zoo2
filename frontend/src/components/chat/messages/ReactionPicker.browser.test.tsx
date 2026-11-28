@@ -7,7 +7,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import { ReactionPicker } from "./ReactionPicker";
 
 vi.mock("frimousse", async () => {
@@ -86,7 +86,9 @@ function renderPicker() {
   const onOpenChange = vi.fn();
   const picker = (open: boolean) => (
     <LocaleProvider>
-      <ReactionPicker open={open} onOpenChange={onOpenChange} onSelect={onSelect} />
+      <EmojiHistoryFixture>
+        <ReactionPicker open={open} onOpenChange={onOpenChange} onSelect={onSelect} />
+      </EmojiHistoryFixture>
     </LocaleProvider>
   );
   const { rerender } = render(picker(true));
