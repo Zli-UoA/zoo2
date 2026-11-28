@@ -160,16 +160,6 @@ val electricLicense by
 
 tasks.named("preBuild") { dependsOn(electricLicense) }
 
-val launcherIcon by
-    tasks.registering(Sync::class) {
-        from("../../frontend/public/icons/icon-512.png") { rename { "zoo_launcher.png" } }
-        into(layout.buildDirectory.dir("generated/launcherRes/drawable-nodpi"))
-    }
-
-android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/launcherRes"))
-
-tasks.named("preBuild") { dependsOn(launcherIcon) }
-
 // Bundle the shared WebRTC engine; SIP and credentials stay on the backend.
 // frontend/build contains media-viewer build tools and is an input of buildMediaPreview.
 // Keep generated phone assets in this module so neither bundler consumes the other output.

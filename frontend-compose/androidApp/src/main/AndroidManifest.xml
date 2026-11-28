@@ -26,7 +26,8 @@
     </queries>
     <application
         android:label="Zoo"
-        android:icon="@drawable/zoo_launcher"
+        android:icon="@mipmap/zoo_launcher"
+        android:roundIcon="@mipmap/zoo_launcher"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="false"

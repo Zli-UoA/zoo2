@@ -215,11 +215,8 @@ internal fun PageHeader(
 
 @Composable
 internal fun ZooBadge(colors: AndroidColors, modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        drawCircle(colors.accent)
-        drawOval(Color.Black, Offset(size.width * .28f, size.height * .43f), Size(size.width * .46f, size.height * .40f))
-        for ((x, y) in listOf(.29f to .37f, .50f to .27f, .71f to .37f)) {
-            drawCircle(Color.Black, size.width * .105f, Offset(size.width * x, size.height * y))
-        }
-    }
+    androidx.compose.foundation.Image(
+        androidx.compose.ui.res.painterResource(works.zli.zoo.shared.R.drawable.zoo_mark), null,
+        modifier.background(androidx.compose.ui.res.colorResource(works.zli.zoo.shared.R.color.zoo_brand_yellow), CircleShape),
+    )
 }
