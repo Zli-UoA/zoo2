@@ -334,6 +334,8 @@ final class AppSession {
         if userID == nil || !validatedSession || profileNeedsSaving {
             guard !connecting else { return }
             var epoch = generation
+            var notificationError: String?
+            var attemptedNotificationCleanup = false
             do {
                 if try authentication.hasSession {
                     await beginConnection(interactive: false).value
@@ -342,6 +344,16 @@ final class AppSession {
                     if workspace != nil { logout() }
                     else if !Self.isUITesting { SiriVocabulary.update(nil) }
                     epoch = generation
+                    // キャッシュの復旧を待たず、ログアウト中の通知鍵も起動・復帰時に無効化を再試行する。
+                    let notificationCleanup = notifications.revokeRegistration()
+                    attemptedNotificationCleanup = true
+                    notificationError = notifications.previewKeyError
+                    let previous = cacheCleanup
+                    let notificationBarrier = Task<Void, Error> {
+                        _ = await previous?.result
+                        await notificationCleanup.value
+                    }
+                    cacheCleanup = notificationBarrier
                     if syncCache == nil {
                         let opened = try await openSyncCache()
                         try Task.checkCancellation()
@@ -349,16 +361,34 @@ final class AppSession {
                         syncCache = opened
                     }
                     guard generation == epoch, !connecting else { return }
-                    let previous = cacheCleanup
                     let cleanup = Task { [self] in
-                        _ = await previous?.result
+                        _ = await notificationBarrier.result
                         try await syncCache?.forget(connection: SyncCache.connectionKey(api.settings))
-                        await notifications.revokeRegistration().value
                     }
                     cacheCleanup = cleanup
                     try await cleanup.value
                 }
-            } catch { if generation == epoch { self.error = error.localizedDescription } }
+            } catch {
+                if generation == epoch {
+                    self.error = error.localizedDescription
+                    if !attemptedNotificationCleanup, workspace == nil {
+                        let notificationCleanup = notifications.revokeRegistration()
+                        notificationError = notifications.previewKeyError
+                        let previous = cacheCleanup
+                        let cleanup = Task<Void, Error> {
+                            _ = await previous?.result
+                            await notificationCleanup.value
+                        }
+                        cacheCleanup = cleanup
+                        _ = await cleanup.result
+                    }
+                }
+            }
+            if generation == epoch, let notificationError {
+                if let current = self.error {
+                    if !current.contains(notificationError) { self.error = current + "\n\n" + notificationError }
+                } else { self.error = notificationError }
+            }
             return
         }
         await notifications.resume()

@@ -127,22 +127,25 @@ final class Authentication {
     private(set) var refreshWaiterCount = 0
     private var pendingTokens: TokenSet?
     private let saveToken: (TokenSet, String) throws -> Void
+    private let loadToken: (String) throws -> TokenSet?
     private let deleteToken: (String) throws -> Void
     private var generation = UUID()
     var sessionID: UUID { generation }
 
     init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport(),
+         loadToken: @escaping (String) throws -> TokenSet? = { try TokenVault.load($0) },
          saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) },
          deleteToken: @escaping (String) throws -> Void = { try TokenVault.delete($0) }) {
         self.settings = settings
         self.transport = transport
         self.saveToken = saveToken
+        self.loadToken = loadToken
         self.deleteToken = deleteToken
     }
 
     private func sessionTokens() throws -> TokenSet? {
         if !loadedTokens {
-            tokens = try TokenVault.load(settings.storageKey)
+            tokens = try loadToken(settings.storageKey)
             loadedTokens = true
         }
         return tokens
