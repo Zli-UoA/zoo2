@@ -351,6 +351,7 @@ internal fun ConnectedScreens(
         }
     }
     LaunchedEffect(state.overlay, env.online) {
+        if (state.overlay == "public-profile" && env.online && state.publicProfile == null) state.loadPublicProfile()
         if (state.overlay == "search-engine" && env.online) session.searchPreferences.ensureLoaded()
         if (state.overlay == "new-post" && env.online) try { state.loadFederation() }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -492,6 +493,20 @@ internal fun ConnectedScreens(
         state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
+        state.overlay == "public-profile" -> AndroidScreen.EditChannel(
+            session.t("activitypubSettings.editProfile"), state.channelName, state.channelDescription, "保存",
+            env.online && state.publicProfile != null && !state.saving && state.publicProfileValid(),
+            nameLabel = session.t("activitypubSettings.displayName"),
+            descriptionLabel = session.t("activitypubSettings.bio"),
+            nameHint = state.publicProfile?.text("default_display_name")?.ifBlank { null },
+            description2 = session.t("activitypubSettings.description") + "\n" + session.t("activitypubSettings.nameHint"),
+            loading = state.publicProfile == null && !state.publicProfileFailed,
+            notice = when {
+                state.publicProfileSaved -> session.t("activitypubSettings.saved")
+                state.publicProfileFailed -> session.t("common.writeError")
+                else -> null
+            },
+        )
         state.overlay == "create" || state.overlay == "rename" -> AndroidScreen.EditChannel(
             if (state.overlay == "create") "チャンネルを作成" else "チャンネルを編集",
             state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",

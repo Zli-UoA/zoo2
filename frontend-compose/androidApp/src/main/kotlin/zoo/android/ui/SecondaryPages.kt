@@ -213,12 +213,18 @@ internal fun ChannelEditorPage(
 ) {
     PageHeader(screen.title, colors, onBack = { dispatch(AndroidUiAction.Back) })
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        ChannelField("チャンネル名", screen.name, colors, singleLine = true) {
-            dispatch(AndroidUiAction.ChannelNameChanged(it))
+        screen.description2?.let { Text(it, color = colors.secondary, fontSize = 14.sp) }
+        if (screen.loading) {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally), color = colors.accent)
+        } else {
+            ChannelField(screen.nameLabel, screen.name, colors, singleLine = true, hint = screen.nameHint) {
+                dispatch(AndroidUiAction.ChannelNameChanged(it))
+            }
+            ChannelField(screen.descriptionLabel, screen.description, colors, singleLine = false) {
+                dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
+            }
         }
-        ChannelField("説明", screen.description, colors, singleLine = false) {
-            dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
-        }
+        screen.notice?.let { Text(it, Modifier.testTag("editor-notice"), color = colors.secondary, fontSize = 13.sp) }
         val options = listOf(
             Triple("channel-private", "非公開", screen.privateChannel),
             Triple("channel-encrypted", "エンドツーエンド暗号化", screen.encrypted),
@@ -248,16 +254,24 @@ private fun ChannelField(
     value: String,
     colors: AndroidColors,
     singleLine: Boolean,
+    hint: String? = null,
     change: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, color = colors.secondary, fontSize = 13.sp)
         BasicTextField(
             value, change,
-            Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(10.dp)).padding(12.dp),
+            Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(10.dp)).padding(12.dp)
+                .semantics { contentDescription = label },
             singleLine = singleLine, minLines = if (singleLine) 1 else 3,
             textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
             cursorBrush = SolidColor(colors.inputText),
+            decorationBox = { field ->
+                Box {
+                    if (value.isEmpty() && hint != null) Text(hint, color = colors.inputHint, fontSize = 16.sp)
+                    field()
+                }
+            },
         )
     }
 }

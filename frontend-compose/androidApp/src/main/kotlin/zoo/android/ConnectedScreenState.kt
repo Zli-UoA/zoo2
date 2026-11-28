@@ -244,6 +244,35 @@ internal class ConnectedScreenState(
     var channelEncrypted by mutableStateOf(false)
         private set
     var postVisibility by mutableStateOf("unlisted")
+    /** 自分の公開プロフィール（`GET /api/activitypub/profile`）。読み込むまでは null。 */
+    var publicProfile by mutableStateOf<Row?>(null)
+        private set
+    var publicProfileFailed by mutableStateOf(false)
+        private set
+    var publicProfileSaved by mutableStateOf(false)
+        private set
+
+    /** 公開プロフィールの編集を開いたときに読む。編集中の欄は、読み込んだ値で始める。 */
+    suspend fun loadPublicProfile() {
+        publicProfileFailed = false
+        try {
+            val profile = app.api.request("/api/activitypub/profile").jsonObject
+            publicProfile = profile
+            channelName = profile.text("display_name")
+            channelDescription = profile.text("summary")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            publicProfileFailed = true
+        }
+    }
+
+    /** Web の設定と同じ上限（表示名 100 文字、自己紹介 1000 文字）と、制御文字を含まないこと。 */
+    fun publicProfileValid(): Boolean {
+        val name = channelName.trim()
+        return name.codePointCount() <= 100 && name.none { it.isISOControl() } &&
+            channelDescription.codePointCount() <= 1000 && '\u0000' !in channelDescription
+    }
     /** Serializes notification-level PATCHes per channel so the last selection is saved last. */
     private val notificationLevelLocks = mutableMapOf<String, Mutex>()
     private val drafts = mutableStateMapOf<String, InputState>()
@@ -1028,6 +1057,12 @@ internal class ConnectedScreenState(
     }
 
     fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
+        // 自分のプロフィール（iOS のプロフィールタブ）。名前とアイコンは認証基盤の設定で変える。
+        SettingsGroup("プロフィール", buildList {
+            add(SettingsEntry.Destination("public-profile", app.t("activitypubSettings.editProfile")))
+            if (platform.issuer != null) add(SettingsEntry.Destination("account-profile", "名前・アイコンを編集"))
+            add(SettingsEntry.Destination("public-page", "公開ページを見る"))
+        }),
         SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", env.theme),
             SettingsEntry.Destination("language", "言語", env.locale))),
         SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", env.swipeReply),
@@ -1277,6 +1312,18 @@ internal class ConnectedScreenState(
                         }
                     }
                 }
+                action.id == "public-profile" -> {
+                    publicProfile = null
+                    publicProfileSaved = false
+                    channelName = ""
+                    channelDescription = ""
+                    overlay = "public-profile"
+                }
+                action.id == "account-profile" -> platform.issuer?.let { issuer ->
+                    publicUrl(issuer.trimEnd('/') + "/settings/profile")?.let { platform.action("open:$it") }
+                }
+                action.id == "public-page" ->
+                    platform.action("open:${endpoint(app.config.apiBaseUrl, "/public/users/${app.config.userId.encodeURLParameter()}")}")
                 action.id == "os-notifications" -> enableNotifications()
                 action.id == "logout" -> request { platform.invoke("logout") }
                 action.id.startsWith("theme:") || action.id.startsWith("locale:") -> platform.action(action.id)
@@ -1306,9 +1353,25 @@ internal class ConnectedScreenState(
                 }
                 else -> { query = ""; overlay = action.id }
             }
-            is AndroidUiAction.ChannelNameChanged -> channelName = action.name
-            is AndroidUiAction.ChannelDescriptionChanged -> channelDescription = action.description
-            AndroidUiAction.SubmitChannel -> if (!saving) request {
+            is AndroidUiAction.ChannelNameChanged -> { channelName = action.name; publicProfileSaved = false }
+            is AndroidUiAction.ChannelDescriptionChanged -> { channelDescription = action.description; publicProfileSaved = false }
+            AndroidUiAction.SubmitChannel -> if (overlay == "public-profile") {
+                if (!saving && publicProfile != null && publicProfileValid()) request {
+                    saving = true
+                    publicProfileFailed = false
+                    try {
+                        val saved = app.api.request("/api/activitypub/profile", "PUT",
+                            obj("display_name" to channelName, "summary" to channelDescription)).jsonObject
+                        publicProfile = saved
+                        channelName = saved.text("display_name")
+                        channelDescription = saved.text("summary")
+                        publicProfileSaved = true
+                    } catch (failure: Exception) {
+                        if (failure is CancellationException) throw failure
+                        publicProfileFailed = true
+                    } finally { saving = false }
+                }
+            } else if (!saving) request {
                 saving = true
                 try {
                     val payload = obj("channel_name" to channelName.trim(), "description" to channelDescription,

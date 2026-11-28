@@ -179,6 +179,13 @@ internal sealed interface AndroidScreen {
         val privateChannel: Boolean? = null,
         val sensitive: Boolean? = null,
         val encrypted: Boolean? = null,
+        /** 同じ形の編集画面（自分の公開プロフィール）で使う、欄の名前と説明。 */
+        val nameLabel: String = "チャンネル名",
+        val descriptionLabel: String = "説明",
+        val nameHint: String? = null,
+        val description2: String? = null,
+        val loading: Boolean = false,
+        val notice: String? = null,
     ) : AndroidScreen
     data class Directory(
         val title: String, val query: String, val results: List<SelectionItem>,
