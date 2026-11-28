@@ -58,14 +58,13 @@ struct SiriMessageHandlerTests {
                                                       siriMatches: [old], in: [recipient]).isEmpty)
     }
 
-    @Test("保存済みメンバーの復元時にもSiri候補の更新を通知する")
+    @Test("参加状態未保存でもメンバーを復元してSiri候補の更新を通知する")
     func notifiesRestoredPeople() async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let cache = try await SyncCache.open(inMemory: true)
         let lease = try await cache.activate(connection: "Siri候補の復元", user: user)
         let sync = SyncSession(cache: cache, lease: lease)
-        try await sync.store([Channel](), key: "workspace:channels")
         try await sync.store([user], key: "workspace:people")
         let workspace = WorkspaceStore(client: NativeChatClient(api: harness.api, sync: sync), user: user, recentEmojiDefaults: nil)
         let firstEvent = AsyncStream<Void>.makeStream()
@@ -79,6 +78,8 @@ struct SiriMessageHandlerTests {
         for await _ in firstEvent.stream { break }
         #expect(notified)
         #expect(workspace.people[user.id] == user)
+        #expect(!workspace.hasLoaded && !workspace.directoryReady)
+        #expect(workspace.channels.isEmpty && workspace.joinedChannelIDs.isEmpty)
         run.cancel()
         await run.value
         workspace.shutdown()

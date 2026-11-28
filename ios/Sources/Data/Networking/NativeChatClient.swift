@@ -105,12 +105,17 @@ struct NativeChatClient: ChatClient {
         let version = sync.revocationVersion(for: "workspace:channels")
         let knownRevision = sync.knownChannelsRevision
         guard let channels = try await sync.load("workspace:channels", as: [Channel].self),
-              let people = try await sync.load("workspace:people", as: [Person].self) else { return nil }
-        let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) ?? []
+              let people = try await sync.load("workspace:people", as: [Person].self),
+              let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) else { return nil }
+        let pins = try await sync.load("rest:api/channel-pins", as: ChannelPins.self)
         try sync.checkRevocationVersion(version)
         try sync.checkKnownChannelsRevision(knownRevision)
         sync.rememberChannels(channels)
-        return CachedWorkspace(channels: channels, people: people, readStates: states)
+        return CachedWorkspace(channels: channels, people: people, readStates: states, pins: pins)
+    }
+
+    func cachedPeople() async throws -> [Person]? {
+        try await sync?.load("workspace:people", as: [Person].self)
     }
 
     func cachedGet<T: Codable & Sendable>(_ path: String, query: [String: String] = [:],
@@ -162,10 +167,15 @@ struct NativeChatClient: ChatClient {
     }
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
         let id = try segment(id)
+        let revocationVersion = sync?.revocationVersion(for: "rest:api/channel-pins")
+        let result: ChannelPins
         if pinned {
-            return try await api.write("api/channel-pins", body: ["channel_id": .string(id), "expected_version": .number(Double(expectedVersion))])
+            result = try await api.write("api/channel-pins", body: ["channel_id": .string(id), "expected_version": .number(Double(expectedVersion))])
+        } else {
+            result = try await api.write("api/channel-pins/\(id)", method: "DELETE", query: ["expected_version": String(expectedVersion)])
         }
-        return try await api.write("api/channel-pins/\(id)", method: "DELETE", query: ["expected_version": String(expectedVersion)])
+        try await sync?.storeRecovery(result, key: "rest:api/channel-pins", revocationVersion: revocationVersion)
+        return result
     }
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await shapes.snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)

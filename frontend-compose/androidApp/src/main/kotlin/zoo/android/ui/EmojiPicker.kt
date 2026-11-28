@@ -82,10 +82,17 @@ internal fun EmojiPicker(
     loadKitchen: suspend () -> KitchenChoices?,
     loadImage: suspend (String) -> ImageBitmap?,
     dismiss: () -> Unit,
+    prefetchCustomImages: suspend (List<String>) -> Unit = {},
     select: (EmojiChoice) -> Unit,
 ) {
     var tab by remember { mutableStateOf(EmojiTab.Unicode) }
     var query by remember { mutableStateOf("") }
+    var prefetchCustom by remember { mutableStateOf(false) }
+    val prefetch by rememberUpdatedState(prefetchCustomImages)
+    val customImageUrls = remember(custom) { custom.mapNotNull { it.image }.distinct() }
+    LaunchedEffect(prefetchCustom, customImageUrls) {
+        if (prefetchCustom && customImageUrls.isNotEmpty()) prefetch(customImageUrls)
+    }
     var first by remember { mutableStateOf<EmojiChoice?>(null) }
     var kitchen by remember { mutableStateOf<KitchenChoices?>(null) }
     var kitchenFailed by remember { mutableStateOf(false) }
@@ -137,7 +144,11 @@ internal fun EmojiPicker(
                 },
             ) {
                 EmojiTab.entries.forEach { choice ->
-                    Tab(selected = choice == tab, onClick = { tab = choice; query = "" },
+                    Tab(selected = choice == tab, onClick = {
+                        if (choice == EmojiTab.Custom) prefetchCustom = true
+                        tab = choice
+                        query = ""
+                    },
                         text = { Text(choice.title, fontSize = 14.sp, maxLines = 1) }, selectedContentColor = colors.foreground, unselectedContentColor = colors.secondary)
                 }
             }

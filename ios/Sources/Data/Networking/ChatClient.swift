@@ -26,6 +26,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient, GlobalSearchClient {
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws
     func cachedWorkspace() async throws -> CachedWorkspace?
+    func cachedPeople() async throws -> [Person]?
     func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws
     func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws
     func addReaction(messageID: String, emoji: String) async throws -> MessageReaction
@@ -52,6 +53,7 @@ struct CachedWorkspace: Sendable {
     let channels: [Channel]
     let people: [Person]
     let readStates: [ChannelReadState]
+    var pins: ChannelPins? = nil
 }
 
 extension ChatClient {
@@ -73,6 +75,7 @@ extension ChatClient {
         return plaintext
     }
     func cachedWorkspace() async throws -> CachedWorkspace? { nil }
+    func cachedPeople() async throws -> [Person]? { nil }
     func attachmentFile(_ attachment: MessageAttachment, channelID: String?) async throws -> AttachmentFile {
         try await AttachmentFile.write(attachmentData(attachment, channelID: channelID, reload: false))
     }

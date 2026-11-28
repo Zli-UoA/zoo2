@@ -33,6 +33,7 @@ final class PreviewTestControl {
 @MainActor
 final class PreviewChatClient: ChatClient {
     private var typingStartedAt: [String: ContinuousClock.Instant] = [:]
+    private var directoryRequests = 0
 
     func typingUsers(channelID: String, parentID: String?) async throws -> [TypingUser] {
         guard channelID == Self.channelID else { return [] }
@@ -311,7 +312,10 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channelPins(allowOfflineFallback: Bool) async throws -> ChannelPins {
-        pins
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-pins-loading") {
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        return pins
     }
     func observeChannelPinChanges(receive: @MainActor () -> Void) async throws {
         let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -416,10 +420,21 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channels() async throws -> [Channel] {
-        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-loading") {
+        directoryRequests += 1
+        let retry = ProcessInfo.processInfo.arguments.contains("--uitesting-directory-retry")
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-error") || (retry && directoryRequests == 1) {
+            throw ZooError.rejected(503, "チャンネルを取得できませんでした。")
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-loading") || retry {
             try await Task.sleep(for: .seconds(86_400))
         }
         return allChannels
+    }
+    func cachedWorkspace() async throws -> CachedWorkspace? {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-cache-loading") {
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        return nil
     }
     func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage {
         let replies = Dictionary(grouping: allMessages.filter { $0.parent_id != nil && $0.deleted_at == nil }, by: \.parent_id)
@@ -445,7 +460,10 @@ final class PreviewChatClient: ChatClient {
         return person
     }
     func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
-        allChannels.filter { $0.id != discoverableID || joinedPublic }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-read-error") {
+            throw ZooError.rejected(503, "参加状態を取得できませんでした。")
+        }
+        return allChannels.filter { $0.id != discoverableID || joinedPublic }
             .map { previewReadState($0.id) }
     }
     func emojis() async throws -> [WorkspaceEmoji] {

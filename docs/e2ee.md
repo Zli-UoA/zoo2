@@ -2177,7 +2177,10 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 - 【決定】バインディングと XCFramework は Git に入れず、`make crypto-ffi-ios`（`ios/` からは `make crypto-xcframework`、`make generate` の前提）がビルドのたびに `ios/ZooCrypto/` へ作る（`ios/Scripts/build-crypto-xcframework.sh`）。Swift のバインディングは、ビルドした `.a` から同じクレートの `uniffi-bindgen`（`--features cli`）で作るので、ライブラリーと版が必ず一致する。
 - 【決定】生成した Swift は、アプリと同じモジュールには入れず、ローカルの Swift パッケージ `ZooCrypto`（`import ZooCrypto`）にする。同じモジュールに入れると、`MessageContent` などアプリの型名と衝突する。`Zoo` と `ZooNotificationService` の両方が `ZooCrypto` に依存する（通知の復号は #510）。
 - 開発シェルは `nix develop .#ios`（Rust の iOS target と `xcodegen`）。Xcode 本体は Nix で入れられないので、mac に入れたものを使う。スクリプトは Nix が設定する `DEVELOPER_DIR`・`SDKROOT` を外し、`xcode-select` の Xcode の SDK でビルドする。
-- 【決定】暗号の輸出コンプライアンス：配布地域は日本だけ（フランスなど、暗号の申告が要る国・地域には配布しない。配布地域を増やすときは、そのつど確かめる）。`ios/project.yml` の `ITSAppUsesNonExemptEncryption` は `YES` にしている。リンクする `zoo-crypto`（vodozemac、AES-256-GCM・CBC・CTR、HMAC-SHA256、HKDF）は OS が提供する暗号ではないため、免除と言い切れないとして、配布の前に App Store Connect の暗号の質問（OS の暗号以外に、標準のアルゴリズムを使うか、など）に答えて確かめる。Apple が書類を求めて `ITSEncryptionExportComplianceCode` を発行したときだけ、そのコードを `ios/project.yml` に入れる。答えの結果、非免除の暗号を使わないと確かめられたら、`NO` に戻してよい。米国の輸出分類（EAR）は、配布する人が判定する。コードからは判定できない。
+- 【決定】暗号の輸出コンプライアンス：配布地域は日本だけ。2026-11-29に App Store Connect で「標準的な暗号化アルゴリズムを利用」「フランスでの配信予定なし」と回答し、書類のアップロードは不要との判定を確認した。フランスでの配信予定がないことは配布者に確認済み。同じ申告設定で TestFlight 1.0（30）を内部グループ「zli」へ配布し、「テスト中」を確認した。
+  - この結果に合わせ、`ios/project.yml` と生成済みの `ios/Zoo.xcodeproj` の Debug・Release で `ITSAppUsesNonExemptEncryption` を `NO` にする。これにより、承認コードのない `YES` の設定でアップロードが拒否されることを防ぐ。
+  - `NO` は書類提出が不要な暗号利用の申告を表す。リンクする `zoo-crypto`（vodozemac、AES-256-GCM・CBC・CTR、HMAC-SHA256、HKDF）や E2EE の暗号機能は引き続き使用する。
+  - 配布地域や暗号の実装・依存を変えるときは、App Store Connect の質問で申告内容を再確認する。再確認で非免除と判定され、Apple が書類の承認後に `ITSEncryptionExportComplianceCode` を発行した場合は、`ios/project.yml` の `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption` を `YES` に変更し、Zoo ターゲットの `info.properties` に承認コードを設定する。XcodeGen でプロジェクトを再生成し、生成された `ios/Zoo.xcodeproj` なども同じ変更に含める。Release ビルドの `Info.plist` で `ITSAppUsesNonExemptEncryption` が Boolean の `true`、`ITSEncryptionExportComplianceCode` が発行されたコードになっていることを確認してから配布する。米国の輸出分類（EAR）は配布者が判定する。
 - 動作は `ios/Tests/CryptoBindingTests.swift` で確認する（端末の鍵を作り、保存鍵で保存して戻す）。
 
 ### 乱数

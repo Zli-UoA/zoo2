@@ -9,6 +9,8 @@ import zoo.*
 @OptIn(ExperimentalCoroutinesApi::class)
 class PhoneControllerTest {
     private class Fixture(val scope: CoroutineScope) {
+        private val scheduler = checkNotNull(scope.coroutineContext[TestCoroutineScheduler])
+        val heartbeatSentAt = mutableListOf<Long>()
         val requests = mutableListOf<String>()
         val commands = mutableListOf<String>()
         val payloads = mutableListOf<Row>()
@@ -20,7 +22,9 @@ class PhoneControllerTest {
         var revision = "v1"
         var authorize = true
         var permission = true
-        var heartbeatTimeout = false
+        var heartbeatTimeouts = 0
+        var heartbeatStatus: Int? = null
+        var heartbeatDelay = 0L
         var signalTimeouts = 0
         var sfuTimeout = false
         var streamTimeout = false
@@ -41,7 +45,13 @@ class PhoneControllerTest {
                 path.endsWith("/connect") -> obj("data" to obj("revision" to revision, "session_id" to "phone-session", "peer_id" to "gateway-peer", "ice_servers" to JsonArray(emptyList())))
                 path.endsWith("/authorize") -> { check(authorize); obj("data" to obj("revision" to revision)) }
                 path.endsWith("/accept") -> pendingAccept?.await() ?: obj("ok" to true, "channel_id" to "dm")
-                path.endsWith("/call/heartbeat") && heartbeatTimeout -> { delay(20_000); obj() }
+                path.endsWith("/call/heartbeat") -> {
+                    heartbeatSentAt.add(scheduler.currentTime)
+                    heartbeatStatus?.let { throw ApiException(it) }
+                    if (heartbeatTimeouts > 0) { heartbeatTimeouts--; delay(20_000) }
+                    delay(heartbeatDelay)
+                    obj()
+                }
                 path.contains("/call/sfu/") && sfuTimeout -> { delay(20_000); obj() }
                 path.endsWith("/call/signal") && signalTimeouts > 0 -> { signalTimeouts--; delay(20_000); obj() }
                 path.endsWith("/command") -> {
@@ -69,7 +79,7 @@ class PhoneControllerTest {
             override fun incoming(call: PhoneCall) { native.add("incoming:${call.kind}") }
             override fun ended(id: String) { native.add("end:$id") }
             override fun speaker(id: String, enabled: Boolean) { native.add("speaker:$enabled") }
-        }, prepare = { check(permission) }, waiting = { native.add("waiting:$it") }, uuid = { "id-${++number}" })
+        }, prepare = { check(permission) }, waiting = { native.add("waiting:$it") }, uuid = { "id-${++number}" }, heartbeatClock = scheduler.timeSource)
         fun invitation() = obj("id" to "invite", "channel_id" to "dm", "invitee_id" to "alice", "inviter_name" to "Bob", "status" to "pending", "expires_at" to "2030-01-01T00:00:30Z")
     }
     @Test fun registrationDoesNotPlaceANativeCallAndExplicitDialRechecksMembership() = runTest {
@@ -115,7 +125,7 @@ class PhoneControllerTest {
         f.controller.invites(emptyList(), "alice", 1893456000100)
         assertNotNull(f.controller.call)
         f.pendingAccept!!.complete(obj("ok" to true, "channel_id" to "dm")); runCurrent()
-        assertEquals("dialing", f.controller.call?.status); assertNotNull(f.streamEvent)
+        assertEquals("connecting", f.controller.call?.status); assertNotNull(f.streamEvent)
         f.streamEvent!!("room_state", obj("ice_servers" to JsonArray(emptyList()))); runCurrent()
         assertTrue("rtc.start" in f.commands)
         f.events.getValue("dm")("connected", obj()); assertEquals("active", f.controller.call?.status)
@@ -287,12 +297,85 @@ class PhoneControllerTest {
         assertEquals("incoming",f.controller.call?.status)
         f.pendingAccept=null; f.controller.answer(); runCurrent()
         assertTrue(f.requests.any {it.endsWith("/next-invite/accept")})
-        assertEquals("dialing",f.controller.call?.status); f.controller.close()
+        assertEquals("connecting",f.controller.call?.status); f.controller.close()
     }
-    @Test fun heartbeatTimeoutClosesMediaAndShowsAnError() = runTest {
+    @Test fun queuedMuteDoesNotSendStateAfterHangup() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+
+        f.controller.mute(true)
+        f.controller.hangup()
+        runCurrent()
+
+        assertTrue(f.requests.any { it.endsWith("/call/leave") })
+        assertFalse(f.requests.any { it.endsWith("/call/state") })
+        f.controller.close()
+    }
+    @Test fun acceptedDmThatNeverConnectsStillTimesOut() = runTest {
+        val f = Fixture(backgroundScope); f.controller.receiveDmCalls(true); runCurrent()
+        f.controller.invites(listOf(f.invitation()), "alice", 1893456000000)
+        f.controller.answer(); runCurrent()
+        assertEquals("connecting", f.controller.call?.status)
+        advanceTimeBy(45_001); runCurrent()
+        assertNull(f.controller.call)
+        assertTrue(f.requests.any { it.endsWith("/call/leave") })
+        f.controller.close()
+    }
+    @Test fun heartbeatResponsesTakingSixSecondsKeepTheCallActive() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+        f.heartbeatDelay = 6_000
+        advanceTimeBy(48_001); runCurrent()
+        assertEquals(listOf(10_000L, 20_000L, 30_000L, 40_000L), f.heartbeatSentAt)
+        assertEquals("active", f.controller.call?.status)
+        assertFalse(f.controller.error)
+        f.controller.close()
+    }
+    @Test fun delayedHeartbeatResponseDoesNotPushRetryPastTheLease() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+        f.heartbeatDelay = 4_500
+        advanceTimeBy(14_501); runCurrent()
+        assertEquals(listOf(10_000L), f.heartbeatSentAt)
+
+        f.heartbeatDelay = 0
+        f.heartbeatTimeouts = 1
+        advanceTimeBy(21_500); runCurrent()
+        assertEquals(listOf(10_000L, 20_000L, 36_000L), f.heartbeatSentAt)
+        assertEquals("active", f.controller.call?.status)
+        assertFalse(f.controller.error)
+        f.controller.close()
+    }
+    @Test fun transientHeartbeatTimeoutKeepsMediaAndResumesNormalCadence() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+        f.heartbeatTimeouts = 1
+        advanceTimeBy(26_001); runCurrent()
+        assertEquals(2, f.requests.count { it.endsWith("/call/heartbeat") })
+        assertEquals("active", f.controller.call?.status)
+        assertFalse(f.controller.error)
+        assertFalse("dm" in f.closed)
+        advanceTimeBy(9_998); runCurrent()
+        assertEquals(2, f.requests.count { it.endsWith("/call/heartbeat") })
+        advanceTimeBy(2); runCurrent()
+        assertEquals(3, f.requests.count { it.endsWith("/call/heartbeat") })
+        f.controller.close()
+    }
+    @Test fun missingCallSessionEndsWithoutRetryingHeartbeat() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+        f.heartbeatStatus = 404
+        advanceTimeBy(12_001); runCurrent()
+        assertEquals(1, f.requests.count { it.endsWith("/call/heartbeat") })
+        assertNull(f.controller.call)
+        assertTrue(f.controller.error)
+        f.controller.close()
+    }
+    @Test fun heartbeatDeadlineClosesMediaAndShowsAnError() = runTest {
         val f=Fixture(backgroundScope); f.controller.callDm("dm","Bob"); runCurrent()
         f.streamEvent!!("room_state",obj()); f.events.getValue("dm")("connected",obj())
-        f.heartbeatTimeout=true; advanceTimeBy(25_001); runCurrent()
+        f.heartbeatTimeouts = 3; advanceTimeBy(29_001); runCurrent()
+        assertEquals(2, f.requests.count { it.endsWith("/call/heartbeat") })
         assertNull(f.controller.call); assertTrue(f.controller.error); assertTrue("dm" in f.closed)
         f.controller.close()
     }

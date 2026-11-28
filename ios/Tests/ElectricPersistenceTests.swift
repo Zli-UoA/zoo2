@@ -525,6 +525,108 @@ struct ElectricProtocolTests {
 @MainActor
 @Suite("永続同期の通信経路", .timeLimit(.minutes(1)))
 struct PersistentSyncIntegrationTests {
+    @Test("ピン操作直後の再起動でも確定済み一覧を復元し、遅れたGETで保存を巻き戻さない",
+          arguments: [false, true])
+    func pinWritesPersistAcrossRestart(pinned: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let channel = Channel(id: syncChannel, channel_name: "保存済み", is_private: false, is_dm: false)
+        let oldPins = ChannelPins(pins: pinned ? [] : [ChannelPin(channel_id: syncChannel, position: 0)], version: 1)
+        let newPins = ChannelPins(pins: pinned ? [ChannelPin(channel_id: syncChannel, position: 0)] : [], version: 2)
+        try await sync.store([channel], key: "workspace:channels")
+        try await sync.store([syncUser], key: "workspace:people")
+        try await sync.store([ChannelReadState(channel_id: syncChannel, has_unread: false, last_read_at: nil)], key: "rest:api/channel-read-states")
+        try await sync.store(oldPins, key: "rest:api/channel-pins")
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let requests = Mutex(0)
+        harness.stub { request in
+            requests.withLock { $0 += 1 }
+            if request.httpMethod == "GET" {
+                #expect(request.url?.path == "/api/channel-pins")
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                return (200, [:], try JSONEncoder().encode(oldPins))
+            }
+            #expect(request.httpMethod == (pinned ? "POST" : "DELETE"))
+            return (200, [:], try JSONEncoder().encode(["data": newPins]))
+        }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let pending = Task { try await client.channelPins(allowOfflineFallback: false) }
+        defer { pending.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        _ = try await client.setChannelPinned(id: syncChannel, pinned: pinned, expectedVersion: 1)
+        #expect(try await sync.load("rest:api/channel-pins", as: ChannelPins.self)?.version == 2)
+        release.continuation.finish()
+        _ = try await pending.value
+        let restored = try #require(try await client.cachedWorkspace())
+        #expect(restored.pins?.version == 2)
+        #expect(restored.pins?.pins == newPins.pins)
+        #expect(requests.withLock { $0 } == 2)
+    }
+
+    @Test("参加状態が未保存・破損なら空の参加一覧として復元しない", arguments: [false, true])
+    func incompleteWorkspaceCache(corrupt: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        try await sync.store([Channel(id: syncChannel, channel_name: "参加済み", is_private: false, is_dm: false)], key: "workspace:channels")
+        try await sync.store([syncUser], key: "workspace:people")
+        if corrupt { try await sync.store("旧形式", key: "rest:api/channel-read-states") }
+        let requests = Mutex(0)
+        harness.stub { _ in
+            requests.withLock { $0 += 1 }
+            throw URLError(.notConnectedToInternet)
+        }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        #expect(try await client.cachedWorkspace() == nil)
+        #expect(requests.withLock { $0 } == 0)
+        let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        await workspace.refresh()
+        #expect(!workspace.hasLoaded)
+        #expect(workspace.error != nil)
+    }
+
+    @Test("参加状態とピンを通信前に一緒に復元し、未取得と空のピンを区別する",
+          arguments: [false, true], [nil, false, true] as [Bool?])
+    func completeWorkspaceCache(joined: Bool, pinned: Bool?) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let channel = Channel(id: syncChannel, channel_name: "保存済み", is_private: false, is_dm: false)
+        let states = joined ? [ChannelReadState(channel_id: syncChannel, has_unread: true, last_read_at: nil)] : []
+        try await sync.store([channel], key: "workspace:channels")
+        try await sync.store([syncUser], key: "workspace:people")
+        try await sync.store(states, key: "rest:api/channel-read-states")
+        if let pinned {
+            try await sync.store(ChannelPins(pins: pinned ? [ChannelPin(channel_id: syncChannel, position: 0)] : [], version: 3),
+                                 key: "rest:api/channel-pins")
+        }
+        let started = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish() }
+        harness.stub { _ in
+            started.continuation.yield(())
+            throw URLError(.notConnectedToInternet)
+        }
+        let workspace = WorkspaceStore(client: NativeChatClient(api: harness.api, sync: sync), user: syncUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let running = Task { await workspace.run() }
+        defer { running.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(workspace.hasLoaded)
+        #expect(workspace.directoryReady == (pinned != nil))
+        #expect(workspace.pinnedChannelIDs == (pinned == true ? [syncChannel] : []))
+        #expect(workspace.channels == [channel])
+        #expect(workspace.joinedChannelIDs == (joined ? [syncChannel] : []))
+        #expect(workspace.unread == (joined ? [syncChannel] : []))
+        running.cancel()
+        await running.value
+    }
+
     @Test("保存を省略する204応答でも待機中の権限失効後にはキャッシュを再配信しない")
     func unchangedMessageResponseRespectsRevocation() async throws {
         let harness = try ChatHarness()
@@ -824,6 +926,7 @@ struct PersistentSyncIntegrationTests {
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         try await sync.store([channel], key: "workspace:channels")
         try await sync.store([syncUser], key: "workspace:people")
+        try await sync.store([ChannelReadState](), key: "rest:api/channel-read-states")
         #expect(try await client.cachedWorkspace()?.channels == [channel])
         let oldVersion = sync.revocationVersion(for: "workspace:channels")
         let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
@@ -871,6 +974,7 @@ struct PersistentSyncIntegrationTests {
         #expect(try await sync.load("snapshot:api/shapes/channels", as: ShapeState.self) == nil)
         harness.stub { _ in (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"], Data("[]".utf8)) }
         #expect(try await client.channels().isEmpty)
+        _ = try await client.readStates()
         #expect(try await client.cachedWorkspace()?.channels == [])
     }
 
@@ -1125,6 +1229,7 @@ struct PersistentSyncIntegrationTests {
         let channel = Channel(id: syncChannel, channel_name: "復元した会話", is_private: true, is_dm: false)
         try await sync.store([channel], key: "workspace:channels")
         try await sync.store([syncUser], key: "workspace:people")
+        try await sync.store([ChannelReadState](), key: "rest:api/channel-read-states")
         let client = NativeChatClient(api: harness.api, sync: sync)
         #expect(try await client.cachedWorkspace()?.channels == [channel])
         try await sync.revokeChannel("別の会話")
@@ -1784,6 +1889,7 @@ struct PersistentSyncIntegrationTests {
         defer { UserDefaults.standard.removeObject(forKey: preferenceKey) }
         try await sync.store([Channel(id: syncChannel, channel_name: "保存済み", is_private: false, is_dm: false)], key: "workspace:channels")
         try await sync.store([syncUser], key: "workspace:people")
+        try await sync.store([ChannelReadState(channel_id: syncChannel, has_unread: false, last_read_at: nil)], key: "rest:api/channel-read-states")
         harness.stub { _ in throw URLError(.notConnectedToInternet) }
         let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
                              notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: sync.cache, voipStore: PreviewPushReceiptStore())

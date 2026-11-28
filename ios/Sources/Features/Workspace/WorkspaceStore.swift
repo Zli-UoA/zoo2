@@ -79,6 +79,7 @@ final class WorkspaceStore {
     private(set) var updatingPin = false
     private(set) var pinUpdateError: String?
     private var pinsVersion: Int64?
+    private var hasLoadedPins = false
     private(set) var channelMembers: [String: [Person]] = [:]
     private(set) var memberErrors: [String: String] = [:]
     private var memberRequests: [String: Task<Void, Never>] = [:]
@@ -93,6 +94,9 @@ final class WorkspaceStore {
     private var accountGeneration = UUID()
     private(set) var loading = false
     private(set) var hasLoaded = false
+    var pinsReady: Bool { hasLoadedPins || pinsError != nil }
+    var directoryReady: Bool { hasLoaded && pinsReady }
+    var directoryLoading: Bool { !directoryReady && (loading || error == nil) }
     private(set) var updatingChannels: Set<String> = []
     private var channelWrites: [String: Channel] = [:]
     var error: String?
@@ -267,6 +271,7 @@ final class WorkspaceStore {
                 let epoch = channelGeneration
                 if let cached = try await client.cachedWorkspace(), active, !hasLoaded, !Task.isCancelled,
                    channelGeneration == epoch {
+                    if let pins = cached.pins { applyPins(pins) }
                     channels = cached.channels.filter { $0.deleted_at == nil }.map { applyingDowngradeCheck($0) }.sorted { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
                     people = Dictionary(cached.people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
                     unread = Set(cached.readStates.filter(\.has_unread).map(\.channel_id))
@@ -274,6 +279,10 @@ final class WorkspaceStore {
                     readListRevision = UUID()
                     joinedChannelIDs = Set(cached.readStates.map(\.channel_id))
                     hasLoaded = true
+                    onPeopleChanged?()
+                } else if let cachedPeople = try await client.cachedPeople(), active, !hasLoaded, !Task.isCancelled,
+                          channelGeneration == epoch {
+                    people = Dictionary(cachedPeople.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
                     onPeopleChanged?()
                 }
             } catch { report(error) }
@@ -284,7 +293,15 @@ final class WorkspaceStore {
         }
     }
 
-    func runPins() async {
+    func runPins(initialLoadTimeout: Duration = .seconds(10)) async {
+        let initialLoadDeadline = Task {
+            guard active, !hasLoadedPins else { return }
+            do { try await Task.sleep(for: initialLoadTimeout) } catch { return }
+            guard active, !Task.isCancelled, !hasLoadedPins, pinsError == nil else { return }
+            // 初回の同期が遅くても、取得済みの通常一覧を操作できるようにする。
+            pinsError = "ピン留めの取得に時間がかかっています。"
+        }
+        defer { initialLoadDeadline.cancel() }
         var delay = 2
         while active, !Task.isCancelled {
             let changes = AsyncThrowingStream<Void, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -369,6 +386,7 @@ final class WorkspaceStore {
         // 更新前に始まった一覧取得で、保存済みの状態を巻き戻さない。
         guard result.version >= (pinsVersion ?? 0) else { return }
         pinsVersion = result.version
+        hasLoadedPins = true
         pinnedChannelIDs = result.pins.sorted {
             $0.position == $1.position ? $0.channel_id < $1.channel_id : $0.position < $1.position
         }.map(\.channel_id)

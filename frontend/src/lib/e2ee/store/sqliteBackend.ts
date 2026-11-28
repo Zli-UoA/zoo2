@@ -15,9 +15,12 @@ type Row = Record<string, SQLiteCompatibleType | null>;
 
 let sqliteReady: Promise<SQLiteAPI> | null = null;
 /**
- * `OPFSCoopSyncVFS` が持つ、ファイルのハンドルのキャッシュ（wa-sqlite 1.4.1 の公開フィールド）。
+ * `OPFSCoopSyncVFS` が持つ、ファイルのハンドルのキャッシュ。
  * 接続を閉じてもハンドルを持ち続けるので、ファイルを消したら外す。外さないと、同じ Worker で
  * 開き直したときに、消したファイルのハンドルを使って失敗する。
+ *
+ * `create()` の戻り値は `SQLiteVFS` 型で、`persistentFiles` と `accessiblePaths` は
+ * 型に現れない（TS2739）。実体のフィールドは残るのでキャストする。
  */
 let vfsCaches: { persistentFiles: Map<string, unknown>; accessiblePaths: Set<string> } | null =
   null;

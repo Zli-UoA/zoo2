@@ -43,6 +43,20 @@ class AndroidMediaProxyTest {
         assertEquals(ImageRequest("$base/api/home/images/ab"), imageRequest(base, "/api/home/images/ab", ""))
         assertNull(imageRequest(base, "//remote.test/picture.png", "/proxy"))
     }
+    @Test fun dedicatedHttpsImageOriginsBypassTheProxy() {
+        for (host in listOf("attachments.zliusercontent.com", "avater.zliusercontent.com",
+            "emoji.zliusercontent.com", "emoji.zli.works")) {
+            val url = "https://$host/picture.png"
+            assertEquals(ImageRequest(url), imageRequest(base, url, "/proxy"))
+        }
+        for (url in listOf("http://emoji.zliusercontent.com/picture.png",
+            "https://emoji.zliusercontent.com:8443/picture.png",
+            "https://emoji.zliusercontent.com.evil.test/picture.png",
+            "https://media-proxy.zliusercontent.com/picture.png")) {
+            assertTrue(assertNotNull(imageRequest(base, url, "/proxy")).proxied)
+        }
+    }
+
     @Test fun httpSourceIsOnlyUsedThroughHttpsProxy() {
         val http = "http://remote.test/image.png"
         assertNull(imageRequest(base, http, ""))

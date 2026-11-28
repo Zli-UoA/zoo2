@@ -8,6 +8,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -42,6 +43,41 @@ class AndroidImageCacheTest {
         override fun close() {
             server.shutdown()
             directory.deleteRecursively()
+        }
+    }
+
+    @Test fun differentImagesOnTheSameHostReuseTheConnection() = runBlocking {
+        Fixture().use { fixture ->
+            repeat(2) { fixture.server.enqueue(MockResponse().setBody("emoji")) }
+            fixture.cache().use { cache ->
+                for (path in listOf("/first.png", "/second.png")) {
+                    assertEquals("emoji", cache.download(ImageRequest(fixture.server.url(path).toString()), 1024).decodeToString())
+                }
+            }
+            assertEquals(0, assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS)).sequenceNumber)
+            assertEquals(1, assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS)).sequenceNumber)
+        }
+    }
+
+    @Test fun keepsHostSlotsUntilTheResponseBodiesFinish() = runBlocking {
+        Fixture().use { fixture ->
+            repeat(FOREGROUND_IMAGE_PARALLELISM) {
+                fixture.server.enqueue(MockResponse().setBody("image").setBodyDelay(2, TimeUnit.SECONDS))
+            }
+            fixture.server.enqueue(MockResponse().setBody("last"))
+            fixture.cache().use { cache ->
+                val images = List(FOREGROUND_IMAGE_PARALLELISM + 1) { index ->
+                    async { cache.download(ImageRequest(fixture.server.url("/$index.png").toString()), 1024) }
+                }
+                withContext(Dispatchers.IO) {
+                    repeat(FOREGROUND_IMAGE_PARALLELISM) {
+                        assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                    }
+                    assertNull(fixture.server.takeRequest(300, TimeUnit.MILLISECONDS))
+                }
+                withTimeout(10_000) { images.awaitAll() }
+                assertEquals(FOREGROUND_IMAGE_PARALLELISM + 1, fixture.server.requestCount)
+            }
         }
     }
 

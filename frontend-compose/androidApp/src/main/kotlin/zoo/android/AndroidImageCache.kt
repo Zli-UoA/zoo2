@@ -6,7 +6,12 @@ import io.ktor.client.plugins.HttpTimeout
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+
+internal const val FOREGROUND_IMAGE_PARALLELISM = 6
 
 /** Account-local image storage shared by public and signed downloads. */
 internal class AndroidImageCache(
@@ -19,7 +24,28 @@ internal class AndroidImageCache(
     private var closed = false
     private val bodyDirectory = imageBodyDirectory(directory)
     private val disk = acquire(bodyDirectory, maxBytes, legacyDirectory)
+    private class HostSlot {
+        val permits = Semaphore(FOREGROUND_IMAGE_PARALLELISM)
+        var users = 0
+    }
+
+    private val hostSlots = mutableMapOf<String, HostSlot>()
+
+    private suspend fun withHostSlot(host: String, transfer: suspend () -> Unit) {
+        val slot = synchronized(hostSlots) {
+            hostSlots.getOrPut(host, ::HostSlot).also { it.users++ }
+        }
+        try {
+            slot.permits.withPermit { transfer() }
+        } finally {
+            synchronized(hostSlots) {
+                if (--slot.users == 0) hostSlots.remove(host)
+            }
+        }
+    }
+
     private val client = OkHttpClient.Builder()
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = FOREGROUND_IMAGE_PARALLELISM })
         .apply(configure)
         .followRedirects(false)
         .followSslRedirects(false)
@@ -64,17 +90,20 @@ internal class AndroidImageCache(
 
     suspend fun download(
         request: ImageRequest, limit: Int, bypassCache: Boolean = false, source: String = request.url,
-    ): ByteArray = load(request, "public:$source", limit, bypassCache)
+        redirectRoute: (suspend (String) -> ImageRequest)? = null, push: Boolean = false,
+    ): ByteArray = load(request, "public:$source", limit, bypassCache, redirectRoute = redirectRoute, push = push)
 
     private suspend fun load(
         request: ImageRequest, key: String, limit: Int, refresh: Boolean, signed: Boolean = false,
+        redirectRoute: (suspend (String) -> ImageRequest)? = null, push: Boolean = false,
     ): ByteArray = withContext(Dispatchers.IO) {
         val token = disk.beginLoad(key) ?: throw ImageHttpFailure(403)
         try {
             val stored = disk.read(key, limit)
             val bytes = if (stored != null && !refresh) stored.bytes else
                 loadPublicImage(http, request.url, limit, restrictOrigin = request.proxied,
-                    noStore = signed, conditional = stored) { entry -> disk.write(key, token, entry) }
+                    noStore = signed, conditional = stored, withHostSlot = ::withHostSlot,
+                    redirectRoute = redirectRoute, push = push) { entry -> disk.write(key, token, entry) }
             if (!disk.isCurrent(key, token)) throw ImageHttpFailure(403)
             bytes
         } finally {

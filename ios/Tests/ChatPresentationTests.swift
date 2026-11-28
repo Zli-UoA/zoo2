@@ -122,6 +122,102 @@ struct ChatPresentationTests {
 struct ChatPresentationAPITests {
     private let channel = Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false)
 
+    @Test("初回取得の失敗後も再試行中は読み込み表示へ戻り、中断後はエラー表示に戻る",
+          .timeLimit(.minutes(1)))
+    func directoryShowsRetryProgress() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let workspace = WorkspaceStore(client: harness.client,
+                                       user: Person(id: "you", user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        harness.stub { _ in (503, [:], Data()) }
+        await workspace.refresh()
+        #expect(!workspace.hasLoaded && workspace.error != nil)
+        #expect(!workspace.directoryLoading)
+        let started = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish() }
+        harness.stub { _ in
+            started.continuation.yield(())
+            try await Task.sleep(for: .seconds(60))
+            throw CancellationError()
+        }
+        let retry = Task { await workspace.refresh() }
+        defer { retry.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(!workspace.hasLoaded && workspace.directoryLoading)
+        retry.cancel()
+        await retry.value
+        #expect(!workspace.directoryLoading && workspace.error != nil)
+    }
+
+    @Test("通常一覧とピンの到着順によらず、両方がそろってから一覧を表示する", arguments: [false, true])
+    func directoryWaitsForPins(pinsFirst: Bool) async {
+        let client = PreviewChatClient()
+        let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        #expect(!workspace.directoryReady)
+        if pinsFirst { await workspace.loadPins() }
+        else { await workspace.refresh() }
+        #expect(!workspace.directoryReady)
+        if pinsFirst { await workspace.refresh() }
+        else { await workspace.loadPins() }
+        #expect(workspace.directoryReady)
+        #expect(!workspace.channels.isEmpty)
+        workspace.revokeChannel(PreviewChatClient.channelID)
+        #expect(workspace.directoryReady)
+        #expect(!workspace.channels.isEmpty)
+    }
+
+    @Test("ピン取得の失敗や初回同期の遅延でも一覧を操作でき、再試行でピンを反映する",
+          .timeLimit(.minutes(1)), arguments: [false, true])
+    func directoryRemainsAvailableAfterPinsFailure(stalled: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let workspace = WorkspaceStore(client: harness.client,
+                                       user: Person(id: "you", user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let channel = channel
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/channels": return (200, [:], try JSONEncoder().encode([channel]))
+            case "/api/shapes/users":
+                return (200, ["electric-handle": "people", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            case "/api/channel-read-states":
+                return (200, [:], try JSONEncoder().encode([ChannelReadState(channel_id: channel.id, has_unread: false, last_read_at: nil)]))
+            case "/api/channel-pins": throw URLError(.notConnectedToInternet)
+            default: Issue.record("予期しないAPI呼び出し"); return (404, [:], Data())
+            }
+        }
+        await workspace.refresh()
+        #expect(workspace.hasLoaded && !workspace.directoryReady)
+        if stalled {
+            let changed = AsyncStream<Void>.makeStream()
+            defer { changed.continuation.finish() }
+            withObservationTracking { _ = workspace.pinsError } onChange: {
+                changed.continuation.yield(())
+                changed.continuation.finish()
+            }
+            harness.stub { _ in
+                try await Task.sleep(for: .seconds(60))
+                throw CancellationError()
+            }
+            let running = Task { await workspace.runPins(initialLoadTimeout: .zero) }
+            defer { running.cancel() }
+            for await _ in changed.stream { break }
+            running.cancel()
+            await running.value
+        } else { await workspace.loadPins() }
+        #expect(workspace.directoryReady && workspace.pinsError != nil)
+        #expect(workspace.channels == [channel])
+        harness.stub { _ in
+            (200, [:], Data("{\"pins\":[{\"channel_id\":\"\(channel.id)\",\"position\":0}],\"version\":1}".utf8))
+        }
+        await workspace.loadPins()
+        #expect(workspace.directoryReady && workspace.pinsError == nil)
+        #expect(workspace.pinnedChannelIDs == [channel.id])
+    }
+
     @Test("ピン追加・解除は版を送り、Envelope内の最新一覧を採用する")
     func pinWrites() async throws {
         let harness = try ChatHarness()

@@ -15,12 +15,16 @@ type Row = Record<string, SQLiteCompatibleType | null>;
 
 let vfsSequence = 0;
 
-/** wa-sqlite 1.4.1 の `MemoryVFS`（パッケージの型は古い API のままなので、使う分だけ型を付ける）。 */
+/** `MemoryVFS` のうち、Push の写しで使う分だけを型にしたもの。 */
 export interface MemoryVfs extends SQLiteVFS {
   mapNameToFile: Map<string, { pathname: string; flags: number; size: number; data: ArrayBuffer }>;
   close(): void;
 }
 
+/**
+ * `src/examples/MemoryVFS.js` には型宣言がなく、静的な `create()` が型に現れない（TS2339）。
+ * パッケージの型を書き換えると実体の型が変わるため、ここだけキャストして残す。
+ */
 export function createMemoryVfs(name: string, module: unknown): Promise<MemoryVfs> {
   return (
     MemoryVFS as unknown as { create(name: string, module: unknown): Promise<MemoryVfs> }
