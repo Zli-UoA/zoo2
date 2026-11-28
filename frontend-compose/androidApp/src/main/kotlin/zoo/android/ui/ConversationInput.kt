@@ -94,7 +94,7 @@ internal fun ConversationInput(
     var focused by remember { mutableStateOf(false) }
     var dismissed by remember(state.text, state.selection) { mutableStateOf(false) }
     var selectedOption by remember(state.text, state.selection) { mutableIntStateOf(0) }
-    val options = state.mentions.takeIf { focused && !dismissed }.orEmpty()
+    val options = state.mentions.takeIf { focused && !dismissed && value.composition == null }.orEmpty()
     val activeOption = selectedOption.coerceAtMost(options.lastIndex.coerceAtLeast(0))
     var suggestionsVisible by remember { mutableStateOf(false) }
     val full = state.expanded
@@ -282,8 +282,8 @@ internal fun ConversationInput(
                             ) {
                                 if (!state.live) {
                                     UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
-                                    UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) })
-                                    UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) })
+                                    UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) }, enabled = value.composition == null)
+                                    UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) }, enabled = value.composition == null)
                                 }
                                 Spacer(Modifier.weight(1f))
                                 SendAction(state, colors, onTool)
