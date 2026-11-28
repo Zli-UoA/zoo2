@@ -17,6 +17,7 @@ export interface HomeMedia extends ImageMetadata {
   url: string;
   name: string;
   media_type: string;
+  description?: string;
   image_id?: string;
   is_sensitive?: boolean;
 }
@@ -176,6 +177,7 @@ export const HomePostContent = memo(function HomePostContent({
                   thumbnailSrc={
                     path?.startsWith("/api/home/images/") ? `${url}?thumbnail=true` : undefined
                   }
+                  alt={image.description}
                   name={image.name || t("home.image")}
                   contentType={image.media_type}
                   saveId={image.image_id ? `home:${image.image_id}` : `home:${url}`}

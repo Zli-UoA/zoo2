@@ -333,6 +333,7 @@
     "hideSensitiveVideo": "동영상 숨기기",
     "openOriginal": "원본 파일",
     "imagePreviewFailed": "화상을 불러올 수 없습니다",
+    "altText": "화상 설명",
     "sensitiveShort": "민감한 화상",
     "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
     "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 내려받아 확인하십시오.",

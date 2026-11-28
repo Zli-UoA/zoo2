@@ -334,6 +334,7 @@
     "hideSensitiveVideo": "動画を隠す",
     "openOriginal": "元のファイル",
     "imagePreviewFailed": "画像を読み込めませんでした",
+    "altText": "画像の説明",
     "sensitiveShort": "センシティブ",
     "documentSummary": "本文・セルの簡易表示です。書式・レイアウトは原本と異なる場合があります。",
     "previewLimit": "プレビューのサイズ・件数・処理時間の上限を超えました。ファイルをダウンロードして確認してください。",
