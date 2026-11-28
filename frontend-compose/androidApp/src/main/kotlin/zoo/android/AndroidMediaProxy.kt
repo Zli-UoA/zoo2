@@ -4,6 +4,7 @@ import android.content.Context
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.URLProtocol
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +18,12 @@ import zoo.proxyImageUrl
 import zoo.publicUrl
 
 private val proxyDownloads = Semaphore(2)
+private val directImageHosts = setOf(
+    "attachments.zliusercontent.com",
+    "avater.zliusercontent.com",
+    "emoji.zliusercontent.com",
+    "emoji.zli.works",
+)
 
 internal suspend fun <T> downloadThroughProxy(push: Boolean, load: suspend () -> T): T {
     if (!push) return proxyDownloads.withPermit { load() }
@@ -45,9 +52,15 @@ internal fun normalizedImageSource(base: String, source: String): Url? {
     return publicUrl(if (source.startsWith('/')) endpoint(base, source) else source)
 }
 
+internal fun Url.isDedicatedImageOrigin(): Boolean =
+    protocol == URLProtocol.HTTPS && port == URLProtocol.HTTPS.defaultPort && host in directImageHosts
+
 internal fun imageRequest(base: String, source: String, proxy: String): ImageRequest? {
     val url = normalizedImageSource(base, source) ?: return null
-    if (url.protocol.name == "https" && publicUrl(base)?.let { sameImageOrigin(it, url) } == true) return ImageRequest(url.toString())
+    val workspaceOrigin = publicUrl(base)?.let { sameImageOrigin(it, url) } == true
+    if (url.protocol == URLProtocol.HTTPS && (workspaceOrigin || url.isDedicatedImageOrigin())) {
+        return ImageRequest(url.toString())
+    }
     val proxyEndpoint = if (proxy.startsWith('/') && !proxy.startsWith("//")) endpoint(base, proxy) else proxy
     return proxyImageUrl(proxyEndpoint, url.toString())
         ?.takeIf { publicUrl(it)?.protocol?.name == "https" }
@@ -66,13 +79,15 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
     ): ByteArray {
         val cacheSource = normalizedImageSource(base, source)?.toString() ?: error("Invalid image URL")
         if (!bypassCache) cache.cachedPublicImage(cacheSource, limit)?.let { return it }
-        val cachedRoute = imageRequest(base, source, prefs.getString(base, "").orEmpty())
-        val route = if (push) {
-            withTimeoutOrNull(750) { request(source, http, online, timeoutMillis = 700) }
-                ?: requireNotNull(cachedRoute) { "Image proxy lookup timed out" }
-        } else request(source, http, online)
-        if (!route.proxied) return cache.download(route, limit, bypassCache, cacheSource)
-        return downloadProxyImage(push) { cache.download(route, limit, bypassCache, cacheSource) }
+        suspend fun resolve(url: String): ImageRequest {
+            if (!push) return request(url, http, online)
+            val saved = imageRequest(base, url, prefs.getString(base, "").orEmpty())
+            return withTimeoutOrNull(750) { request(url, http, online, timeoutMillis = 700) }
+                ?: requireNotNull(saved) { "Image proxy lookup timed out" }
+        }
+        val route = resolve(cacheSource)
+        if (route.proxied) return downloadProxyImage(push) { cache.download(route, limit, bypassCache, cacheSource) }
+        return cache.download(route, limit, bypassCache, cacheSource, redirectRoute = ::resolve, push = push)
     }
 
     internal suspend fun request(source: String, http: HttpClient, online: Boolean, timeoutMillis: Long = 5_000): ImageRequest {

@@ -1,5 +1,9 @@
 package zoo.android
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -12,6 +16,26 @@ import zoo.android.ui.rankEmojiChoices
 import zoo.obj
 
 class AndroidEmojiCatalogTest {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun prefetchesEveryImageWithBoundedConcurrencyEvenIfAnImageFails() = runTest {
+        val urls = List(20) { "emoji-$it" }
+        val started = mutableListOf<String>()
+        val release = CompletableDeferred<Unit>()
+        val prefetch = launch {
+            prefetchEmojiImages(urls) { url ->
+                started.add(url)
+                release.await()
+                if (url == urls.first()) error("Image unavailable")
+            }
+        }
+        runCurrent()
+        assertEquals(urls.take(FOREGROUND_IMAGE_PARALLELISM), started)
+        release.complete(Unit)
+        prefetch.join()
+        assertEquals(urls.size, started.size)
+        assertEquals(urls.toSet(), started.toSet())
+    }
+
     @Test fun bundledCatalogsProvideUnicodeAndKitchenChoices() = runTest {
         val catalog = AndroidEmojiCatalog(readAsset = ::readBundledAsset)
         val unicode = catalog.unicode()
