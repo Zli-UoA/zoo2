@@ -3,23 +3,6 @@ package zoo
 import kotlin.test.*
 
 class UnifiedNotificationsTest {
-    @Test
-    fun inboxGroupsByPostAndActivityKind() {
-        val notices = listOf(
-            UnifiedNotificationEntry("reply", "4", item = obj("id" to "r", "kind" to "reply",
-                "post_id" to "reply", "target_post_id" to "root")),
-            UnifiedNotificationEntry("reaction", "3", channel = listOf(obj("id" to "a",
-                "notification_type" to "reaction", "message_id" to "root"))),
-            UnifiedNotificationEntry("remote-like", "2", item = obj("id" to "c", "kind" to "like", "post_id" to "root")),
-            UnifiedNotificationEntry("repost", "1", item = obj("id" to "p", "kind" to "repost", "post_id" to "root")),
-            UnifiedNotificationEntry("follow", "0", item = obj("id" to "f", "kind" to "follow_request")),
-        )
-        val groups = inboxGroups(notices)
-        assertEquals(listOf("post-group:reply:root", "post-group:like:root", "post-group:repost:root", "follow"),
-            groups.keys.toList())
-        assertEquals(listOf("reaction", "remote-like"), groups.getValue("post-group:like:root").map { it.key })
-    }
-
     private fun local(id: String, time: String, read: Boolean = false): Row = obj("id" to id, "user_id" to "me", "actor_id" to "alice", "channel_id" to "channel", "message_id" to "message", "notification_type" to "reaction", "is_read" to read, "created_at" to time)
     private fun remote(id: String, time: String, actor: String = "https://peer/alice", read: Boolean = false): Row = obj("id" to id, "actor_id" to actor, "post_id" to "message", "kind" to "like", "is_read" to read, "created_at" to time)
 

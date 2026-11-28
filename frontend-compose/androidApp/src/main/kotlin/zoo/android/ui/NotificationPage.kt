@@ -98,6 +98,13 @@ internal fun NotificationPage(
                     viewed(item.id)
                 }
             }
+            val channelReactions by key(item.reactionContext) {
+                produceState(emptyList<InboxReactionEmoji>(), foreground && item.id in visible) {
+                    if (foreground && item.id in visible) {
+                        value = item.reactionContext?.let { loadReactions(it) }.orEmpty()
+                    }
+                }
+            }
             val target = item.target
             Row(
                 Modifier.fillMaxWidth()
@@ -115,13 +122,17 @@ internal fun NotificationPage(
                             .background(colors.background, CircleShape).padding(2.dp)
                             .background(colors.quietSurface, CircleShape),
                         contentAlignment = Alignment.Center,
-                    ) { UiGlyph(item.kind.activityIcon(), colors.foreground, iconSize = 12.dp) }
+                    ) {
+                        val reaction = (item.reactions + channelReactions).firstOrNull()
+                        if (reaction != null) InboxReaction(reaction, colors, loadAvatar)
+                        else UiGlyph(item.kind.activityIcon(), colors.foreground, iconSize = 12.dp)
+                    }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Column {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             val author = item.actors.firstOrNull()?.name.orEmpty()
-                            Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
+                            Text(if (item.actors.size > 1) androidLabel("notifications.actors_other", "$author ほか${item.actors.size - 1}人", "actor" to author, "count" to (item.actors.size - 1).toString()) else author, Modifier.weight(1f),
                                 color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1,
                                 overflow = TextOverflow.Ellipsis)
                             Text(item.time, color = colors.secondary, fontSize = metadataTextSize)
@@ -130,29 +141,7 @@ internal fun NotificationPage(
                                     .semantics { contentDescription = "未読" },
                             )
                         }
-                        val channelReactions by key(item.reactionContext) {
-                            produceState(emptyList<InboxReactionEmoji>(), foreground && item.id in visible) {
-                                if (foreground && item.id in visible) {
-                                    value = item.reactionContext?.let { loadReactions(it) }.orEmpty()
-                                }
-                            }
-                        }
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            itemVerticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(item.summary, color = colors.secondary, fontSize = 13.sp)
-                            (item.reactions + channelReactions).distinct().forEach { reaction ->
-                                key(reaction) { InboxReaction(reaction, colors, loadAvatar) }
-                            }
-                        }
-                    }
-                    if (item.actors.size > 1) {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            items(item.actors.drop(1), key = { it.id }) { actor ->
-                                InboxAvatar(actor, 24.dp, colors, loadAvatar)
-                            }
-                        }
+                        if (item.detail.isNullOrBlank()) Text(item.summary, color = colors.secondary, fontSize = 13.sp)
                     }
                     item.detail?.let {
                         // 本文と同じく、このアプリのリンクは短くし、アプリ内で移動する。
@@ -161,7 +150,7 @@ internal fun NotificationPage(
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             UiGlyph(if (it.startsWith("#") && item.kind == "mention") UiIcon.AlternateEmail
-                                else if (it.startsWith("#")) UiIcon.Channels else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
+                                else if (it.startsWith("#")) item.kind.activityIcon() else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                             Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
@@ -223,7 +212,9 @@ private fun InboxAvatar(
 }
 
 private fun String?.activityIcon(): UiIcon = when (this) {
-    "like" -> UiIcon.Emoji
+    "like" -> UiIcon.AddReaction
+    "missed_call" -> UiIcon.PhoneOff
+    "channel_message" -> UiIcon.Bubble
     "reply", "dm" -> UiIcon.Bubble
     "mention" -> UiIcon.AlternateEmail
     "repost" -> UiIcon.Repost
