@@ -641,39 +641,43 @@ it("keeps a saving editor locked when write access drops and returns before the 
     }),
   );
 
-  const view = renderNotes();
-  await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
-  await userEvent.click(await screen.findByRole("button", { name: "編集" }));
-  const title = screen.getByRole("textbox", { name: "タイトル" }) as HTMLInputElement;
-  const content = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
-  await userEvent.clear(content);
-  await userEvent.type(content, "Draft body");
-  await userEvent.click(screen.getByRole("button", { name: "保存" }));
-  await waitFor(() => expect(patchStarted).toBe(true));
+  try {
+    const view = renderNotes();
+    await userEvent.click(await screen.findByRole("button", { name: "Note 0" }));
+    await userEvent.click(await screen.findByRole("button", { name: "編集" }));
+    const title = screen.getByRole("textbox", { name: "タイトル" }) as HTMLInputElement;
+    const content = screen.getByRole("textbox", { name: "本文" }) as HTMLTextAreaElement;
+    await userEvent.clear(content);
+    await userEvent.type(content, "Draft body");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(patchStarted).toBe(true));
 
-  updateProps(view, { canWrite: false });
-  expect(
-    await screen.findByText("書き込み権限がなくなりました。下書きはこの画面に残っています。"),
-  ).toBeVisible();
-  expect(content.readOnly).toBe(true);
-
-  updateProps(view, { canWrite: true });
-  await waitFor(() =>
+    updateProps(view, { canWrite: false });
     expect(
-      screen.queryByText("書き込み権限がなくなりました。下書きはこの画面に残っています。"),
-    ).toBeNull(),
-  );
-  expect(title.readOnly).toBe(true);
-  expect(content.readOnly).toBe(true);
-  expect(screen.getByRole("button", { name: "保存中…" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "キャンセル" })).toBeDisabled();
+      await screen.findByText("書き込み権限がなくなりました。下書きはこの画面に残っています。"),
+    ).toBeVisible();
+    expect(content.readOnly).toBe(true);
 
-  await userEvent.type(content, " ignored");
-  expect(content).toHaveValue("Draft body");
+    updateProps(view, { canWrite: true });
+    await waitFor(() =>
+      expect(
+        screen.queryByText("書き込み権限がなくなりました。下書きはこの画面に残っています。"),
+      ).toBeNull(),
+    );
+    expect(title.readOnly).toBe(true);
+    expect(content.readOnly).toBe(true);
+    expect(screen.getByRole("button", { name: "保存中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "キャンセル" })).toBeDisabled();
 
-  release();
-  expect(await screen.findByText("Draft body")).toBeVisible();
-  expect(screen.queryByRole("textbox", { name: "本文" })).toBeNull();
+    await userEvent.type(content, " ignored");
+    expect(content).toHaveValue("Draft body");
+
+    release();
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "本文" })).toBeNull());
+    expect(screen.getByText("Draft body")).toBeVisible();
+  } finally {
+    release();
+  }
 });
 
 it("keeps a copyable draft when only write access is lost and clears it when read access is lost", async () => {
@@ -1574,7 +1578,8 @@ it("keeps saved content when a silent detail refresh started before the edit ret
     await userEvent.clear(content);
     await userEvent.type(content, "Version 2 body");
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    expect(await screen.findByText("Version 2 body")).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "本文" })).toBeNull());
+    expect(screen.getByText("Version 2 body")).toBeVisible();
 
     release();
     await waitFor(() => expect(staleDetailSettled).toBe(true));
