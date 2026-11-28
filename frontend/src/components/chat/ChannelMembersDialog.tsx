@@ -205,7 +205,11 @@ function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
     if (!currentUserId || busy) return;
     await run(() =>
       channelUsers.insert(
-        { user_id: currentUserId, channel_id: channel.id, joined_at: nowIso() },
+        {
+          user_id: currentUserId,
+          channel_id: channel.id,
+          joined_at: nowIso(),
+        },
         { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
       ),
     );
@@ -251,7 +255,11 @@ function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
     closeCandidateList();
     await run(() =>
       channelUsers.insert(
-        { user_id: user.id, channel_id: channel.id, joined_at: nowIso() },
+        {
+          user_id: user.id,
+          channel_id: channel.id,
+          joined_at: nowIso(),
+        },
         { metadata: { action: "add", user_id: user.id } satisfies ChannelUserWriteMetadata },
       ),
     );

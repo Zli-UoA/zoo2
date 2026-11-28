@@ -63,6 +63,7 @@ internal fun ConnectedScreens(
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
     val memberships by session.repo.members.rows.collectAsState()
+    val notificationSettings by session.repo.notificationSettings.rows.collectAsState()
     val membershipsLoading by session.repo.members.loading.collectAsState()
     val channelId = session.channelId
     val channelsLoading by session.repo.channels.loading.collectAsState()
@@ -493,7 +494,10 @@ internal fun ConnectedScreens(
             encrypted = state.channelEncrypted.takeIf { state.overlay == "create" && state.channelPrivate },
         )
         state.overlay in setOf("channel-settings", "archive", "unarchive") && channel != null -> AndroidScreen.ChannelSettings(
-            channel.text("channel_name"), state.channelSettings(channel, member, encrypted), channel.text("id"))
+            channel.text("channel_name"),
+            state.channelSettings(channel, member, encrypted,
+                channelNotificationLevel(notificationSettings, channel.text("id"))),
+            channel.text("id"))
         state.overlay == "new-post" -> AndroidScreen.NewPost(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,

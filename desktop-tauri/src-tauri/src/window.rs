@@ -171,6 +171,8 @@ const REMOTE_COMMANDS: &[&str] = &[
     command::SET_BADGE,
     command::NOTIFICATION_SETTINGS,
     command::SET_NOTIFICATIONS,
+    command::CHANNEL_NOTIFICATION_SETTINGS,
+    command::SET_CHANNEL_NOTIFICATION_LEVEL,
     command::ACCESS_TOKEN,
     command::NOTIFICATIONS_OBSERVED,
     command::TAKE_CALL_ACCEPT,

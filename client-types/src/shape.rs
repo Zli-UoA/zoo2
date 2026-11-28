@@ -42,6 +42,9 @@ pub enum ShapeId {
     CallInvites,
     /// 自分がピン留めしたチャンネル・DM (`user_pinned_channels`)。
     UserPinnedChannels,
+    /// 自分自身のチャンネルごとの通知設定 (`channel_notification_settings`)。
+    /// メンバー一覧 (`channel_users`) には設定列を配らないため、ここからだけ読む。
+    ChannelNotificationSettings,
 }
 
 impl ShapeId {
@@ -58,6 +61,7 @@ impl ShapeId {
             ShapeId::Notifications => ("notifications", Vec::new()),
             ShapeId::CallInvites => ("call_invites", Vec::new()),
             ShapeId::UserPinnedChannels => ("user_pinned_channels", Vec::new()),
+            ShapeId::ChannelNotificationSettings => ("channel_notification_settings", Vec::new()),
         }
     }
 }
@@ -162,11 +166,22 @@ mod tests {
             "user_pinned_channels"
         );
         assert_eq!(
+            serde_json::to_value(ShapeId::ChannelNotificationSettings).unwrap(),
+            json!({ "shape": "channel_notification_settings" })
+        );
+        assert_eq!(
+            ShapeId::ChannelNotificationSettings.path_and_params().0,
+            "channel_notification_settings"
+        );
+        assert_eq!(
             serde_json::to_value(Change::Delete { key: "k".into() }).unwrap(),
             json!({ "op": "delete", "key": "k" })
         );
         let id: ShapeId = serde_json::from_value(json!({ "shape": "channels" })).unwrap();
         assert_eq!(id, ShapeId::Channels);
+        let id: ShapeId =
+            serde_json::from_value(json!({ "shape": "channel_notification_settings" })).unwrap();
+        assert_eq!(id, ShapeId::ChannelNotificationSettings);
     }
 
     #[test]

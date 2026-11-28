@@ -239,6 +239,20 @@ class AndroidSamplesTest {
             loaded = true, canLoadOlder = true, searchedUntil = "2025-12",
             filters = searchFilterChoices,
         ))
+        val channelSettings = AndroidScreen.ChannelSettings("開発", listOf(
+            SettingsGroup("チャンネル", listOf(
+                SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
+                SettingsEntry.Destination("members", "メンバー"),
+                SettingsEntry.Destination("add-member", "メンバーを追加"),
+                SettingsEntry.Destination("rename", "名前と説明を編集"),
+                SettingsEntry.Destination("archive", "アーカイブ"),
+            )),
+            SettingsGroup("通知", listOf(
+                SettingsEntry.Choice("notification:all", "すべての投稿", false),
+                SettingsEntry.Choice("notification:mentions", "メンション", true),
+                SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", false),
+            )),
+        ))
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
             "channel-rich" to conversation.copy(entries = listOf(richMessage), input = InputState()),
@@ -307,13 +321,7 @@ class AndroidSamplesTest {
             "search-error" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.All, error = true)),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
-            "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
-                SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
-                SettingsEntry.Destination("members", "メンバー"),
-                SettingsEntry.Destination("add-member", "メンバーを追加"),
-                SettingsEntry.Destination("rename", "名前と説明を編集"),
-                SettingsEntry.Destination("archive", "アーカイブ"),
-            )))),
+            "channel-settings" to channelSettings,
             "channel-members" to AndroidScreen.Directory("メンバー", "", listOf(
                 SelectionItem("haru", "はる", isUserName = true),
                 SelectionItem("yui", "ゆい", isUserName = true),
@@ -341,7 +349,7 @@ class AndroidSamplesTest {
                     actions.add(action)
                     if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
                     if (action == AndroidUiAction.OpenChannelSettings("dev")) {
-                        screen = AndroidScreen.ChannelSettings("開発", settings)
+                        screen = channelSettings
                     }
                 }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
                     Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
@@ -631,9 +639,13 @@ class AndroidSamplesTest {
             screen = conversation
         }
         ui.onNodeWithText("開発").assertHasClickAction().performClick()
-        ui.onNodeWithText("テーマ").assertIsDisplayed()
+        for (label in listOf("すべての投稿", "メンション", "メンション以外を通知しない")) {
+            ui.onNodeWithText(label).assertIsDisplayed()
+        }
+        ui.onNodeWithText("メンション以外を通知しない").performClick()
         ui.runOnIdle {
             check(actions.contains(AndroidUiAction.OpenChannelSettings("dev")))
+            check(actions.contains(AndroidUiAction.OpenSetting("notification:mute")))
             check(actions.none { it is AndroidUiAction.ViewedNotification })
             screen = inbox
             foreground = true

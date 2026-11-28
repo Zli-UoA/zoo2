@@ -730,6 +730,8 @@ async fn test_shape_proxy_sets_private_cache_and_queryable_columns() -> anyhow::
     for uri in [
         "/api/shapes/users?offset=-1",
         "/api/shapes/e2ee_devices?offset=-1",
+        "/api/shapes/channel_users?offset=-1",
+        "/api/shapes/channel_notification_settings?offset=-1",
     ] {
         let resp = app
             .clone()
@@ -778,5 +780,174 @@ async fn test_shape_proxy_sets_private_cache_and_queryable_columns() -> anyhow::
         .map(|(_, v)| v.clone());
     assert!(columns.is_some());
     assert_eq!(columns, queryable);
+
+    // メンバー一覧には通知設定の列を一切配らない。設定は本人だけの別 Shape から読む。
+    let members = requests
+        .iter()
+        .find(|r| {
+            r.url
+                .query_pairs()
+                .any(|(k, v)| k == "columns" && v == "user_id,channel_id,joined_at")
+        })
+        .expect("channel_users request");
+    let pairs: Vec<_> = members.url.query_pairs().collect();
+    let columns = pairs
+        .iter()
+        .find(|(k, _)| k == "columns")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    assert!(!columns.contains("notification_level"), "{columns}");
+    assert_eq!(
+        pairs
+            .iter()
+            .find(|(k, _)| k == "queryable_columns")
+            .map(|(_, v)| v.clone())
+            .as_deref(),
+        Some(&*columns)
+    );
+
+    let settings = requests
+        .iter()
+        .find(|r| {
+            r.url
+                .query_pairs()
+                .any(|(k, v)| k == "columns" && v == "user_id,channel_id,notification_level")
+        })
+        .expect("channel_notification_settings request");
+    let pairs: Vec<_> = settings.url.query_pairs().collect();
+    let where_clause = pairs
+        .iter()
+        .find(|(k, _)| k == "where")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    assert_eq!(where_clause, "user_id = $1");
+    Ok(())
+}
+
+/// 通知設定 Shape は認証ユーザー自身の行だけを Electric に要求する。
+/// 設定は別テーブルから配り、メンバー一覧 Shape では設定列を配らないことも確かめる。
+#[tokio::test]
+async fn test_channel_notification_settings_shape_only_sends_own_rows() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mock_electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("electric-handle", "mock-handle")
+                .insert_header("electric-offset", "0_0")
+                .set_body_string("[]"),
+        )
+        .mount(&mock_electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = mock_electric.uri();
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let bob_id = uuid::Uuid::new_v4().to_string();
+    for (id, name) in [(&alice_id, "alice"), (&bob_id, "bob")] {
+        let payload = json!({
+            "id": id,
+            "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()),
+            "display_name": name,
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/users")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&payload)?))?,
+            )
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // メンバー一覧は全員分の行が届くが、通知設定の列は配られない。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/shapes/channel_users?offset=-1")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    for user_id in [&alice_id, &bob_id] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/shapes/channel_notification_settings?offset=-1")
+                    .header("X-Dev-User", user_id)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK, "{user_id}");
+        assert!(resp.headers().contains_key("electric-handle"));
+    }
+
+    let requests = mock_electric.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    for user_id in [&alice_id, &bob_id] {
+        let request = requests
+            .iter()
+            .find(|request| {
+                let pairs: Vec<_> = request.url.query_pairs().collect();
+                pairs
+                    .iter()
+                    .any(|(k, v)| k == "params[1]" && v == user_id.as_str())
+                    && pairs.iter().any(|(k, v)| {
+                        k == "columns" && v == "user_id,channel_id,notification_level"
+                    })
+            })
+            .unwrap_or_else(|| panic!("notification settings shape request for {user_id}"));
+        let pairs: Vec<_> = request.url.query_pairs().collect();
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "table" && v == "user_channel_notification_settings")
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k == "where")
+                .map(|(_, v)| v.as_ref()),
+            Some("user_id = $1")
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k == "columns")
+                .map(|(_, v)| v.as_ref()),
+            Some("user_id,channel_id,notification_level")
+        );
+    }
+    let members = requests
+        .iter()
+        .find(|request| {
+            request
+                .url
+                .query_pairs()
+                .any(|(k, v)| k == "columns" && v == "user_id,channel_id,joined_at")
+        })
+        .expect("channel_users request");
+    let columns = members
+        .url
+        .query_pairs()
+        .find(|(k, _)| k == "columns")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_default();
+    assert_eq!(columns, "user_id,channel_id,joined_at");
+    assert!(!columns.contains("notification_level"));
     Ok(())
 }

@@ -449,7 +449,15 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
-            val table = if (name == "channel_users") "channel_user" else name
+            // channel_users は channel_user、channel_notification_settings は
+            // user_channel_notification_settings をそれぞれの条件で配る。設定ごとに REST を
+            // 増やさず、Shape の更新を画面へ反映する。
+            val table =
+                when (name) {
+                    "channel_users" -> "channel_user"
+                    "channel_notification_settings" -> "user_channel_notification_settings"
+                    else -> name
+                }
             val shapeParams =
                 if (!direct) params
                 else
@@ -464,7 +472,7 @@ class SyncedTable(
                             )
                             put("params[1]", channelId)
                         }
-                        if (name == "notifications") {
+                        if (name == "notifications" || name == "channel_notification_settings") {
                             put("where", "user_id = $1")
                             put("params[1]", config.userId)
                         }
@@ -766,6 +774,7 @@ class Repository(
     val channels = SyncedTable("channels", config, platform, http, scope, synchronize = synchronize)
     val users = SyncedTable("users", config, platform, http, scope, synchronize = synchronize)
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
+    val notificationSettings = SyncedTable("channel_notification_settings", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
     private val recentMessages = linkedMapOf<String, CachedFeed>()
@@ -799,6 +808,7 @@ class Repository(
             "channels" -> channels
             "users" -> users
             "channel_users" -> members
+            "channel_notification_settings" -> notificationSettings
             "notifications" -> notifications
             "messages" ->
                 dynamic.getOrPut(name to channelId) {
@@ -840,13 +850,13 @@ class Repository(
     fun messages(channelId: String) = table("messages", channelId)
 
     fun refresh(reconnect: Boolean = false) {
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh(reconnect) }
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.refresh(reconnect) }
         if (reconnect && linked.isInitialized()) linked.value.refresh()
     }
 
     fun close() {
         if (linked.isInitialized()) linked.value.close()
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.close() }
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.close() }
         dynamic.clear()
         recentMessages.clear()
         http.close()

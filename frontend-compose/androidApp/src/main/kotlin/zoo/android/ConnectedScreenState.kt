@@ -6,6 +6,8 @@ import androidx.compose.runtime.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -232,6 +234,8 @@ internal class ConnectedScreenState(
     var channelEncrypted by mutableStateOf(false)
         private set
     var postVisibility by mutableStateOf("unlisted")
+    /** Serializes notification-level PATCHes per channel so the last selection is saved last. */
+    private val notificationLevelLocks = mutableMapOf<String, Mutex>()
     private val drafts = mutableStateMapOf<String, InputState>()
 
     fun collapseInput(channelId: String?, threadId: String?): Boolean {
@@ -942,31 +946,51 @@ internal class ConnectedScreenState(
         }
     }
 
-    fun channelSettings(channel: Row, member: Boolean, encrypted: Boolean): List<SettingsGroup> {
+    fun channelSettings(channel: Row, member: Boolean, encrypted: Boolean, notificationLevel: String?): List<SettingsGroup> {
+        val archived = channel.present("archive_at")
         val entries = buildList {
             if (channel.text("description").isNotBlank()) add(SettingsEntry.Information("description", channel.text("description")))
             if (encrypted) add(SettingsEntry.Information("encrypted", "暗号化チャンネル"))
             add(SettingsEntry.Destination("members", "メンバー"))
-            if (member && !channel.present("archive_at")) {
+            if (member && !archived) {
                 val pinned = channel.text("id") in pins
                 add(SettingsEntry.Destination(if (pinned) "unpin" else "pin", if (pinned) "ピン留めを解除" else "ピン留め"))
             }
             if (canEditMembers(channel)) add(SettingsEntry.Destination("add-member", "メンバーを追加"))
             if (canManage(channel, app.config.userId, app.config.isAdmin) && !channel.flag("is_dm")) {
-                val archived = channel.present("archive_at")
                 add(SettingsEntry.Destination(if (archived) "unarchive" else "archive",
                     if (archived) "アーカイブを解除" else "アーカイブ"))
             }
             if (canManage(channel, app.config.userId, app.config.isAdmin) &&
-                !channel.present("archive_at") && !channel.flag("is_dm")) {
+                !archived && !channel.flag("is_dm")) {
                 add(SettingsEntry.Destination("rename", "名前と説明を編集"))
             }
-            if (!channel.flag("is_dm") && !channel.present("archive_at")) {
+            if (!channel.flag("is_dm") && !archived) {
                 if (member) add(SettingsEntry.Destination("leave", "退出"))
                 else if (!channel.flag("is_private")) add(SettingsEntry.Destination("join", "参加"))
             }
         }
-        return listOf(SettingsGroup("チャンネル", entries))
+        val groups = mutableListOf(SettingsGroup("チャンネル", entries))
+        // 参加中だけ設定できる。値は channel_notification_settings の Shape の行から渡され、
+        // 書き込み後も同じ行の更新で選択状態が変わる（設定ごとの REST 取得は増やさない）。
+        // 行が届く前は現在値が分からないので、誤って「メンション」が選択済みに見えないよう
+        // 選択肢を出さず「読み込み中」を示す（Web と同じ）。
+        if (member && !archived) {
+            val notificationEntries = notificationLevel?.let { level ->
+                listOf(
+                    SettingsEntry.Choice("notification:all", "すべての投稿", level == "all"),
+                    SettingsEntry.Choice("notification:mentions", "メンション", level == "mentions"),
+                    SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", level == "mute"),
+                )
+            } ?: listOf(
+                SettingsEntry.Information(
+                    "notification:loading",
+                    app.t("notifications.levelLoading")
+                )
+            )
+            groups += SettingsGroup("通知", notificationEntries)
+        }
+        return groups
     }
 
     fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
@@ -1166,6 +1190,28 @@ internal class ConnectedScreenState(
                     if (action.id == "pin") app.api.request("/api/channel-pins", "POST", obj("channel_id" to channelId))
                     else app.api.request("/api/channel-pins/${channelId.encodeURLParameter()}", "DELETE")
                     refreshPins()
+                }
+                action.id.startsWith("notification:") && channel != null -> {
+                    val level = action.id.substringAfter(':')
+                    // 設定行が届く前に現在値を確定できないので、書き込みもしない（Web と同じ）。
+                    if (level in setOf("all", "mentions", "mute") &&
+                        channelNotificationLevel(app.repo.notificationSettings.rows.value, channelId) != null
+                    ) {
+                        if (!platform.env.online) {
+                            // request() はオフラインだと PATCH を送らず黙って戻るので、
+                            // 選択が保存されなかったことを利用者に伝える（共通の通信エラー表示）。
+                            app.toast = app.t("common.errors.network")
+                        } else {
+                            val lock = notificationLevelLocks.getOrPut(channelId) { Mutex() }
+                            request {
+                                lock.withLock {
+                                    app.api.request(
+                                        "/api/channels/${channelId.encodeURLParameter()}/notification-settings",
+                                        "PATCH", obj("level" to level))
+                                }
+                            }
+                        }
+                    }
                 }
                 action.id == "os-notifications" -> enableNotifications()
                 action.id == "logout" -> request { platform.invoke("logout") }
