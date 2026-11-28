@@ -391,7 +391,8 @@ private fun RenderAndroidScreen(
     val back = { dispatch(AndroidUiAction.Back) }
     val openSetting = { id: String -> dispatch(AndroidUiAction.OpenSetting(id)) }
     val toggle = { id: String, value: Boolean -> dispatch(AndroidUiAction.Toggle(id, value)) }
-    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language) { colors ->
+    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language,
+        tintedHeader = screen !is AndroidScreen.Profile && screen !is AndroidScreen.Call) { colors ->
         when (screen) {
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)

@@ -211,7 +211,7 @@ internal fun RestorationPage(dark: Boolean, stage: String, cancel: (() -> Unit)?
         kotlinx.coroutines.delay(400)
         showProgress = true
     }
-    AndroidShell(null, dark, {}) { colors ->
+    AndroidShell(null, dark, {}, tintedHeader = false) { colors ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {

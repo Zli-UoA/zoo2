@@ -53,6 +53,8 @@ internal fun CollapsingHeader(
         }
     }
     val shown = visible || forceVisible
+    val reportHeader = LocalHeaderVisibility.current
+    SideEffect { reportHeader(shown) }
     Box(Modifier.fillMaxSize().clipToBounds().nestedScroll(scroll)) {
         Column(Modifier.fillMaxSize()) {
             content(with(density) { headerHeight.toDp() }, shown)

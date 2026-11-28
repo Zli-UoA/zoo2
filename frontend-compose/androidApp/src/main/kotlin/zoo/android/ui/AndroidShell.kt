@@ -12,6 +12,9 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -28,6 +31,8 @@ import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+internal val LocalHeaderVisibility = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 
 internal val LocalAndroidTranslation = staticCompositionLocalOf<(String, Array<out Pair<String, String>>) -> String> {
     { key, _ -> key }
@@ -88,9 +93,12 @@ internal fun AndroidShell(
     dark: Boolean,
     onSelect: (TopPage) -> Unit,
     language: String? = null,
+    tintedHeader: Boolean = true,
     screen: @Composable ColumnScope.(AndroidColors) -> Unit,
 ) {
     val colors = AndroidColors(dark)
+    val headerVisible = remember { mutableStateOf(true) }
+    val reportHeader = remember { { visible: Boolean -> headerVisible.value = visible } }
     val background = if (selected == TopPage.Notifications) {
         val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
         val fadeHeight = with(LocalDensity.current) { (statusBar + 144.dp).toPx() }
@@ -121,8 +129,16 @@ internal fun AndroidShell(
         )) {
             Column(Modifier.fillMaxSize()
                 .then(if (background != null) Modifier.background(background) else Modifier.background(colors.background))
-                .safeDrawingPadding()) {
-                Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
+            ) {
+                Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.safeDrawing)
+                    .then(if (background == null) Modifier.background(
+                        if (tintedHeader && headerVisible.value) colors.headerLight else colors.background
+                    ) else Modifier))
+                Column(Modifier.fillMaxSize().consumeWindowInsets(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).windowInsetsPadding(WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))) {
+                CompositionLocalProvider(LocalHeaderVisibility provides reportHeader) {
+                    Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
+                }
                 if (selected != null) {
                     Row(Modifier.fillMaxWidth().background(colors.quietSurface).selectableGroup()) {
                         for (page in TopPage.entries) {
@@ -147,6 +163,7 @@ internal fun AndroidShell(
                             }
                         }
                     }
+                }
                 }
             }
         }

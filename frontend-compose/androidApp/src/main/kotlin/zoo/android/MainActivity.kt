@@ -227,6 +227,12 @@ class MainActivity : ComponentActivity() {
         var restoreError by remember { mutableStateOf("") }
         var restoreDiagnostics by remember { mutableStateOf("") }
         val current = active
+        val lightIconsBackground = !(current?.platform?.env?.dark ?: dark)
+        SideEffect {
+            val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            controller.isAppearanceLightStatusBars = lightIconsBackground
+            controller.isAppearanceLightNavigationBars = lightIconsBackground
+        }
         var callPresentation by remember(current) { mutableIntStateOf(0) }
         LaunchedEffect(current) {
             if (current != null && android.os.Build.VERSION.SDK_INT >= 33 &&
