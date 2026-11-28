@@ -965,6 +965,11 @@ pub(crate) async fn create_message_impl(
         )
         .await
         .map_err(reply_lock_error)?;
+        // ルート行を確保したら lock_timeout を戻す。以降の添付 UPDATE などが
+        // 同じ5秒で打ち切られて 500 になるのを防ぐ (503 はロック待ちだけの扱い)。
+        toasty::sql::statement("SET LOCAL lock_timeout = DEFAULT")
+            .exec(&mut tx)
+            .await?;
         crate::notifications::emit_timing("root_lock", &id, root_lock_began);
         let participation = crate::apps::one(
             &mut tx,

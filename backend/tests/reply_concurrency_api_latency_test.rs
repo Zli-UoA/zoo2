@@ -4,7 +4,9 @@
 //! targets (T=10,007). They are set to `mute` before the measured rounds: each reply then notifies
 //! exactly 10,000 users (1 `reply` to the parent author + 9,999 `channel_message`). The row count
 //! per reply is verified with SQL after every round, outside the measured interval, before the
-//! notification tables are truncated.
+//! notification tables are truncated. A reply rejected with 503 while waiting for the root-row lock
+//! is timed and counted separately: it must leave no post or notification (checked with SQL), and
+//! it contributes no stage samples. Only committed replies feed the percentiles and the breakdown.
 //!
 //! Times the whole in-process request: router, extractors, dev auth, pool wait, all SQL round trips
 //! and the JSON response body. Reports p50 / p95 / max. HTTP network is excluded because the
@@ -45,6 +47,24 @@ use tracing_subscriber::{Layer, filter::Targets, layer::Context, prelude::*};
 
 const WRITERS: usize = 8;
 const RECIPIENTS: i32 = 10_000;
+
+/// A reply either committed or was rejected with 503 while waiting for the thread-root lock
+/// (`lock_timeout`). Both are timed, but only committed replies have notifications and stage
+/// events to aggregate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplyKind {
+    Ok,
+    ServiceUnavailable,
+}
+
+/// One reply's timed outcome, reported to the coordinator before the round's end barrier so the
+/// per-round SQL check can tell committed replies from rejected ones.
+struct ReplyOutcome {
+    round: usize,
+    index: usize,
+    kind: ReplyKind,
+    elapsed_ms: f64,
+}
 
 /// `notify_timing` events from the reply write path, keyed by (message ID, stage) so a stage is
 /// recorded at most once per reply. Duplicates are kept separately to fail the measurement.
@@ -186,6 +206,16 @@ fn summary(label: &str, mut samples: Vec<f64>) -> Value {
     let value = json!({"n":n,"p50":at(0.5),"p95":at(0.95),"max":samples[n - 1]});
     eprintln!("{label}: {value}");
     value
+}
+
+/// As `summary`, but an empty set (all replies 503 in a short smoke run) is reported as `null`
+/// instead of failing the measurement.
+fn summary_opt(label: &str, samples: Vec<f64>) -> Value {
+    if samples.is_empty() {
+        eprintln!("{label}: no samples");
+        return Value::Null;
+    }
+    summary(label, samples)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -354,19 +384,21 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
             })
             .collect(),
     );
-    let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Every reply reports its outcome before the end barrier. A 503 is an expected busy-thread
+    // response, not a measurement error; other statuses and transport failures are.
+    let (result_tx, mut result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<anyhow::Result<ReplyOutcome>>();
     let mut clients = Vec::new();
     for (index, writer) in writers.iter().enumerate() {
         let (app, writer, root, channel) =
             (app.clone(), writer.clone(), root.clone(), channel.clone());
-        let (reply_ids, starts, ends, error_tx) = (
+        let (reply_ids, starts, ends, result_tx) = (
             reply_ids.clone(),
             starts.clone(),
             ends.clone(),
-            error_tx.clone(),
+            result_tx.clone(),
         );
         clients.push(tokio::spawn(async move {
-            let mut samples = Vec::new();
             for round in 0..rounds {
                 tokio::time::timeout(Duration::from_secs(600), starts[round].wait())
                     .await
@@ -390,32 +422,38 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
                     let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024).await?;
                     let elapsed = began.elapsed().as_secs_f64() * 1000.;
                     let value: Value = serde_json::from_slice(&bytes)?;
-                    anyhow::ensure!(
-                        status.is_success(),
-                        "reply {round}/{index}: {status} {value}"
-                    );
-                    anyhow::Ok(elapsed)
+                    let kind = match status {
+                        StatusCode::OK => ReplyKind::Ok,
+                        StatusCode::SERVICE_UNAVAILABLE => {
+                            eprintln!("reply {round}/{index}: 503 (thread busy): {value}");
+                            ReplyKind::ServiceUnavailable
+                        }
+                        other => anyhow::bail!("reply {round}/{index}: unexpected {other} {value}"),
+                    };
+                    anyhow::Ok(ReplyOutcome {
+                        round,
+                        index,
+                        kind,
+                        elapsed_ms: elapsed,
+                    })
                 }
                 .await;
-                match outcome {
-                    Ok(elapsed) => samples.push(elapsed),
-                    Err(error) => {
-                        let _ = error_tx.send(format!("reply {round}/{index}: {error:#}"));
-                    }
-                }
-                // Even a failed reply must reach the barrier, or the other clients wait forever.
+                let _ = result_tx
+                    .send(outcome.map_err(|error| error.context(format!("reply {round}/{index}"))));
+                // Even a rejected reply must reach the barrier, or the other clients wait forever.
                 tokio::time::timeout(Duration::from_secs(600), ends[round].wait())
                     .await
                     .map_err(|_| anyhow::anyhow!("end barrier timed out"))?;
             }
-            anyhow::Ok(samples)
+            anyhow::Ok(())
         }));
     }
     // Same-pool probe: one acquisition per round under the same eight concurrent replies. This is
     // not the router's own acquisition (toasty owns the pool inside AppState), so it is only a
     // reference value for pool wait; it cannot be attributed to a particular request.
     let probe_db = db.clone();
-    let (probe_starts, probe_ends, probe_errors) = (starts.clone(), ends.clone(), error_tx.clone());
+    let (probe_starts, probe_ends, probe_result_tx) =
+        (starts.clone(), ends.clone(), result_tx.clone());
     let probe = tokio::spawn(async move {
         let mut samples = Vec::new();
         for round in 0..rounds {
@@ -429,7 +467,8 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
                     drop(connection);
                 }
                 Err(error) => {
-                    let _ = probe_errors.send(format!("pool probe {round}: {error:#}"));
+                    let _ =
+                        probe_result_tx.send(Err(anyhow::anyhow!("pool probe {round}: {error:#}")));
                 }
             }
             tokio::time::timeout(Duration::from_secs(600), probe_ends[round].wait())
@@ -438,7 +477,8 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         }
         anyhow::Ok(samples)
     });
-    drop(error_tx);
+    drop(result_tx);
+    let mut outcomes: Vec<ReplyOutcome> = Vec::new();
     for round in 0..rounds {
         tokio::time::timeout(Duration::from_secs(600), starts[round].wait())
             .await
@@ -446,38 +486,87 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         tokio::time::timeout(Duration::from_secs(600), ends[round].wait())
             .await
             .map_err(|_| anyhow::anyhow!("end barrier timed out"))?;
-        if let Ok(error) = error_rx.try_recv() {
-            anyhow::bail!("{error}");
+        // Clients and the probe report before the end barrier, so every outcome for this round is
+        // already queued. A transport/setup error is a measurement failure, not a busy reply.
+        while let Ok(result) = result_rx.try_recv() {
+            match result {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(error) => anyhow::bail!("{error}"),
+            }
         }
-        // Outside the measured interval: every reply must have produced exactly 10,000 rows —
-        // one `reply` to the parent author and 9,999 `channel_message` to the `all` members. If a
-        // writer had been left as a live participant it would be 10,007 instead.
-        let counts = admin
-            .query(
-                "SELECT message_id, count(*)::bigint, \
-                        count(*) FILTER (WHERE notification_type='reply')::bigint, \
-                        count(*) FILTER (WHERE notification_type='channel_message')::bigint \
-                 FROM channel_notifications WHERE message_id = ANY($1::text[]) \
-                 GROUP BY message_id",
-                &[&reply_ids[round]],
-            )
-            .await?;
+        let round_outcomes: Vec<&ReplyOutcome> = outcomes
+            .iter()
+            .filter(|outcome| outcome.round == round)
+            .collect();
         anyhow::ensure!(
-            counts.len() == WRITERS,
-            "round {round}: found {} of {WRITERS} replied messages",
-            counts.len()
+            round_outcomes.len() == WRITERS,
+            "round {round}: received {} of {WRITERS} reply outcomes",
+            round_outcomes.len()
         );
-        for row in &counts {
-            let message_id: &str = row.get(0);
-            let total: i64 = row.get(1);
-            let replies: i64 = row.get(2);
-            let messages: i64 = row.get(3);
+        let ok_ids: Vec<String> = round_outcomes
+            .iter()
+            .filter(|outcome| outcome.kind == ReplyKind::Ok)
+            .map(|outcome| reply_ids[round][outcome.index].clone())
+            .collect();
+        let busy_ids: Vec<String> = round_outcomes
+            .iter()
+            .filter(|outcome| outcome.kind == ReplyKind::ServiceUnavailable)
+            .map(|outcome| reply_ids[round][outcome.index].clone())
+            .collect();
+        eprintln!(
+            "round {round}: success={} service_unavailable={}",
+            ok_ids.len(),
+            busy_ids.len()
+        );
+        // A 503 is returned on the root-row lock timeout, before any INSERT, and the transaction
+        // rolls back: neither a message nor a notification may be left behind.
+        for message_id in &busy_ids {
+            let row = admin
+                .query_one(
+                    "SELECT (SELECT count(*)::bigint FROM messages WHERE id=$1), \
+                            (SELECT count(*)::bigint FROM channel_notifications WHERE message_id=$1)",
+                    &[&message_id],
+                )
+                .await?;
+            let posts: i64 = row.get(0);
+            let notifications: i64 = row.get(1);
             anyhow::ensure!(
-                total == i64::from(RECIPIENTS)
-                    && replies == 1
-                    && messages == i64::from(RECIPIENTS) - 1,
-                "round {round} reply {message_id}: total={total} reply={replies} channel_message={messages}"
+                posts == 0 && notifications == 0,
+                "round {round} reply {message_id} returned 503 but left posts={posts} notifications={notifications}"
             );
+        }
+        // Outside the measured interval: every committed reply must have produced exactly 10,000
+        // rows — one `reply` to the parent author and 9,999 `channel_message` to the `all` members.
+        // If a writer had been left as a live participant it would be 10,007 instead.
+        if !ok_ids.is_empty() {
+            let counts = admin
+                .query(
+                    "SELECT message_id, count(*)::bigint, \
+                            count(*) FILTER (WHERE notification_type='reply')::bigint, \
+                            count(*) FILTER (WHERE notification_type='channel_message')::bigint \
+                     FROM channel_notifications WHERE message_id = ANY($1::text[]) \
+                     GROUP BY message_id",
+                    &[&ok_ids],
+                )
+                .await?;
+            anyhow::ensure!(
+                counts.len() == ok_ids.len(),
+                "round {round}: found {} of {} committed replies",
+                counts.len(),
+                ok_ids.len()
+            );
+            for row in &counts {
+                let message_id: &str = row.get(0);
+                let total: i64 = row.get(1);
+                let replies: i64 = row.get(2);
+                let messages: i64 = row.get(3);
+                anyhow::ensure!(
+                    total == i64::from(RECIPIENTS)
+                        && replies == 1
+                        && messages == i64::from(RECIPIENTS) - 1,
+                    "round {round} reply {message_id}: total={total} reply={replies} channel_message={messages}"
+                );
+            }
         }
         admin
             .batch_execute(
@@ -485,11 +574,35 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
             )
             .await?;
     }
-    let mut samples = Vec::new();
     for client in clients {
-        samples.extend(client.await??);
+        client.await??;
     }
     let pool_samples = probe.await??;
+    let ok_count = outcomes
+        .iter()
+        .filter(|outcome| outcome.kind == ReplyKind::Ok)
+        .count();
+    let busy_count = outcomes
+        .iter()
+        .filter(|outcome| outcome.kind == ReplyKind::ServiceUnavailable)
+        .count();
+    anyhow::ensure!(
+        ok_count + busy_count == rounds * WRITERS,
+        "timed {} replies, expected {}",
+        ok_count + busy_count,
+        rounds * WRITERS
+    );
+    let ok_samples: Vec<f64> = outcomes
+        .iter()
+        .filter(|outcome| outcome.kind == ReplyKind::Ok)
+        .map(|outcome| outcome.elapsed_ms)
+        .collect();
+    let busy_samples: Vec<f64> = outcomes
+        .iter()
+        .filter(|outcome| outcome.kind == ReplyKind::ServiceUnavailable)
+        .map(|outcome| outcome.elapsed_ms)
+        .collect();
+    eprintln!("replies: success={ok_count} service_unavailable={busy_count}");
     let mut report = serde_json::Map::new();
     report.insert("prepare_ms".into(), json!(prepare_ms));
     report.insert("t".into(), json!(targets));
@@ -497,9 +610,17 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         "notifications_per_reply".into(),
         json!(i64::from(RECIPIENTS)),
     );
+    report.insert("success_count".into(), json!(ok_count));
+    report.insert("service_unavailable_count".into(), json!(busy_count));
+    // `api_total` and `api_stage_ms` stay tied to the same committed replies. A 503 has no fan-out
+    // to break down, so only its response time is summarized separately.
     report.insert(
         "api_total".into(),
-        summary("POST reply API total (8 concurrent)", samples),
+        summary_opt("POST reply API total — success (8 concurrent)", ok_samples),
+    );
+    report.insert(
+        "api_total_service_unavailable".into(),
+        summary_opt("POST reply API total — 503 (8 concurrent)", busy_samples),
     );
     report.insert(
         "pool_acquire_probe".into(),
@@ -507,23 +628,27 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     );
     // Events are keyed by (message ID, stage). A duplicate means the same stage was recorded twice
     // for one reply, so fail before aggregating rather than counting it as another sample. Other
-    // posts (fixture setup) are filtered out; every measured reply must then have exactly the nine
-    // expected stages, one each, or the measurement fails instead of mixing a partial breakdown
-    // into the percentiles.
+    // posts (fixture setup) and 503 replies are filtered out; every committed reply must then have
+    // exactly the nine expected stages, one each, or the measurement fails instead of mixing a
+    // partial breakdown into the percentiles.
     let events = timing.0.lock().unwrap();
     anyhow::ensure!(
         events.duplicates.is_empty(),
         "duplicate notify_timing events: {:?}",
         events.duplicates
     );
-    let reply_ids_all: HashSet<&str> = reply_ids.iter().flatten().map(String::as_str).collect();
+    let ok_ids: HashSet<&str> = outcomes
+        .iter()
+        .filter(|outcome| outcome.kind == ReplyKind::Ok)
+        .map(|outcome| reply_ids[outcome.round][outcome.index].as_str())
+        .collect();
     let mut stage_samples: HashMap<&'static str, Vec<f64>> = TIMING_STAGES
         .iter()
         .map(|stage| (*stage, Vec::new()))
         .collect();
     let mut stages_per_reply: HashMap<String, HashSet<&'static str>> = HashMap::new();
     for ((message_id, stage), elapsed_us) in &events.samples {
-        if !reply_ids_all.contains(message_id.as_str()) {
+        if !ok_ids.contains(message_id.as_str()) {
             continue;
         }
         let Some(stage) = TIMING_STAGES
@@ -541,7 +666,7 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
             .or_default()
             .insert(*stage);
     }
-    for message_id in &reply_ids_all {
+    for message_id in &ok_ids {
         let stages = stages_per_reply.get(*message_id);
         anyhow::ensure!(
             stages.is_some_and(|stages| {
@@ -554,22 +679,27 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         );
     }
     anyhow::ensure!(
-        stages_per_reply.len() == rounds * WRITERS,
-        "timings for {} replies, expected {}",
+        stages_per_reply.len() == ok_count,
+        "timings for {} committed replies, expected {}",
         stages_per_reply.len(),
-        rounds * WRITERS
+        ok_count
     );
-    let mut breakdown = serde_json::Map::new();
-    for stage in TIMING_STAGES {
-        breakdown.insert(
-            stage.into(),
-            summary(
-                &format!("{stage} (round trip incl. execution, 8 concurrent)"),
-                stage_samples.remove(stage).unwrap(),
-            ),
-        );
+    if ok_count > 0 {
+        let mut breakdown = serde_json::Map::new();
+        for stage in TIMING_STAGES {
+            breakdown.insert(
+                stage.into(),
+                summary(
+                    &format!("{stage} (round trip incl. execution, 8 concurrent)"),
+                    stage_samples.remove(stage).unwrap(),
+                ),
+            );
+        }
+        report.insert("api_stage_ms".into(), Value::Object(breakdown));
+    } else {
+        eprintln!("no committed replies; skipping api_stage_ms");
+        report.insert("api_stage_ms".into(), Value::Null);
     }
-    report.insert("api_stage_ms".into(), Value::Object(breakdown));
     eprintln!("REPLY_LATENCY_JSON {}", Value::Object(report));
     fixture.cleanup().await?;
     Ok(())
