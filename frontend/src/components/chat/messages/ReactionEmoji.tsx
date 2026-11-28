@@ -1,10 +1,9 @@
 import { ActivityPubEmoji } from "../../home/ActivityPubEmoji";
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { AccountGlyph } from "./MfmAccounts";
 
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { DisplayEmoji } from "../../../lib/electric/types";
-import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenImageUrl, kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 
@@ -30,7 +29,10 @@ export function ReactionEmoji({
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   if (/^:@[a-z0-9._-]{1,80}:$/.test(emoji))
     return (
-      <span style={{ fontSize: size / 1.15 }}>
+      <span
+        className="text-(length:--emoji-size)"
+        style={{ "--emoji-size": `${size / 1.15}px` } as CSSProperties}
+      >
         <AccountGlyph name={emoji.slice(2, -1)} />
       </span>
     );
@@ -39,7 +41,10 @@ export function ReactionEmoji({
   const remote = /^apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)$/.exec(emoji);
   if (remote)
     return (
-      <span style={{ fontSize: size, height: size }} className="inline-flex shrink-0">
+      <span
+        className="inline-flex h-(--emoji-size) shrink-0 text-(length:--emoji-size)"
+        style={{ "--emoji-size": `${size}px` } as CSSProperties}
+      >
         <ActivityPubEmoji
           emoji={{ ...emojis?.[emoji], image_id: remote[1]!, name: remote[2]!, url: "" }}
           className="inline-block h-[1em] object-contain"
@@ -52,8 +57,8 @@ export function ReactionEmoji({
   if (!kitchen)
     return (
       <span
-        className="inline-flex shrink-0 items-center justify-center leading-none"
-        style={{ width: size, height: size, fontSize: size }}
+        className="inline-flex size-(--emoji-size) shrink-0 items-center justify-center text-(length:--emoji-size) leading-none"
+        style={{ "--emoji-size": `${size}px` } as CSSProperties}
       >
         {label}
       </span>
@@ -62,8 +67,8 @@ export function ReactionEmoji({
   return (
     <span
       aria-hidden="true"
-      className="inline-flex shrink-0 items-center justify-center"
-      style={{ width: size, height: size }}
+      className="inline-flex size-(--emoji-size) shrink-0 items-center justify-center"
+      style={{ "--emoji-size": `${size}px` } as CSSProperties}
     >
       {url && failedUrl !== url ? (
         <img
@@ -77,7 +82,10 @@ export function ReactionEmoji({
           onError={() => setFailedUrl(url)}
         />
       ) : (
-        <span className="leading-none" style={{ fontSize: size }}>
+        <span
+          className="text-(length:--emoji-size) leading-none"
+          style={{ "--emoji-size": `${size}px` } as CSSProperties}
+        >
           {componentGlyph(kitchen[0])}
         </span>
       )}
@@ -101,22 +109,32 @@ function CustomReactionEmoji({
       : emojis.find((value) => value.name === name || value.aliases?.includes(name));
   const url = emoji ? imageUrl(emoji.url) : null;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const ratio = emoji?.width && emoji.height ? emoji.width / emoji.height : 1;
+  const emojiVars = {
+    "--emoji-height": `${size}px`,
+    "--emoji-width": `${size * ratio}px`,
+    "--emoji-max-width": `${size * 8}px`,
+  } as CSSProperties;
   return url && failedUrl !== url ? (
     <img
       src={url}
       alt={`:${name}:`}
       width={size}
       height={size}
-      className="shrink-0 object-contain"
-      style={emojiImageStyle(emoji, size)}
+      className="h-(--emoji-height) w-(--emoji-width) max-w-(--emoji-max-width) shrink-0 object-contain"
+      style={emojiVars}
       loading="lazy"
       referrerPolicy="no-referrer"
       onError={() => setFailedUrl(url)}
     />
   ) : (
     <span
-      className={emoji ? "inline-block shrink-0 align-middle" : undefined}
-      style={emoji ? { ...emojiImageStyle(emoji, size), overflow: "hidden" } : undefined}
+      className={
+        emoji
+          ? "inline-block h-(--emoji-height) w-(--emoji-width) max-w-(--emoji-max-width) shrink-0 overflow-hidden align-middle"
+          : undefined
+      }
+      style={emoji ? emojiVars : undefined}
       title={`:${name}:`}
     >{`:${name}:`}</span>
   );

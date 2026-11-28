@@ -165,8 +165,8 @@ function ExternalPreviews({
       <Button
         type="button"
         variant="link"
-        size="sm"
-        className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
+        size="xs"
+        className="h-auto min-h-8 -mx-2"
         onClick={() => setLoadedFor(content)}
       >
         {t("e2ee.loadPreviews")}

@@ -33,7 +33,7 @@ export function AccountGlyph({ name, mention = false }: { name: string; mention?
   const safeUrl = url && (/^https?:\/\//i.test(url) || /^\/(?!\/)/.test(url)) ? url : undefined;
   return (
     <span
-      className="inline-flex max-w-full items-baseline gap-0.5 align-baseline"
+      className="inline-flex max-w-full items-baseline gap-0.5 align-baseline [&_[data-slot=avatar]]:after:border-0"
       title={`@${account.username}`}
     >
       {mention ? <span className="sr-only">@{account.username}</span> : null}
@@ -43,12 +43,12 @@ export function AccountGlyph({ name, mention = false }: { name: string; mention?
         aria-hidden={mention || undefined}
         className="inline-flex self-center"
       >
-        <Avatar className="inline-flex size-[1.15em] align-middle after:border-0">
+        <Avatar className="inline-flex size-[1.15em] align-middle">
           <AvatarImage src={safeUrl} alt="" />
-          <AvatarFallback className="text-[0.7em]">{Array.from(label)[0] ?? "?"}</AvatarFallback>
+          <AvatarFallback className="text-micro">{Array.from(label)[0] ?? "?"}</AvatarFallback>
         </Avatar>
       </span>
-      {mention ? <span className="[overflow-wrap:anywhere]">{label}</span> : null}
+      {mention ? <span className="wrap-anywhere">{label}</span> : null}
     </span>
   );
 }

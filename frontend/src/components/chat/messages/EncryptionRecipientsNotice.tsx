@@ -48,7 +48,7 @@ export function EncryptionRecipientsNotice({
         </p>
       ) : null}
       {summary.undeliverable.length > 0 ? (
-        <div className="flex flex-col gap-0.5 text-amber-800 dark:text-amber-300">
+        <div className="flex flex-col gap-0.5 text-warning-strong">
           <p className="flex items-center gap-1.5 font-medium">
             <ShieldAlertIcon className="size-3.5 shrink-0" aria-hidden="true" />
             {t("e2ee.undeliverable.title")}

@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { Button } from "../../ui/button";
@@ -122,8 +122,16 @@ function CardDescription({ text }: { text: string }) {
     <div className="mt-2">
       <div
         id={id}
-        className="overflow-clip"
-        style={{ maxHeight: expanded ? undefined : `${DESCRIPTION_PREVIEW_LINES}lh` }}
+        className={
+          expanded ? "overflow-clip" : "max-h-(--card-description-max-height) overflow-clip"
+        }
+        style={
+          expanded
+            ? undefined
+            : ({
+                "--card-description-max-height": `${DESCRIPTION_PREVIEW_LINES}lh`,
+              } as CSSProperties)
+        }
       >
         <p ref={textRef} className="whitespace-pre-wrap break-words text-muted-foreground">
           {text}
@@ -134,7 +142,7 @@ function CardDescription({ text }: { text: string }) {
           type="button"
           variant="link"
           size="sm"
-          className="mt-1 px-0"
+          className="-mx-2.5 mt-1"
           aria-controls={id}
           aria-expanded={expanded}
           onClick={() => setExpanded((current) => !current)}
@@ -155,14 +163,16 @@ export function MessageCard({
   attachment?: boolean;
 }) {
   const href = safeHref(card.url);
+  const accent = cardColor(card.color);
+  const baseClassName = attachment
+    ? "@container my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 py-1 pl-4 pr-2 text-sm"
+    : "@container my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 bg-card p-3 text-sm shadow-sm";
   return (
     <article
       className={
-        attachment
-          ? "@container my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
-          : "@container my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+        accent ? `${baseClassName} border-l-(--card-accent)` : `${baseClassName} border-l-brand`
       }
-      style={cardColor(card.color) ? { borderLeftColor: cardColor(card.color) } : undefined}
+      style={accent ? ({ "--card-accent": accent } as CSSProperties) : undefined}
     >
       {!attachment && (card.source || card.context || card.badge) ? (
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

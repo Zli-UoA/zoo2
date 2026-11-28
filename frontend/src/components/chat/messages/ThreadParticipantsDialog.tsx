@@ -1,4 +1,3 @@
-import { cn } from "cn";
 import { SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -13,7 +12,6 @@ import {
   DialogTitle,
 } from "../../ui/dialog";
 import { Input } from "../../ui/input";
-import { inputClassName } from "../../ui/input-styles";
 import { MemberRow } from "../MemberRow";
 import {
   filterThreadParticipants,
@@ -104,10 +102,7 @@ export function ThreadParticipantsDialog({
           />
           <Input
             type="search"
-            className={cn(
-              inputClassName(),
-              "w-full pl-8 [&::-webkit-search-cancel-button]:appearance-none",
-            )}
+            className="w-full pl-8 [&::-webkit-search-cancel-button]:appearance-none"
             placeholder={t("threads.participantsSearch")}
             aria-label={t("threads.participantsSearch")}
             value={query}
