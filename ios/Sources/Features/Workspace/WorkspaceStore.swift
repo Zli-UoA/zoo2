@@ -163,7 +163,7 @@ final class WorkspaceStore {
         self.user = user
         images = RemoteImageStore(namespace: client.serverURL + "|" + user.id)
         self.calls = calls ?? CallStore(client: client, userID: user.id)
-        recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
+        recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults, remote: client as? any RecentEmojiRemote)
         inbox = InboxStore(client: client, userID: user.id)
         channelNotifications = ChannelNotifications(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
@@ -854,6 +854,7 @@ final class WorkspaceStore {
     }
 
     func shutdown() {
+        recentEmojis.stop()
         active = false
         if #available(iOS 27.0, *) { ZooSentMessageStore.shared.clear(in: self) }
         destinationGeneration = UUID()

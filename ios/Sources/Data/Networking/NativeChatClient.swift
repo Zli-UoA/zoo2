@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-struct NativeChatClient: ChatClient {
+struct NativeChatClient: ChatClient, RecentEmojiRemote {
     let api: APIClient
     var sync: SyncSession? = nil
     var serverURL: String { api.settings.server }
@@ -312,6 +312,14 @@ struct NativeChatClient: ChatClient {
 
     func removeReaction(messageID: String, emoji: String) async throws {
         _ = try await api.data("api/messages/\(try segment(messageID))/reactions", method: "DELETE", query: ["emoji": emoji])
+    }
+
+    func recentEmojiHistory() async throws -> [String] {
+        try await api.get("api/users/me/recent-emojis")
+    }
+
+    func recordRecentEmoji(_ emoji: String) async throws -> [String] {
+        try await api.write("api/users/me/recent-emojis", body: ["emoji": .string(emoji)])
     }
 
     func emojis() async throws -> [WorkspaceEmoji] {

@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 
 import { kitchenLabel, type KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
+import { useRecentEmojis } from "../../../lib/emoji/history";
+import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import { ReactionEmoji } from "./ReactionEmoji";
 
 /**
@@ -10,20 +12,21 @@ import { ReactionEmoji } from "./ReactionEmoji";
  * ワークスペース外のカスタム絵文字は送信できないので、現在のカタログで解決できるものだけを残す。
  */
 export function RecentReactions({
-  values,
   catalog,
   onSelect,
 }: {
-  values: string[];
-  catalog: KitchenCatalog | null;
+  catalog?: KitchenCatalog | null;
   onSelect: (value: string) => void;
 }) {
   const { t } = useTranslation();
+  const values = useRecentEmojis();
   const { emojis } = useWorkspaceEmojis();
   const available = useMemo(
     () =>
       values
         .filter((value) => {
+          // チャットでは ActivityPub の画像付きリアクションは送れない。
+          if (value.startsWith("apub:")) return false;
           // アカウントのショートコードは MfmAccounts 側で解決するのでカタログ照合しない。
           if (value.startsWith(":@")) return true;
           if (!value.startsWith(":")) return true;
@@ -32,6 +35,10 @@ export function RecentReactions({
         })
         .slice(0, 6),
     [values, emojis],
+  );
+
+  const kitchen = useKitchenCatalog(
+    !catalog && available.some((value) => value.startsWith("kitchen:")),
   );
 
   if (available.length === 0) return null;
@@ -47,7 +54,9 @@ export function RecentReactions({
             className="flex size-11 items-center justify-center rounded-lg outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
             onClick={() => onSelect(emoji)}
           >
-            <ReactionEmoji emoji={emoji} catalog={catalog} size={26} />
+            <span className="flex max-w-full items-center justify-center overflow-hidden [&_img]:max-w-full!">
+              <ReactionEmoji emoji={emoji} catalog={catalog ?? kitchen.catalog} size={26} />
+            </span>
           </button>
         ))}
       </div>

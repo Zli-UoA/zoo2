@@ -11,7 +11,8 @@ import { EmojiKitchenPicker } from "../chat/messages/EmojiKitchenPicker";
 import { EmojiPicker } from "../chat/messages/EmojiPicker";
 import { ActivityPubEmoji, type CustomEmoji } from "./ActivityPubEmoji";
 import { panelTabClassName } from "../ui/control-panel";
-import { addRecentEmoji, recentReactionValue } from "../../lib/emoji/recents";
+import { useRecordEmoji } from "../../lib/emoji/history";
+import { recentReactionValue } from "../../lib/emoji/recents";
 export interface ReactionChoice {
   reaction: string;
   emoji_id?: string;
@@ -28,6 +29,7 @@ export function HomeReactionPicker({
   onClose: () => void;
   onSelect: (reaction: ReactionChoice) => void;
 }) {
+  const addRecentEmoji = useRecordEmoji();
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);

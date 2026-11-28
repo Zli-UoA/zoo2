@@ -9,7 +9,7 @@ import {
   manyCustomEmojiFixtures,
 } from "../../../../.storybook/preference-fixtures";
 
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import { Button } from "../../ui/button";
 import { ReactionPicker } from "./ReactionPicker";
 
@@ -90,11 +90,28 @@ export const SearchEmpty: Story = {
 
 export const Recents: Story = {
   decorators: [
-    (Story) => {
-      localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify(["🎉", "👍"]));
-      return <Story />;
-    },
+    (Story) => (
+      <EmojiHistoryFixture>
+        <Story />
+      </EmojiHistoryFixture>
+    ),
   ],
+  beforeEach: () => {
+    const previous = localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY);
+    localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify(["🎉", "👍"]));
+    return () => {
+      if (previous === null) localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
+      else localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, previous);
+    };
+  },
+  play: playForImplementation(async ({ args }) => {
+    const recent = await screen.findByRole("group", { name: "最近使った絵文字" });
+    await userEvent.click(within(recent).getByRole("button", { name: "👍" }));
+    await expect(args.onSelect).toHaveBeenCalledWith("👍");
+    await userEvent.click(await screen.findByRole("button", { name: "リアクションを追加" }));
+    const reopened = await screen.findByRole("group", { name: "最近使った絵文字" });
+    await expect(within(reopened).getAllByRole("button")[0]).toHaveAccessibleName("👍");
+  }),
 };
 
 export const KitchenLoading: Story = {

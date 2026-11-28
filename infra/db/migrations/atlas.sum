@@ -1,4 +1,4 @@
-h1:R6DlP2oHWr1SceNo5bJEJ2j1Rck2qzw67Id4w1CjQKU=
+h1:6Pp7wdCFC9NtNSFBNYtNu+/M3I6eeu+26D9L6goMTN8=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -128,3 +128,4 @@ h1:R6DlP2oHWr1SceNo5bJEJ2j1Rck2qzw67Id4w1CjQKU=
 20261208000001_apub_quote_grants.sql h1:sqPrOSOSQ6ZkqASmMbuB7FglmSdK01YhAiVGznokbOM=
 20261208000002_user_channel_notification_settings.sql h1:HFHUtSAskX67F/uRi68qhgTimPg4MB/fDGT88GpLvwE=
 20261208000003_home_quote_uri.sql h1:4MTxhne5lQNN2IJuAWrLHin1n0N0GhkvUZag1tVoeEc=
+20261208000004_user_recent_emojis.sql h1:YfOM28mncq4GDen7GGT9DPZFF2JZ+tKoksNkWb35C0Y=

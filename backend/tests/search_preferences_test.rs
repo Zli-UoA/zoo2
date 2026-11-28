@@ -124,3 +124,54 @@ async fn search_preferences_are_personal_validated_and_preserve_other_preference
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn emoji_history_is_shared_by_account_and_merges_concurrent_selections() -> anyhow::Result<()>
+{
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    for id in [&alice, &bob] {
+        assert_eq!(request(&app, "POST", "/api/users", DEFAULT_DEV_USER_ID,
+            json!({"id":id,"user_name":format!("emoji_{}",id.replace('-', "")),"display_name":"Emoji test"})).await?.0, StatusCode::OK);
+    }
+    let path = "/api/users/me/recent-emojis";
+    let (first, second) = tokio::join!(
+        request(&app, "POST", path, &alice, json!({"emoji":"👍"})),
+        request(&app, "POST", path, &alice, json!({"emoji":"🎉"}))
+    );
+    assert_eq!(first?.0, StatusCode::OK);
+    assert_eq!(second?.0, StatusCode::OK);
+    assert_eq!(
+        request(&app, "POST", path, &alice, json!({"emoji":"👍"}))
+            .await?
+            .1["data"],
+        json!(["👍", "🎉"])
+    );
+    assert_eq!(
+        request(&app, "GET", path, &alice, json!(null)).await?.1,
+        json!(["👍", "🎉"])
+    );
+    assert_eq!(
+        request(&app, "GET", path, &bob, json!(null)).await?.1,
+        json!([])
+    );
+    for n in 0..18 {
+        request(
+            &app,
+            "POST",
+            path,
+            &alice,
+            json!({"emoji":format!(":emoji_{n}:")}),
+        )
+        .await?;
+    }
+    let values = request(&app, "GET", path, &alice, json!(null)).await?.1;
+    assert_eq!(values.as_array().unwrap().len(), 16);
+    assert_eq!(values[0], ":emoji_17:");
+    assert_eq!(values[15], ":emoji_2:");
+    Ok(())
+}

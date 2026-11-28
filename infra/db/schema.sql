@@ -4842,3 +4842,7 @@ CREATE TRIGGER apub_quote_grants_home_live AFTER INSERT OR UPDATE OR DELETE ON a
   FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 
 ALTER TABLE home_posts ADD COLUMN quote_uri text;
+CREATE TABLE user_recent_emojis (
+    user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    emojis text[] NOT NULL CHECK (cardinality(emojis) <= 16)
+);

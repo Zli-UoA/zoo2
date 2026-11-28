@@ -540,6 +540,11 @@ erDiagram
     }
     user_pinned_channels }o--o| channels : user_pinned_channels_channel_id_fkey
     user_pinned_channels }o--o| users : user_pinned_channels_user_id_fkey
+    user_recent_emojis {
+      text user_id PK,FK
+      text[] emojis
+    }
+    user_recent_emojis |o--o| users : user_recent_emojis_user_id_fkey
     user_reminders {
       text id PK
       text user_id FK

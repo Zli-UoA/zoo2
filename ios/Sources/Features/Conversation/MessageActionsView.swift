@@ -66,7 +66,7 @@ struct MessageActionsView: View {
     var body: some View {
         Group {
             switch page {
-            case .actions: actions
+            case .actions: actions.onAppear { workspace.recentEmojis.refresh() }
             case .reactions: ReactionPicker(workspace: workspace, select: react)
             case .edit:
                 if let editingMessage { EditMessageView(store: store, message: editingMessage) }

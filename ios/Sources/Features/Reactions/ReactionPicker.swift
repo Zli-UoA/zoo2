@@ -61,6 +61,21 @@ struct ReactionPicker: View {
                     }.pickerStyle(.segmented)
                         .listRowInsets(AppDesign.rowInsets).listRowBackground(Color.clear)
                 }
+                if query.isEmpty, category == .standard {
+                    let recent = workspace.recentEmojis.values.filter { value in
+                        if value.hasPrefix(":@") { return workspace.emojiAccounts.contains { ":@" + $0.username + ":" == value } }
+                        return !value.hasPrefix(":") || workspace.emoji(for: value) != nil
+                    }
+                    if !recent.isEmpty {
+                        Section("最近使った絵文字") {
+                            ForEach(recent.prefix(6), id: \.self) { value in
+                                let glyph = ReactionGlyph(emoji: value, message: nil, workspace: workspace)
+                                Button { select(value) } label: { glyph }
+                                    .accessibilityLabel(glyph.label)
+                            }
+                        }
+                    }
+                }
                 if !standard.isEmpty {
                     Section("絵文字") {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 4)], spacing: 4) {
@@ -135,6 +150,7 @@ struct ReactionPicker: View {
             .appSearch(text: $search, prompt: "絵文字を入力、または名前で検索", identifier: "reaction")
             .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
         }
+        .onAppear { workspace.recentEmojis.refresh() }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }

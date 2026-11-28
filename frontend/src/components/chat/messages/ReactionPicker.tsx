@@ -19,7 +19,8 @@ import {
   EmojiSearchBar,
   useCustomEmojiSearch,
 } from "./EmojiPicker";
-import { addRecentEmoji } from "../../../lib/emoji/recents";
+import { RecentReactions } from "./RecentReactions";
+import { useRecordEmoji } from "../../../lib/emoji/history";
 
 type ReactionTab = "emoji" | "kitchen" | "custom";
 
@@ -37,15 +38,23 @@ export function ReactionPicker({
   onOpenChange: (open: boolean) => void;
   onSelect: (emoji: string) => void;
 }) {
+  const addRecentEmoji = useRecordEmoji();
   const { t } = useTranslation();
   const [tab, setTab] = useState<ReactionTab>("emoji");
+  const [query, setQuery] = useState("");
+  const changeOpen = (nextOpen: boolean) => {
+    if (!nextOpen && purpose === "reaction") {
+      setTab("emoji");
+      setQuery("");
+    }
+    onOpenChange(nextOpen);
+  };
   const select = (emoji: string) => {
     addRecentEmoji(emoji);
     onSelect(purpose === "message" ? kitchenShortcode(emoji) : emoji);
-    onOpenChange(false);
+    changeOpen(false);
   };
 
-  const [query, setQuery] = useState("");
   const [dialogElement, setDialogElement] = useState<HTMLDivElement | null>(null);
   const customEmojis = useCustomEmojiSearch(query);
   // While searching, emoji and custom emoji results are shown together.
@@ -62,7 +71,7 @@ export function ReactionPicker({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent
         ref={setDialogElement}
         className="flex h-[min(36rem,calc(100dvh-2rem))] flex-col gap-3 overflow-hidden sm:max-w-md"
@@ -103,6 +112,7 @@ export function ReactionPicker({
               </Tabs.Tab>
             </Tabs.List>
             <Tabs.Panel value="emoji" className="flex min-h-0 flex-1 flex-col">
+              {open && tab === "emoji" && !searching ? <RecentReactions onSelect={select} /> : null}
               {/* A panel that is leaving must not render a second copy of the results. */}
               {tab === "emoji" ? searchResults : null}
             </Tabs.Panel>

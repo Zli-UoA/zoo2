@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import { ReactionPicker } from "./ReactionPicker";
 
 vi.mock("../../../lib/emoji/workspace", () => ({
@@ -142,10 +142,12 @@ beforeEach(async () => {
   await flush(() =>
     root.render(
       createElement(LocaleProvider, {
-        children: createElement(ReactionPicker, {
-          open: true,
-          onOpenChange,
-          onSelect,
+        children: createElement(EmojiHistoryFixture, {
+          children: createElement(ReactionPicker, {
+            open: true,
+            onOpenChange,
+            onSelect,
+          }),
         }),
       }),
     ),
@@ -203,7 +205,6 @@ describe("ReactionPicker", () => {
     expect(selected).toEqual(["😀"]);
     expect(openChanges).toEqual([false]);
     expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual(["😀"]);
-    // ピッカー側には「最近」を出さない。
   });
 
   it("keeps Emoji Kitchen working and selects a combination", async () => {

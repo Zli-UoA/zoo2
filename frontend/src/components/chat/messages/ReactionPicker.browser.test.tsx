@@ -1,13 +1,13 @@
 import "../../../styles.css";
 import { delay, http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+import { EmojiHistoryFixture, RECENT_EMOJIS_STORAGE_KEY } from "../../../test/emojiHistoryFixture";
 import { ReactionPicker } from "./ReactionPicker";
 
 vi.mock("frimousse", async () => {
@@ -84,12 +84,15 @@ vi.mock("../../../hooks/useKitchenCatalog", () => ({
 function renderPicker() {
   const onSelect = vi.fn();
   const onOpenChange = vi.fn();
-  render(
+  const picker = (open: boolean) => (
     <LocaleProvider>
-      <ReactionPicker open onOpenChange={onOpenChange} onSelect={onSelect} />
-    </LocaleProvider>,
+      <EmojiHistoryFixture>
+        <ReactionPicker open={open} onOpenChange={onOpenChange} onSelect={onSelect} />
+      </EmojiHistoryFixture>
+    </LocaleProvider>
   );
-  return { onSelect, onOpenChange };
+  const { rerender } = render(picker(true));
+  return { onSelect, onOpenChange, setOpen: (open: boolean) => rerender(picker(open)) };
 }
 
 async function createSolidPng(width: number, height: number): Promise<ArrayBuffer> {
@@ -177,13 +180,59 @@ describe("ReactionPicker", () => {
       "Emoji Kitchen",
     ]);
 
+    expect(screen.queryByRole("group", { name: "最近使った絵文字" })).toBeNull();
     await userEvent.click(screen.getByTestId("mock-emoji"));
 
     expect(onSelect).toHaveBeenCalledWith("😀");
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual(["😀"]);
-    // ピッカー側には「最近」を出さない（保存先のシートで使う）。
-    expect(screen.queryByLabelText("最近使った絵文字")).toBeNull();
+  });
+
+  it("selects a recent reaction and shows it first the next time", async () => {
+    localStorage.setItem(
+      RECENT_EMOJIS_STORAGE_KEY,
+      JSON.stringify(["👍", "🎉", "👍", "apub:remote::wave:"]),
+    );
+    const { onSelect, onOpenChange, setOpen } = renderPicker();
+    const recents = () => within(screen.getByRole("group", { name: "最近使った絵文字" }));
+    const labels = () =>
+      recents()
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-label"));
+    expect(labels()).toEqual(["👍", "🎉"]);
+    await userEvent.click(recents().getByRole("button", { name: "🎉" }));
+    expect(onSelect).toHaveBeenCalledWith("🎉");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    setOpen(false);
+    setOpen(true);
+    expect(labels()).toEqual(["🎉", "👍"]);
+  });
+
+  it("keeps a wide recent emoji inside its own button", async () => {
+    await startMockServer();
+    const png = await createSolidPng(120, 20);
+    mockServer.use(
+      http.get(
+        "*/wide.png",
+        () => new HttpResponse(png, { headers: { "Content-Type": "image/png" } }),
+      ),
+      http.get("*/api/emojis", () =>
+        HttpResponse.json([
+          { name: "wide", url: "/wide.png", width: 120, height: 20, category: "" },
+        ]),
+      ),
+    );
+    localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify([":wide:", "🎉"]));
+    const { onSelect } = renderPicker();
+    const group = within(screen.getByRole("group", { name: "最近使った絵文字" }));
+    const wide = await group.findByRole("button", { name: ":wide:" });
+    const image = (await within(wide).findByRole("img")).getBoundingClientRect();
+    const button = wide.getBoundingClientRect();
+    expect(image.width).toBeGreaterThan(0);
+    expect(image.left).toBeGreaterThanOrEqual(button.left);
+    expect(image.right).toBeLessThanOrEqual(button.right);
+    await userEvent.click(group.getByRole("button", { name: "🎉" }));
+    expect(onSelect).toHaveBeenCalledWith("🎉");
   });
 
   it("keeps Emoji Kitchen working and selects a combination", async () => {

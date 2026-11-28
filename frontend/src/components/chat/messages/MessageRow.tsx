@@ -28,7 +28,7 @@ export { MessageBody } from "./MessageBody";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
-import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
+import { useRecordEmoji } from "../../../lib/emoji/history";
 import { RecentReactions } from "./RecentReactions";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
@@ -247,6 +247,7 @@ export function MessageRow({
   unencryptedAfterEncrypted,
   highlightRun,
 }: MessageRowProps) {
+  const addRecentEmoji = useRecordEmoji();
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
@@ -342,14 +343,6 @@ export function MessageRow({
   }
   const [sheetOpen, setSheetOpen] = useState(false);
   const tapOrigin = useRef<{ x: number; y: number } | null>(null);
-  const [recentEmojis, setRecentEmojis] = useState<string[]>([]);
-  useEffect(() => {
-    if (!sheetOpen) return;
-    // チャットのリアクション API は画像付き（apub:）の値を受け付けないので除外する。
-    // 件数制限は RecentReactions で有効な候補を絞った後に行う。
-    setRecentEmojis(loadRecentEmojis().filter((emoji) => !emoji.startsWith("apub:")));
-  }, [sheetOpen]);
-
   function rememberTouchStart(event: PointerEvent<HTMLDivElement>) {
     // ポータル内のダイアログは React ツリー上この行の子だが、DOM 上は外にある。
     if (!event.currentTarget.contains(event.target as Node)) {
@@ -872,9 +865,8 @@ export function MessageRow({
           className="inset-x-0 bottom-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none pb-6 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-w-sm sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
         >
           <DialogTitle>{t("messages.actions")}</DialogTitle>
-          {canReact ? (
+          {sheetOpen && canReact ? (
             <RecentReactions
-              values={recentEmojis}
               catalog={kitchenCatalog}
               onSelect={(emoji) => {
                 addRecentEmoji(emoji);
