@@ -16,9 +16,7 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -236,14 +234,7 @@ private fun SearchFilterSheet(
         (matches.filter { it.id in chosen } + matches.filterNot { it.id in chosen }).take(SHOWN)
     }
     val full = selected.size >= MAX_SEARCH_FILTER_IDS
-    ModalBottomSheet(
-        onDismissRequest = dismiss,
-        modifier = Modifier.semantics { paneTitle = title },
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        sheetMaxWidth = Dp.Unspecified,
-        containerColor = colors.background,
-        contentColor = colors.foreground,
-    ) {
+    ActionSheet(colors, dismiss, Modifier.semantics { paneTitle = title }, skipPartial = true, maxWidth = Dp.Unspecified) {
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).imePadding().padding(horizontal = 16.dp)) {
             Text(title, color = colors.foreground, fontSize = 17.sp, fontWeight = AndroidWeights.emphasis)
             SearchInput(query, { query = it }, hint, colors, Modifier.padding(vertical = 8.dp).testTag("search-filter-field"))
@@ -274,10 +265,8 @@ private fun SearchFilterSheet(
                                     UiGlyph(UiIcon.Lock, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                                 SearchFilterMark.Channel ->
                                     UiGlyph(UiIcon.Channels, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
-                                SearchFilterMark.Initial -> Box(Modifier.size(28.dp).background(colors.quietSurface, CircleShape),
-                                    contentAlignment = Alignment.Center) {
-                                    Text(option.label.take(1), color = colors.secondary, fontSize = 12.sp)
-                                }
+                                SearchFilterMark.Initial -> UserAvatar(option.label, null, Modifier.size(28.dp),
+                                    colors.quietSurface, colors.secondary, 12.sp)
                             }
                         }
                         Text(option.label, Modifier.weight(1f, fill = false), color = colors.foreground, fontSize = 15.sp,

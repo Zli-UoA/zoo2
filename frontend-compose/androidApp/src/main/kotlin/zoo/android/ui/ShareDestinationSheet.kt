@@ -43,11 +43,7 @@ internal fun ShareDestinationSheet(
         }) }.filter { it.channels.isNotEmpty() }
     }
     val list = rememberLazyListState()
-    ModalBottomSheet(
-        onDismissRequest = { if (!busy) cancel() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = colors.background, contentColor = colors.foreground,
-        dragHandle = { BottomSheetDefaults.DragHandle(color = colors.inputBoundary) },
-    ) {
+    ActionSheet(colors, { if (!busy) cancel() }, skipPartial = true) {
         LazyColumn(Modifier.fillMaxWidth().then(if (searchable) Modifier.fillMaxHeight() else Modifier)
             .imePadding().testTag("share-targets"), state = list, contentPadding = PaddingValues(bottom = 16.dp)) {
             item {
