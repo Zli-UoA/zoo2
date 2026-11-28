@@ -29,15 +29,15 @@ use zoo2_client_core::{
         token::{self, StoredTokens, TokenManager},
     },
     config::{AuthConfig, Config, OidcConfig, config_dir_for},
-    electric::{self, LinkedCache, LinkedEvent, LinkedKey, ShapeEvent},
+    electric::{self, LinkReport, LinkedCache, LinkedEvent, LinkedKey, ShapeEvent},
     http::{Credentials, HttpError},
 };
 use zoo2_client_types::{
     api::{ChannelNotificationSettings, Me, NotificationLevel},
     ipc::{
         BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, Linked, LinkedMessage,
-        LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION,
-        SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
+        LinkedUpdate, LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget,
+        PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
     },
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
@@ -520,6 +520,9 @@ impl Core {
                         );
                     }
                     ShapeEvent::Failed(id, message) => {
+                        if let ShapeId::Messages(channel) = &id {
+                            core.reject_links(generation, channel).await;
+                        }
                         let _ = core
                             .app
                             .emit(event::SHAPE_FAILED, ShapeFailed { shape: id, message });
@@ -565,17 +568,15 @@ impl Core {
                 };
                 let now = Instant::now();
                 match wake {
-                    Wake::Event(subscription, event) => {
-                        let keys = session.links.apply(subscription, event);
-                        core.emit_links(&session.links, &keys, now);
-                    }
+                    Wake::Event(subscription, event) => session.links.apply(subscription, event),
                     Wake::Deadline => {
                         let fetcher = core.link_fetcher(session);
                         session.links.sync(now, fetcher);
-                        core.emit_links(&session.links, &session.links.visible, now);
                     }
                     Wake::Changed => {}
                 }
+                // ほかの結果と重なって過ぎた時間切れも含めて、変わった状態を送る。
+                core.emit_links(&mut session.links, now);
                 deadline = session.links.next_deadline(now);
             }
         })
@@ -604,10 +605,24 @@ impl Core {
         }
     }
 
-    fn emit_links(&self, links: &LinkedCache, keys: &[LinkedKey], now: Instant) {
-        let updates = link_updates(links, keys, now);
-        if !updates.is_empty() {
-            let _ = self.app.emit(event::LINKED, updates);
+    /// 前に送ってから変わったリンク先の状態と、暗号文の行が届いたチャンネルを画面に送る。
+    fn emit_links(&self, links: &mut LinkedCache, now: Instant) {
+        if let Some(report) = links.report(now) {
+            let _ = self.app.emit(event::LINKED, link_update(report));
+        }
+    }
+
+    /// 開いているチャンネルの同期が停止した。権限を失ったかもしれないので、リンク先として覚えた内容も
+    /// 出さない。
+    async fn reject_links(&self, generation: u64, channel_id: &str) {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation || self.ui != UiMode::Leptos {
+            return;
+        }
+        if let Some(session) = inner.session.as_mut() {
+            session.links.reject(channel_id);
+            self.emit_links(&mut session.links, Instant::now());
+            session.links_changed.notify_one();
         }
     }
 
@@ -623,7 +638,8 @@ impl Core {
         let now = Instant::now();
         let fetcher = self.link_fetcher(session);
         session.links.watch(now, keys, fetcher);
-        self.emit_links(&session.links, &session.links.visible, now);
+        session.links.report_again();
+        self.emit_links(&mut session.links, now);
         session.links_changed.notify_one();
         Ok(())
     }
@@ -706,9 +722,21 @@ impl Core {
             } else {
                 Vec::new()
             };
+            let was_synced = session.store.is_synced(&id);
             session.replica.apply(&id, &batch);
             session.store.apply(&id, batch.clone());
             if self.ui == UiMode::Leptos {
+                if let ShapeId::Messages(channel) = &id {
+                    if batch.has_ciphertext() {
+                        session.links.saw_ciphertext(channel);
+                    }
+                    // 本同期の行がそろったら、リンク先として覚えた結果は古くなるので捨てる。
+                    if !was_synced && session.store.is_synced(&id) {
+                        session.links.forget(channel);
+                    }
+                    // 暗号文のチャンネルは、行より先に画面に伝える。
+                    self.emit_links(&mut session.links, Instant::now());
+                }
                 let _ = self.app.emit(event::SHAPE, ShapeBatch { shape: id, batch });
             }
             toasts
@@ -1373,14 +1401,23 @@ impl Core {
             ShapeId::Messages(channel_id.clone()),
             session.events.clone(),
         );
+        // 本同期が同じ行を持つので、リンク先を取る購読は閉じる。
+        if self.ui == UiMode::Leptos {
+            session.links.close(&channel_id);
+            self.emit_links(&mut session.links, Instant::now());
+            session.links_changed.notify_one();
+        }
         session.messages = Some((channel_id, task));
         Ok(())
     }
 
     /// 持っている行を `reset` 付きで送り直す。WebView を読み込み直したときに呼ばれる。
     pub async fn resync(&self) -> Result<(), IpcError> {
-        let inner = self.inner.lock().await;
-        let session = inner.session.as_ref().ok_or_else(not_logged_in)?;
+        let mut inner = self.inner.lock().await;
+        let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
+        // 読み込み直した画面が行を描く前に、暗号文のチャンネルを伝える。
+        session.links.report_again();
+        self.emit_links(&mut session.links, Instant::now());
         for (shape, batch) in session.replica.snapshot() {
             let _ = self.app.emit(event::SHAPE, ShapeBatch { shape, batch });
         }
@@ -1521,19 +1558,22 @@ fn reauth_error(error: anyhow::Error) -> IpcError {
     }
 }
 
-/// 画面に送るリンク先（分かったことがあるものだけ。[`LinkedCache::known`]）。
-fn link_updates(links: &LinkedCache, keys: &[LinkedKey], now: Instant) -> Vec<Linked> {
-    links
-        .known(keys, now)
-        .into_iter()
-        .map(|((channel_id, message_id), fetch)| Linked {
-            target: LinkedMessage {
-                channel_id,
-                message_id,
-            },
-            fetch,
-        })
-        .collect()
+/// 画面に送るリンク先の状態。
+fn link_update(report: LinkReport) -> LinkedUpdate {
+    LinkedUpdate {
+        linked: report
+            .linked
+            .into_iter()
+            .map(|((channel_id, message_id), fetch)| Linked {
+                target: LinkedMessage {
+                    channel_id,
+                    message_id,
+                },
+                fetch,
+            })
+            .collect(),
+        ciphertext: report.ciphertext,
+    }
 }
 
 fn now_utc() -> DateTime {

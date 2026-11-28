@@ -346,4 +346,3 @@ button.notice { display: flex; justify-content: space-between; gap: 12px; align-
 .message.jumped { animation: jumped 2.5s ease-out; }
 @keyframes jumped { 0%, 80% { background: var(--message-target); } 100% { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .message.jumped { animation: none; background: var(--message-target); } }
-

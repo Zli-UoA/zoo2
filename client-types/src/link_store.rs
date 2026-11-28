@@ -1,7 +1,7 @@
 //! 同期した行（[`Store`]）と、別に取ったリンク先の結果から、本文のアプリ内リンクの状態を決める。
 //! 取得を別のプロセスが持つデスクトップ版の画面で使う。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ipc::LinkedMessage,
@@ -62,14 +62,33 @@ pub struct Open<'a> {
     /// 同期した行に暗号文の行があるか（[`has_ciphertext`]）。リンクごとに行を調べないよう、
     /// 呼ぶ側が行の変わったときに調べておく。
     pub has_ciphertext: bool,
+    /// 同期を待ち始めて [`links::LOAD_TIMEOUT`] がたった。
+    pub stalled: bool,
+    /// 同期が停止した。権限を失ったかもしれないので、届いていた行も出さない。
+    pub stopped: bool,
 }
 
-/// リンク先の状態。`recorded` は端末がそのチャンネルを暗号化チャンネルと記録しているかで、
-/// 記録を読めなければ `None`（平文の本文を出さない）。
+/// リンク先の送る先の行と、返信かどうか。この画面はスレッドを開けないので、返信は親の行にする。
+/// 行か、返信の親の行を表示できなければ `None`。
+pub fn anchor(store: &Store, channel_id: &str, message_id: &str) -> Option<(String, bool)> {
+    let message = store.message(channel_id, message_id)?;
+    match &message.parent_id {
+        Some(parent) => store
+            .message(channel_id, parent)
+            .filter(|parent| parent.parent_id.is_none())
+            .map(|parent| (parent.id.clone(), true)),
+        None => Some((message.id.clone(), false)),
+    }
+}
+
+/// リンク先の状態。`ciphertext` は暗号文の行が届いたことのあるチャンネル。`recorded` は端末が
+/// そのチャンネルを暗号化チャンネルと記録しているかで、記録を読めなければ `None`（平文の本文を
+/// 出さない）。
 pub fn state<'a>(
     store: &'a Store,
     fetched: &Fetched,
     open: Open<'_>,
+    ciphertext: &HashSet<String>,
     recorded: Option<bool>,
     target: &LinkTarget,
 ) -> LinkState<'a> {
@@ -80,12 +99,15 @@ pub fn state<'a>(
     let fetch = match message_id {
         // チャンネルだけのリンクは、メッセージを取らない。
         None => LinkedFetch::Missing,
+        Some(_) if open_here && open.stopped => LinkedFetch::Failed,
         Some(id) if open_here => match store.message(channel_id, id) {
             Some(message) => LinkedFetch::Found(Box::new(message.clone())),
             None if store.is_synced(&ShapeId::Messages(channel_id.to_owned())) => {
                 LinkedFetch::Missing
             }
-            None => LinkedFetch::Loading { stalled: false },
+            None => LinkedFetch::Loading {
+                stalled: open.stalled,
+            },
         },
         Some(id) => fetched
             .get(&LinkedMessage {
@@ -95,9 +117,11 @@ pub fn state<'a>(
             .cloned()
             .unwrap_or(LinkedFetch::Loading { stalled: false }),
     };
-    // 暗号文の行は、対象の行と、読み込んでいる同じチャンネルの行を見る。チャンネルだけのリンクは見ない。
+    // 暗号文の行は、対象の行と、読み込んでいる同じチャンネルの行、届いたことのあるチャンネルを
+    // 見る。チャンネルだけのリンクは見ない。
     let has_ciphertext = message_id.is_some()
         && ((open_here && open.has_ciphertext)
+            || ciphertext.contains(channel_id)
             || fetched.iter().any(|(key, fetch)| {
                 key.channel_id == channel_id
                     && matches!(fetch, LinkedFetch::Found(message) if message.ciphertext.is_some())
@@ -246,23 +270,62 @@ mod tests {
     fn the_open_channel_uses_synced_rows() {
         let store = store();
         let fetched = Fetched::new();
-        let look = |id, has_ciphertext| {
-            let open = Open {
-                channel_id: Some("here"),
-                has_ciphertext,
-            };
-            name(state(
-                &store,
-                &fetched,
-                open,
-                Some(false),
-                &target("here", Some(id)),
-            ))
+        let look = |store: &Store, id, open: Open<'_>| {
+            let target = target("here", Some(id));
+            let none = HashSet::new();
+            name(state(store, &fetched, open, &none, Some(false), &target))
+        };
+        let open = Open {
+            channel_id: Some("here"),
+            ..Default::default()
         };
         assert!(!has_ciphertext(&store, "here"));
-        assert_eq!(look("m1", false), "text");
-        assert_eq!(look("m1", true), "encrypted");
-        assert_eq!(look("gone", false), "unavailable");
+        assert_eq!(look(&store, "m1", open), "text");
+        let secret = Open {
+            has_ciphertext: true,
+            ..open
+        };
+        assert_eq!(look(&store, "m1", secret), "encrypted");
+        assert_eq!(look(&store, "gone", open), "unavailable");
+        // 同期が停止したら、届いていた行も出さない。
+        let stopped = Open {
+            stopped: true,
+            ..open
+        };
+        assert_eq!(look(&store, "m1", stopped), "failed");
+        assert_eq!(look(&store, "gone", stopped), "failed");
+        // 同期がそろわないうちは読み込み中で、時間がたったら読み込めなかったものとする。
+        let mut loading = Store::default();
+        apply(&mut loading, ShapeId::Channels, vec![channel("here")]);
+        assert_eq!(look(&loading, "m1", open), "loading");
+        let stalled = Open {
+            stalled: true,
+            ..open
+        };
+        assert_eq!(look(&loading, "m1", stalled), "failed");
+    }
+
+    #[test]
+    fn replies_anchor_to_a_parent_that_is_shown() {
+        let mut store = store();
+        apply(
+            &mut store,
+            ShapeId::Messages("here".into()),
+            vec![
+                message("r1", "here", json!({ "parent_id": "m1" })),
+                message(
+                    "gone",
+                    "here",
+                    json!({ "deleted_at": "2026-11-24 00:00:00" }),
+                ),
+                message("r2", "here", json!({ "parent_id": "gone" })),
+            ],
+        );
+        let anchor = |id| anchor(&store, "here", id);
+        assert_eq!(anchor("m1"), Some(("m1".into(), false)));
+        assert_eq!(anchor("r1"), Some(("m1".into(), true)));
+        assert_eq!(anchor("r2"), None, "削除された親へは移動しない");
+        assert_eq!(anchor("gone"), None);
     }
 
     #[test]
@@ -272,16 +335,24 @@ mod tests {
         let linked = target("there", Some("a"));
         let open = Open {
             channel_id: Some("here"),
-            has_ciphertext: false,
+            ..Default::default()
         };
-        let look =
-            |fetched: &Fetched, recorded| name(state(&store, fetched, open, recorded, &linked));
+        let none = HashSet::new();
+        let look = |fetched: &Fetched, recorded| {
+            name(state(&store, fetched, open, &none, recorded, &linked))
+        };
         assert_eq!(look(&fetched, Some(false)), "loading");
         fetched.insert(key("there", "a"), found("a", "there", json!({})));
         assert_eq!(look(&fetched, Some(false)), "text");
         // 端末の記録と、読み込んでいる同じチャンネルの暗号文の行でも、暗号化として扱う。
         assert_eq!(look(&fetched, Some(true)), "encrypted");
         assert_eq!(look(&fetched, None), "failed");
+        // 以前に暗号文の行が届いたチャンネル（読み込み直す前の取得を含む）も同じ。
+        let seen = HashSet::from(["there".to_owned()]);
+        assert_eq!(
+            name(state(&store, &fetched, open, &seen, Some(false), &linked)),
+            "encrypted"
+        );
         fetched.insert(
             key("there", "b"),
             found("b", "there", json!({ "ciphertext": "{}" })),
@@ -293,6 +364,7 @@ mod tests {
                 &store,
                 &fetched,
                 Open::default(),
+                &seen,
                 Some(false),
                 &channel_only
             )),
@@ -303,6 +375,7 @@ mod tests {
                 &store,
                 &fetched,
                 Open::default(),
+                &none,
                 Some(true),
                 &channel_only
             )),
@@ -314,6 +387,7 @@ mod tests {
                 &store,
                 &fetched,
                 Open::default(),
+                &none,
                 Some(false),
                 &hidden
             )),

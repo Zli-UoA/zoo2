@@ -15,7 +15,7 @@ use tokio::{
     time::{Instant, sleep_until, timeout},
 };
 
-use super::{Change, Row, ShapeId, ShapeStream};
+use super::{Change, Row, ShapeId, ShapeStream, has_ciphertext};
 use crate::http::{Credentials, HttpError};
 
 #[derive(Debug)]
@@ -42,11 +42,6 @@ impl LinkedEvent {
             | LinkedEvent::Failed { channel_id, .. } => channel_id,
         }
     }
-}
-
-/// 行に暗号文があるか。
-pub fn has_ciphertext(row: &Row) -> bool {
-    row.get("ciphertext").is_some_and(|value| !value.is_null())
 }
 
 /// 失敗したあと、次に試すまでの間隔。失敗のたびに倍にする。

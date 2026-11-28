@@ -126,7 +126,7 @@ pub mod event {
     pub const SESSION: &str = "zoo://session";
     /// [`super::ShapeBatch`]。(a) だけ。
     pub const SHAPE: &str = "zoo://shape";
-    /// [`super::Linked`] の配列。(a) だけ。[`super::command::WATCH_LINKS`] のリンク先で分かったこと。
+    /// [`super::LinkedUpdate`]。(a) だけ。[`super::command::WATCH_LINKS`] のリンク先で分かったこと。
     pub const LINKED: &str = "zoo://linked";
     /// [`super::ShapeFailed`]。(a) だけ。回復できない購読のエラー。
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
@@ -334,11 +334,21 @@ pub struct WatchLinks {
     pub targets: Vec<LinkedMessage>,
 }
 
-/// [`event::LINKED`] の 1 件。
+/// [`event::LINKED`] の内容。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkedUpdate {
+    /// 状態が変わったリンク先。
+    pub linked: Vec<Linked>,
+    /// 暗号文の行が届いたことのあるチャンネルのすべて。画面は覚えて、暗号化として扱う。
+    pub ciphertext: Vec<String>,
+}
+
+/// [`LinkedUpdate`] の 1 件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Linked {
     pub target: LinkedMessage,
-    pub fetch: LinkedFetch,
+    /// `None` は、分かっていたことがなくなった（捨てた）。画面も捨てる。
+    pub fetch: Option<LinkedFetch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,7 @@
 //! 表示」）。状態の判定は `client-types`、開いているチャンネル以外のリンク先の取得は Rust 側が
 //! 行う。ここは、画面の近くのリンク先を伝えて、分かったことを描き、押されたら移動する。
 
-use std::collections::BTreeSet;
+use std::{cell::Cell, collections::BTreeSet};
 
 use jiff::civil::DateTime;
 use leptos::{ev, html, prelude::*, task::spawn_local};
@@ -28,6 +28,7 @@ pub struct Jump {
 const REPLY_NOTICE: &str = "返信はスレッドの中にあります。この画面ではスレッドを開けないので、親のメッセージを表示しています。";
 const UNAVAILABLE_MESSAGE: &str = "メッセージを表示できません";
 const UNAVAILABLE_CHANNEL: &str = "チャンネルを表示できません";
+const LOAD_FAILED: &str = "リンク先を読み込めませんでした";
 /// 移動先の行を強調する長さ（`style.css` のアニメーションと同じ）。
 const HIGHLIGHT: std::time::Duration = std::time::Duration::from_millis(2500);
 
@@ -77,7 +78,7 @@ fn display(state: &LinkState<'_>, store: &Store) -> Display {
     };
     match state {
         LinkState::Loading => only(Card::Loading),
-        LinkState::Failed => only(Card::Note("リンク先を読み込めませんでした")),
+        LinkState::Failed => only(Card::Note(LOAD_FAILED)),
         // 理由は区別せず、チャンネル名と本文を出さない。
         LinkState::Unavailable { message } => only(Card::Note(if *message {
             UNAVAILABLE_MESSAGE
@@ -147,6 +148,12 @@ pub fn shown_content(message: &Message) -> Option<&str> {
     (!hides).then_some(message.content.as_str())
 }
 
+/// 本文のアプリ内リンクを扱うメッセージなら、その本文。本文の代わりに部品・App のカード・連携カードを
+/// 描く投稿の `content` のリンクは扱わない（Web と同じ）。
+pub fn link_content(message: &Message) -> Option<&str> {
+    shown_content(message).filter(|_| !links::replaces_content(message))
+}
+
 impl Ctx {
     /// 接続先の起点。同じ origin の `/channels/<ID>` を、このアプリのリンクとして扱う。
     pub fn api_base_url(&self) -> String {
@@ -162,15 +169,23 @@ impl Ctx {
         use_state: impl FnOnce(&LinkState<'_>, &Store) -> R,
     ) -> R {
         let channel = self.channel.get();
+        let stopped = channel
+            .as_ref()
+            .is_some_and(|channel| self.stopped.with(|stopped| stopped.contains(channel)));
         let open = link_store::Open {
             channel_id: channel.as_deref(),
             has_ciphertext: self.open_ciphertext.get(),
+            stalled: self.open_stalled.get(),
+            stopped,
         };
         let recorded = records::recorded(&target.channel_id);
         self.store.with(|store| {
             self.linked.with(|fetched| {
-                let state = link_store::state(store, fetched, open, recorded, target);
-                use_state(&state, store)
+                self.ciphertext.with(|ciphertext| {
+                    let state =
+                        link_store::state(store, fetched, open, ciphertext, recorded, target);
+                    use_state(&state, store)
+                })
             })
         })
     }
@@ -217,7 +232,7 @@ impl Ctx {
 
     /// 画面の近くのリンク先を Rust 側に伝える。届く順番が入れ替わらないよう、前の呼び出しが
     /// 終わってから次を送る。
-    fn watch_links(self, targets: Vec<LinkedMessage>) {
+    pub fn watch_links(self, targets: Vec<LinkedMessage>) {
         if self
             .watched
             .with_value(|watched| watched.as_ref() == Some(&targets))
@@ -391,6 +406,13 @@ fn near_messages(list: &web_sys::Element) -> BTreeSet<String> {
         .collect()
 }
 
+thread_local! {
+    /// 行を強調した回数。
+    static HIGHLIGHTS: Cell<u32> = const { Cell::new(0) };
+}
+
+const HIGHLIGHT_ATTRIBUTE: &str = "data-highlight";
+
 /// そのメッセージの行まで送り、少しのあいだ強調する。
 fn show_message(list: &web_sys::Element, message_id: &str) {
     let Some(element) = marked(list, "[data-id]")
@@ -407,9 +429,17 @@ fn show_message(list: &web_sys::Element, message_id: &str) {
     // 外してすぐ付けても最初から再生するよう、一度レイアウトを計算させる。
     element.get_bounding_client_rect();
     let _ = classes.add_1("jumped");
+    // 続けて開いたときに、前の強調の時間切れが途中で外さないよう、回ごとの番号を付ける。
+    let highlight = HIGHLIGHTS.with(|count| {
+        count.set(count.get() + 1);
+        count.get().to_string()
+    });
+    let _ = element.set_attribute(HIGHLIGHT_ATTRIBUTE, &highlight);
     set_timeout(
         move || {
-            let _ = classes.remove_1("jumped");
+            if element.get_attribute(HIGHLIGHT_ATTRIBUTE) == Some(highlight) {
+                let _ = classes.remove_1("jumped");
+            }
         },
         HIGHLIGHT,
     );
@@ -457,18 +487,18 @@ pub fn follow_timeline(
             let count = messages.with(Vec::len);
             let jump = ctx.jump.get().filter(|jump| jump.channel_id == channel_id);
             if let Some(jump) = jump {
+                // 同期が停止したら、行はそろわない。
+                if ctx.stopped.with(|stopped| stopped.contains(&channel_id)) {
+                    ctx.jump.set(None);
+                    ctx.notice.set(Some(LOAD_FAILED));
+                    measure();
+                    return count;
+                }
                 // 行がそろうまで待つ。それまでは末尾へ送らない。
                 let found = ctx.store.with(|store| {
                     store
                         .is_synced(&ShapeId::Messages(channel_id.clone()))
-                        .then(|| {
-                            store.message(&channel_id, &jump.message_id).map(|message| {
-                                match &message.parent_id {
-                                    Some(parent) => (parent.clone(), true),
-                                    None => (message.id.clone(), false),
-                                }
-                            })
-                        })
+                        .then(|| link_store::anchor(store, &channel_id, &jump.message_id))
                 });
                 if let Some(found) = found {
                     ctx.jump.set(None);
@@ -511,7 +541,7 @@ pub fn follow_timeline(
             let contents = ids
                 .iter()
                 .filter_map(|id| store.message(&channel_id, id))
-                .filter_map(shown_content);
+                .filter_map(link_content);
             link_store::wanted(store, Some(&channel_id), contents, &base)
         });
         ctx.watch_links(targets);

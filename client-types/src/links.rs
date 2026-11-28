@@ -9,6 +9,10 @@ use url::Url;
 
 use crate::rows::{Channel, Message};
 
+/// リンク先の取得（と、開いているチャンネルの同期）を始めてから、これだけたっても終わらないときは、
+/// 読み込めなかったものとする。
+pub const LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// 要約の最大文字数（Web の `messageExcerpt` と同じ）。画面側でも行数で切るので、これは保険の上限。
 pub const EXCERPT_MAX_CHARS: usize = 200;
 

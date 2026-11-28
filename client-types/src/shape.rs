@@ -19,6 +19,20 @@ pub struct Batch {
     pub up_to_date: bool,
 }
 
+impl Batch {
+    /// 暗号文のある行を含むか。
+    pub fn has_ciphertext(&self) -> bool {
+        self.changes
+            .iter()
+            .any(|change| matches!(change, Change::Upsert { row, .. } if has_ciphertext(row)))
+    }
+}
+
+/// 行に暗号文があるか。
+pub fn has_ciphertext(row: &Row) -> bool {
+    row.get("ciphertext").is_some_and(|value| !value.is_null())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Change {

@@ -3,7 +3,7 @@
 
 use std::{
     cmp::Reverse,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -13,10 +13,10 @@ use zoo2_client_types::{
     rows::{FromRow, Message},
 };
 
+pub use zoo2_client_types::links::LOAD_TIMEOUT;
+
 use super::LinkedEvent;
 
-/// 取得を始めてから、これだけたっても終わらないときは、読み込めなかったものとする。
-pub const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// 画面の近くからリンクがなくなって、これだけたったら取得と購読をやめる。
 pub const RELEASE_DELAY: Duration = Duration::from_secs(30);
 /// 取得できた結果を覚える件数。
@@ -27,6 +27,15 @@ pub const MAX_CHANNELS: usize = 8;
 
 /// リンク先のメッセージ (チャンネル ID, メッセージ ID)。
 pub type LinkedKey = (String, String);
+
+/// [`LinkedCache::report`] で返すもの。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkReport {
+    /// 状態が変わったリンク先。分かっていたことがなくなったものは `None`。
+    pub linked: Vec<(LinkedKey, Option<LinkedFetch>)>,
+    /// 暗号文の行が届いたことのあるチャンネルのすべて。
+    pub ciphertext: Vec<String>,
+}
 
 struct Fetching {
     requests: mpsc::UnboundedSender<Vec<String>>,
@@ -55,6 +64,14 @@ pub struct LinkedCache {
     generation: u64,
     /// 画面の近くに出ている、取得が要るリンク先。
     pub visible: Vec<LinkedKey>,
+    /// 暗号文の行が届いたことのあるチャンネル。行を捨てたあとも忘れない。
+    ciphertext: BTreeSet<String>,
+    /// [`Self::report`] で返した状態。
+    reported: HashMap<LinkedKey, LinkedFetch>,
+    /// 前の [`Self::report`] のあとで、[`Self::ciphertext`] が増えたか。
+    ciphertext_changed: bool,
+    /// 次の [`Self::report`] で、画面の近くのリンク先は変わっていなくても返す。
+    resend: bool,
 }
 
 impl Drop for LinkedCache {
@@ -89,14 +106,70 @@ impl LinkedCache {
             .map(|fetching| fetching.generation)
     }
 
-    /// `keys` のうち、何か分かったもの（取得できた、失敗した、時間切れ）。取得を別のプロセスの画面に
-    /// 伝えるときに使う。まだ何も分からないものを送らないので、前に分かったことを読み込み中で
-    /// 上書きしない。
-    pub fn known(&self, keys: &[LinkedKey], now: Instant) -> Vec<(LinkedKey, LinkedFetch)> {
-        keys.iter()
-            .map(|key| (key.clone(), self.fetch(key, now)))
-            .filter(|(_, fetch)| *fetch != LinkedFetch::Loading { stalled: false })
-            .collect()
+    /// このチャンネルで暗号文の行が届いたことを覚える。
+    pub fn saw_ciphertext(&mut self, channel_id: &str) {
+        if !self.ciphertext.contains(channel_id) {
+            self.ciphertext.insert(channel_id.to_owned());
+            self.ciphertext_changed = true;
+        }
+    }
+
+    /// このチャンネルで、暗号文の行が届いたことがあるか。
+    pub fn has_ciphertext(&self, channel_id: &str) -> bool {
+        self.ciphertext.contains(channel_id)
+    }
+
+    /// 前に返してから変わった、画面の近くのリンク先と返したことのあるリンク先の状態。取得を別の
+    /// プロセスの画面に伝えるときに使う。何も分かっていないリンク先は、分かっていたことがなくなった
+    /// ときだけ返すので、読み込み中は伝えない。変わったことがなければ `None`。
+    pub fn report(&mut self, now: Instant) -> Option<LinkReport> {
+        let keys: BTreeSet<LinkedKey> = self
+            .reported
+            .keys()
+            .chain(self.visible.iter())
+            .cloned()
+            .collect();
+        let again: HashSet<LinkedKey> = if std::mem::take(&mut self.resend) {
+            self.visible.iter().cloned().collect()
+        } else {
+            HashSet::new()
+        };
+        let mut linked = Vec::new();
+        for key in keys {
+            let again = again.contains(&key);
+            // 変わっていない行は、写さずに比べる。
+            if !again
+                && let (Some(Some(message)), Some(LinkedFetch::Found(sent))) =
+                    (self.results.get(&key), self.reported.get(&key))
+                && message == sent
+            {
+                continue;
+            }
+            let fetch = self.fetch(&key, now);
+            if fetch == (LinkedFetch::Loading { stalled: false }) {
+                if self.reported.remove(&key).is_some() {
+                    linked.push((key, None));
+                }
+            } else if again || self.reported.get(&key) != Some(&fetch) {
+                self.reported.insert(key.clone(), fetch.clone());
+                linked.push((key, Some(fetch)));
+            }
+        }
+        if linked.is_empty() && !self.ciphertext_changed {
+            return None;
+        }
+        self.ciphertext_changed = false;
+        Some(LinkReport {
+            linked,
+            ciphertext: self.ciphertext.iter().cloned().collect(),
+        })
+    }
+
+    /// 画面を読み込み直したかもしれないので、画面の近くのリンク先の分かっていることと、暗号文の
+    /// チャンネルを、次の [`Self::report`] でもう一度返す。
+    pub fn report_again(&mut self) {
+        self.resend = true;
+        self.ciphertext_changed = !self.ciphertext.is_empty();
     }
 
     /// 画面の近くのリンク先を入れ替えて [`Self::sync`] する。画面が変わったときだけ呼ぶ側のためのもので、
@@ -258,6 +331,13 @@ impl LinkedCache {
         }
     }
 
+    /// このチャンネルのリンク先を追うのをやめ、購読を閉じる。チャンネルを開いて、本同期が同じ行を
+    /// 持つときに使う。
+    pub fn close(&mut self, channel_id: &str) {
+        self.release(channel_id);
+        self.visible.retain(|(channel, _)| channel != channel_id);
+    }
+
     /// チャンネルの購読を閉じる。取得できた結果は残し、戻ったときに先に出す。
     pub fn release(&mut self, channel_id: &str) {
         if let Some(fetching) = self.channels.remove(channel_id) {
@@ -284,11 +364,11 @@ impl LinkedCache {
     }
 
     /// このチャンネルの取得を拒否された。権限を失ったかもしれないので、前に取得できた内容も出さず、
-    /// 取り直せるまで読み込めなかったものにする。そうしたリンク先を返す。
-    pub fn reject(&mut self, channel_id: &str) -> Vec<LinkedKey> {
-        let keys = self.forget(channel_id);
-        self.failed.extend(keys.iter().cloned());
-        keys
+    /// 取り直せるまで読み込めなかったものにする。
+    pub fn reject(&mut self, channel_id: &str) {
+        for key in self.forget(channel_id) {
+            self.failed.insert(key);
+        }
     }
 
     /// 動いている購読の数。権限の失敗などで止まった購読は、取り直さないよう残すが、数えない。
@@ -342,22 +422,24 @@ impl LinkedCache {
         });
     }
 
-    /// 番号が `generation` の購読から届いたものを反映し、状態が変わったリンク先を返す。
-    pub fn apply(&mut self, generation: u64, event: LinkedEvent) -> Vec<LinkedKey> {
-        let mut changed = Vec::new();
+    /// 番号が `generation` の購読から届いたものを反映する。
+    pub fn apply(&mut self, generation: u64, event: LinkedEvent) {
+        // 暗号文が届いたことは、購読を閉じたあとに知っても覚える。
+        if let LinkedEvent::Ciphertext { channel_id } = &event {
+            self.saw_ciphertext(channel_id);
+        }
         // 閉じた購読から遅れて届いたものは捨てる。止まった購読は残しているので、その失敗は反映する。
         if self
             .channels
             .get(event.channel_id())
             .is_none_or(|fetching| fetching.generation != generation)
         {
-            return changed;
+            return;
         }
         match event {
             LinkedEvent::Rows { channel_id, rows } => {
                 for (message_id, row) in rows {
                     let key = (channel_id.clone(), message_id);
-                    changed.push(key.clone());
                     let message = match row.as_ref().map(Message::from_row) {
                         Some(Ok(message)) => Some(Box::new(message)),
                         // 読めない行は、取得できなかったものとする。
@@ -379,24 +461,19 @@ impl LinkedCache {
                 }
                 self.evict();
             }
-            // 暗号化の扱いは、呼ぶ側がチャンネルごとに覚える。
             LinkedEvent::Ciphertext { .. } => {}
             LinkedEvent::Failed {
                 channel_id,
                 message_ids,
             } => {
-                changed = self.reject(&channel_id);
+                self.reject(&channel_id);
                 for message_id in message_ids {
                     let key = (channel_id.clone(), message_id);
                     self.started.remove(&key);
-                    self.failed.insert(key.clone());
-                    if !changed.contains(&key) {
-                        changed.push(key);
-                    }
+                    self.failed.insert(key);
                 }
             }
         }
-        changed
     }
 }
 
@@ -466,10 +543,7 @@ mod tests {
         );
         // 時間切れを知らせたあとは、同じ時刻を返し続けない。
         assert_eq!(links.next_deadline(late), None);
-        assert_eq!(
-            links.apply(generation, rows("m1", Some("本文"))),
-            [key("m1")]
-        );
+        links.apply(generation, rows("m1", Some("本文")));
         links.apply(generation, rows("m2", None));
         assert!(matches!(
             links.fetch(&key("m1"), late),
@@ -686,8 +760,26 @@ mod tests {
         ));
     }
 
+    fn changes(report: Option<LinkReport>) -> Vec<(LinkedKey, Option<&'static str>)> {
+        report
+            .map(|report| report.linked)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(key, fetch)| {
+                let name = fetch.map(|fetch| match fetch {
+                    LinkedFetch::Found(_) => "found",
+                    LinkedFetch::Missing => "missing",
+                    LinkedFetch::Failed => "failed",
+                    LinkedFetch::Loading { stalled: true } => "stalled",
+                    LinkedFetch::Loading { stalled: false } => "loading",
+                });
+                (key, name)
+            })
+            .collect()
+    }
+
     #[tokio::test]
-    async fn only_known_states_are_reported() {
+    async fn reports_every_change_of_the_states_once() {
         let mut links = LinkedCache::default();
         let start = Instant::now();
         // 受信側を持っておく（捨てると、送れずに取得の失敗になる）。
@@ -696,16 +788,103 @@ mod tests {
             receivers.push(receiver);
             idle()
         });
-        assert!(links.known(&links.visible, start).is_empty());
+        assert_eq!(links.report(start), None);
         let generation = links.generation("c1").unwrap();
         links.apply(generation, rows("m2", None));
+        // ほかの結果と重なっても、時間切れになったリンクを返す。
         assert_eq!(
-            links.known(&links.visible, start + LOAD_TIMEOUT),
-            [
-                (key("m1"), LinkedFetch::Loading { stalled: true }),
-                (key("m2"), LinkedFetch::Missing),
-            ]
+            changes(links.report(start + LOAD_TIMEOUT)),
+            [(key("m1"), Some("stalled")), (key("m2"), Some("missing")),]
         );
+        assert_eq!(links.report(start + LOAD_TIMEOUT), None);
+        links.apply(generation, rows("m1", Some("本文")));
+        assert_eq!(changes(links.report(start)), [(key("m1"), Some("found"))]);
+        // 読み込み直した画面には、画面の近くのものをもう一度返す。
+        links.report_again();
+        assert_eq!(changes(links.report(start)).len(), 2);
+        assert_eq!(links.report(start), None);
+        // 拒否されたら内容を捨て、購読を閉じたら失敗も忘れる。
+        links.apply(
+            generation,
+            LinkedEvent::Failed {
+                channel_id: "c1".into(),
+                message_ids: Vec::new(),
+            },
+        );
+        assert_eq!(
+            changes(links.report(start)),
+            [(key("m1"), Some("failed")), (key("m2"), Some("failed"))]
+        );
+        links.close("c1");
+        assert_eq!(
+            changes(links.report(start)),
+            [(key("m1"), None), (key("m2"), None)]
+        );
+        assert!(links.visible.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resending_still_reports_what_is_no_longer_known() {
+        let mut links = LinkedCache::default();
+        let start = Instant::now();
+        links.visible = (0..=MAX_CHANNELS)
+            .map(|n| (format!("c{n}"), "m".to_owned()))
+            .collect();
+        let mut receivers = Vec::new();
+        let mut spawn = |_: String, _, receiver| {
+            receivers.push(receiver);
+            idle()
+        };
+        links.sync(start, &mut spawn);
+        // 上限を超えて読み込めなかったリンク先。
+        let over = (format!("c{MAX_CHANNELS}"), "m".to_owned());
+        assert_eq!(
+            changes(links.report(start)),
+            [(over.clone(), Some("failed"))]
+        );
+        // 空きができて取得を始めたら、取り直しと重なっても、画面の失敗を取り消す。
+        links.watch(start, vec![over.clone()], &mut spawn);
+        links.report_again();
+        assert_eq!(changes(links.report(start)), [(over, None)]);
+    }
+
+    #[tokio::test]
+    async fn forgotten_results_are_reported_as_gone() {
+        let mut links = LinkedCache::default();
+        let start = Instant::now();
+        let generation = subscribe(&mut links, start, &["m1"]);
+        links.apply(generation, rows("m1", Some("本文")));
+        links.report(start);
+        // 画面から外れて、上限を超えて捨てた結果は、画面にも捨ててもらう。
+        links.watch(start, Vec::new(), |_, _, _| unreachable!());
+        for index in 0..=CACHE_SIZE {
+            links.results.insert(key(&format!("n{index}")), None);
+            links.order.push_back(key(&format!("n{index}")));
+        }
+        links.sync(start + RELEASE_DELAY, |_, _, _| unreachable!());
+        assert_eq!(changes(links.report(start)), [(key("m1"), None)]);
+    }
+
+    #[test]
+    fn ciphertext_is_remembered_and_reported() {
+        let mut links = LinkedCache::default();
+        let now = Instant::now();
+        // 閉じた購読から届いた知らせも覚える。
+        links.apply(
+            7,
+            LinkedEvent::Ciphertext {
+                channel_id: "c1".into(),
+            },
+        );
+        assert!(links.has_ciphertext("c1"));
+        links.saw_ciphertext("c2");
+        let report = links.report(now).unwrap();
+        assert_eq!(report.ciphertext, ["c1", "c2"]);
+        assert!(report.linked.is_empty());
+        links.saw_ciphertext("c1");
+        assert_eq!(links.report(now), None);
+        links.report_again();
+        assert_eq!(links.report(now).unwrap().ciphertext, ["c1", "c2"]);
     }
 
     #[tokio::test]
