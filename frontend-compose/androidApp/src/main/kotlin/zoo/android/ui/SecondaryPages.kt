@@ -113,16 +113,6 @@ internal fun NewPostPage(
 ) {
     val input = screen.input
     var describing by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
-    screen.attached.firstOrNull { it.id == describing }?.let { item ->
-        androidx.compose.material3.AlertDialog(onDismissRequest = { describing = null },
-            title = { Text("画像の説明") },
-            text = {
-                ChannelField(item.label, item.description, colors, singleLine = false) { text ->
-                    if (text.codePointCount(0, text.length) <= 1000) dispatch(AndroidUiAction.DescribePhoto(item.id, text))
-                }
-            },
-            confirmButton = { TextAction("完了", colors) { describing = null } })
-    }
     PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
         screen.visibility?.let { PostAudienceButton(it, colors, dispatch) }
         screen.federate?.let { enabled ->
@@ -186,6 +176,17 @@ internal fun NewPostPage(
                     if (item.failed) TextAction("再試行", colors, icon = UiIcon.Refresh) { dispatch(AndroidUiAction.RetryFile(item.id)) }
                     TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
                 }
+            }
+        }
+        screen.attached.firstOrNull { it.id == describing }?.let { item ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    ChannelField("画像の説明 · ${item.label}", item.description, colors, singleLine = false) { text ->
+                        if (text.codePointCount(0, text.length) <= 1000) dispatch(AndroidUiAction.DescribePhoto(item.id, text))
+                    }
+                }
+                TextAction("完了", colors, style = TextActionStyle.Plain) { describing = null }
             }
         }
         Row(

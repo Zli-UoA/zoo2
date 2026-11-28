@@ -985,11 +985,13 @@ class AndroidSamplesTest {
                 }, language = "ja") { _, _ -> }
         }
         ui.onNodeWithText("説明").performClick()
-        ui.onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextInput("北口から受付までの地図")
+        ui.onAllNodes(hasSetTextAction()).onLast().performSemanticsAction(
+            androidx.compose.ui.semantics.SemanticsActions.SetText
+        ) { set -> check(set(androidx.compose.ui.text.AnnotatedString("北口から受付までの地図"))) }
         for (night in listOf(false, true)) {
             ui.runOnIdle { dark = night }
             ui.onNodeWithText("北口から受付までの地図").assertIsDisplayed()
-            capture("image-description-" + if (night) "dark" else "light", withSheet = true)
+            capture("image-description-" + if (night) "dark" else "light")
         }
         ui.onNodeWithText("完了").performClick()
         ui.onNodeWithText("説明").performClick()
