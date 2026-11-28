@@ -203,7 +203,6 @@ describe("ReactionPicker", () => {
     expect(selected).toEqual(["😀"]);
     expect(openChanges).toEqual([false]);
     expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual(["😀"]);
-    // ピッカー側には「最近」を出さない。
   });
 
   it("keeps Emoji Kitchen working and selects a combination", async () => {
