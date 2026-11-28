@@ -1020,7 +1020,11 @@ internal class ConnectedScreenState(
         else app.t("androidNavigationCache.entries", "count" to limit.toString())
 
     private fun attachmentCacheSizeLabel(sizeMiB: Int) =
-        if (sizeMiB == 0) app.t("androidNavigationCache.off") else "$sizeMiB MiB"
+        when {
+            sizeMiB == 0 -> app.t("androidNavigationCache.off")
+            sizeMiB >= 1024 -> "${sizeMiB / 1024} GiB"
+            else -> "$sizeMiB MiB"
+        }
 
     fun settingsDetail(env: Environment): AndroidScreen {
         val (title, entries) = when (overlay) {

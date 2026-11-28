@@ -1837,7 +1837,7 @@
   },
   "androidAttachmentCache": {
     "title": "Attachment image cache",
-    "description": "Stores attachment images for this account on this device. When the limit is reached, the least recently used images are removed."
+    "description": "Stores this account’s signed attachment images on this device. Lowering the limit removes the least recently used images first. Turning it off clears saved images. Public images use a separate cache."
   },
   "androidNavigationCache": {
     "title": "Navigation cache",

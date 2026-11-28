@@ -224,6 +224,7 @@ class AndroidImageCacheTest {
                 assertEquals("image", cache.cachedAttachmentPreview("id:original")?.decodeToString())
                 time += TimeUnit.DAYS.toMillis(7)
                 assertEquals("image", cache.cachedAttachmentPreview("id:thumbnail")?.decodeToString())
+                assertNull(cache.cachedAttachmentPreview("id:thumbnail", allowStale = false))
                 assertNull(cache.cachedAttachmentPreview("id:original"))
                 cache.removeAttachmentImages("id")
                 time = 1_000L
@@ -231,6 +232,25 @@ class AndroidImageCacheTest {
                 assertNull(cache.cachedAttachmentPreview("id:original"))
             }
             assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun honorsAnExplicitStalePreviewWindowAcrossRestarts() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60, stale-while-revalidate=30")
+                .setBody("image"))
+            f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("image", cache.cachedAttachmentPreview(key, allowStale = false)?.decodeToString())
+                time += 89_999
+                assertNull(cache.cachedAttachmentPreview(key, allowStale = false))
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                time++
+                assertNull(cache.cachedAttachmentPreview(key))
+            }
+            assertEquals(1, f.server.requestCount)
         }
     }
 

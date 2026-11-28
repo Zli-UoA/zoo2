@@ -1837,7 +1837,7 @@
   },
   "androidAttachmentCache": {
     "title": "附件圖片快取",
-    "description": "將呢個帳戶嘅附件圖片儲存喺呢部裝置。到咗上限，就由最耐冇用嘅圖片開始刪除。"
+    "description": "將呢個帳戶用簽署連結嘅附件圖片儲存喺部裝置。調低上限會先刪除最耐冇用嘅圖片。關閉會清除已儲存嘅圖片。公開圖片用另一個快取。"
   },
   "androidNavigationCache": {
     "title": "頁面切換快取",

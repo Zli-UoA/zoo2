@@ -56,8 +56,8 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
-    suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
-        attachments.read(cacheKey, previewAt = now())?.bytes
+    suspend fun cachedAttachmentPreview(cacheKey: String, allowStale: Boolean = true): ByteArray? = withContext(Dispatchers.IO) {
+        attachments.read(cacheKey, previewAt = now(), allowStale = allowStale)?.bytes
     }
 
     suspend fun resizeAttachmentCache(bytes: Long) = withContext(Dispatchers.IO) {
@@ -98,7 +98,7 @@ internal class AndroidImageCache(
                 }
                 if (retry) attachments.remove(cacheKey, token)
                 // Legacy entries require a full response once to learn whether stale previews are permitted.
-                val conditional = matching?.takeIf { it.freshness.canPreviewStale != null }
+                val conditional = matching?.takeIf { it.freshness.stalePreviewMillis != null }
                 val image = try {
                     loadPublicImage(http, url, noStore = true, conditional = conditional) { response, bytes, redirects ->
                         val receivedAt = now()
@@ -121,7 +121,7 @@ internal class AndroidImageCache(
                         } else null
                         attachments.write(cacheKey, token, AttachmentImageDiskCache.Entry(
                             "$resourceHash:$urlHash", minOf(expiresAt, redirectDeadlines.filterNotNull().minOrNull() ?: expiresAt),
-                            etag, freshness.copy(canPreviewStale = freshness.canPreviewStale == true && redirects.isEmpty()), bytes,
+                            etag, if (redirects.isEmpty()) freshness else freshness.copy(stalePreviewMillis = 0L), bytes,
                         ))
                     }
                 } catch (failure: ImageHttpFailure) {
@@ -153,11 +153,21 @@ internal class AndroidImageCache(
         val expiresAt = if (expiresHeader == null) previous?.httpExpiresAt else httpDate(expiresHeader)
         if (expiresHeader != null && expiresAt == null && maxAge == null) return null
         val freshness = maxAge ?: 0L.takeIf { policy.mustRevalidate && expiresAt == null }
-        val canPreviewStale = if (headers[HttpHeaders.CacheControl] == null && previous != null) {
-            previous.canPreviewStale
-        } else !policy.mustRevalidate
-        return Freshness(freshness, expiresAt, canPreviewStale)
+        val staleMillis = when {
+            policy.mustRevalidate -> 0L
+            headers[HttpHeaders.CacheControl] == null && previous != null -> previous.stalePreviewMillis
+            else -> stalePreviewMillis(headers.getAll(HttpHeaders.CacheControl).orEmpty())
+        }
+        return Freshness(freshness, expiresAt, staleMillis)
     }
+
+    private fun stalePreviewMillis(headers: List<String>): Long =
+        headers.flatMap { it.split(',') }.map(String::trim)
+            .filter { it.substringBefore('=').trim().equals("stale-while-revalidate", ignoreCase = true) }
+            .minOfOrNull { directive ->
+                directive.substringAfter('=', "").trim().trim('"').toLongOrNull()
+                    ?.coerceIn(0L, Int.MAX_VALUE.toLong())?.times(1000L) ?: 0L
+            } ?: Long.MAX_VALUE
 
     private fun httpDate(value: String): Long? =
         runCatching { value.fromHttpToGmtDate().timestamp }.getOrNull()

@@ -117,7 +117,7 @@ class ImageDecodingTest {
             override fun translate(key: String, args: Map<String, String>) = key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
-            override suspend fun cachedAttachmentPreview(cacheKey: String) = byteArrayOf(1)
+            override suspend fun cachedAttachmentPreview(cacheKey: String, allowStale: Boolean) = byteArrayOf(1)
             override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) = byteArrayOf(2)
             override suspend fun removeAttachmentImages(id: String) { evicted.complete(id) }
             override fun imageFrames(bytes: ByteArray) = flow { emit(bitmap) }
@@ -183,7 +183,7 @@ class ImageDecodingTest {
             override fun translate(key: String, args: Map<String, String>) = key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
-            override suspend fun cachedAttachmentPreview(cacheKey: String) = byteArrayOf(9)
+            override suspend fun cachedAttachmentPreview(cacheKey: String, allowStale: Boolean) = byteArrayOf(9)
             override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) =
                 byteArrayOf((++downloads).toByte())
             override fun imageFrames(bytes: ByteArray) = flow {
