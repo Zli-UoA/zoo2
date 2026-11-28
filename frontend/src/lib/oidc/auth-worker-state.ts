@@ -37,7 +37,8 @@ export interface AuthWorkerEnvironment {
   now(): number;
 }
 
-export const AUTH_WORKER_IDLE_MS = 24 * 60 * 60 * 1000;
+// AuthZの更新トークンの発行上限に合わせて、端末内の資格情報を掃除する。
+export const AUTH_WORKER_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 /** 全タブの更新を1つの所有先へ集約し、最新の結果を共有する。 */

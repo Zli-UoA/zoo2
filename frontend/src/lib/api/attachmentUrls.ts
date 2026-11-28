@@ -8,7 +8,7 @@ import type { AttachmentUrlResponse } from "./types";
  * `scope`（接続の設定）ごとに分け、同じ添付の URL の取得を 1 回にまとめる（docs/request-design.md）。
  * 平文の添付（`useAttachmentUrl`）と暗号化した添付（#364）で共有する。
  */
-export type AttachmentUrlEntry = { url: string; expiresAt: number };
+export type AttachmentUrlEntry = { url: string; thumbnailUrl?: string; expiresAt: number };
 
 const urlCaches = new WeakMap<object, Map<string, AttachmentUrlEntry>>();
 const urlRequests = new WeakMap<object, Map<string, Promise<AttachmentUrlEntry>>>();
@@ -46,6 +46,7 @@ export function requestAttachmentUrl(
       .then(({ data }) => {
         const value = {
           url: data.download_url,
+          thumbnailUrl: data.thumbnail_url,
           expiresAt: attachmentUrlExpiresAt(data.download_url),
         };
         scoped(urlCaches, scope).set(attachmentId, value);

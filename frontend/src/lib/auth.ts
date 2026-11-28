@@ -15,15 +15,44 @@ let unauthorizedHandler: UnauthorizedHandler | null = null;
 let authorizedHandler: AuthorizedHandler | null = null;
 let authSessionGeneration = 0;
 let authRequestGeneration = 0;
+let tokenProviderGeneration = 0;
 const authSessionEndListeners = new Set<AuthSessionEndListener>();
 
 export function getAuthSessionGeneration(): number {
   return authSessionGeneration;
 }
 
+export function getTokenProviderGeneration(): number {
+  return tokenProviderGeneration;
+}
+
 /** Requests started before a login/reauthorization operation must not affect it later. */
 export function getAuthRequestGeneration(): number {
   return authRequestGeneration;
+}
+
+/** 既存のカウンタをまとめた認証世代のスナップショット。新しい認証状態は持たない。 */
+export interface AuthGenerations {
+  authSessionGeneration: number;
+  authRequestGeneration: number;
+  tokenProviderGeneration: number;
+}
+
+/** 現在の認証世代。リトライ開始前に取り、待機後の変化を判定する。 */
+export function currentAuthGenerations(): AuthGenerations {
+  return {
+    authSessionGeneration: getAuthSessionGeneration(),
+    authRequestGeneration: getAuthRequestGeneration(),
+    tokenProviderGeneration: getTokenProviderGeneration(),
+  };
+}
+
+export function authGenerationsChanged(before: AuthGenerations, after: AuthGenerations): boolean {
+  return (
+    before.authSessionGeneration !== after.authSessionGeneration ||
+    before.authRequestGeneration !== after.authRequestGeneration ||
+    before.tokenProviderGeneration !== after.tokenProviderGeneration
+  );
 }
 
 export function subscribeAuthSessionEnded(listener: AuthSessionEndListener): () => void {
@@ -67,10 +96,12 @@ function notifyAuthSessionListeners(event: AuthSessionLifecycleEvent): boolean {
 }
 
 export function setTokenProvider(provider: TokenProvider): void {
+  tokenProviderGeneration += 1;
   tokenProvider = provider;
 }
 
 export function resetTokenProvider(): void {
+  tokenProviderGeneration += 1;
   tokenProvider = () => null;
 }
 

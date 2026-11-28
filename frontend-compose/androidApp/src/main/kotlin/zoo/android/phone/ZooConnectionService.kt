@@ -16,7 +16,7 @@ class ZooConnectionService : ConnectionService() {
         val extras = request.extras ?: Bundle.EMPTY
         val nested = extras.getBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS) ?: extras
         if (host == null || !host.matches(nested.getString(PHONE_SESSION), nested.getString(PHONE_CALL))) return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
-        return host.connection(incoming)
+        return host.connection(incoming, request.address)
     }
     override fun onCreateOutgoingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) { failed(request) }
     override fun onCreateIncomingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) { failed(request) }
@@ -42,7 +42,8 @@ internal class ZooConnection(private val actions: ConnectionActions, val id: Str
         connectionProperties = PROPERTY_SELF_MANAGED
         connectionCapabilities = CAPABILITY_MUTE
         audioModeIsVoip = true
-        if (incoming) setRinging() else { setDialing(); setRingbackRequested(true) }
+        // Telecom does not own the ringback audio of a self-managed call.
+        if (incoming) setRinging() else setDialing()
     }
     override fun onAnswer() { if (actions.valid(id)) actions.answer(id) }
     override fun onAnswer(videoState: Int) = onAnswer()

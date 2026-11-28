@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -14,8 +15,9 @@ use zoo2_client_core::poll::PollGate;
 use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
+use super::global_search::{self, GlobalSearch};
 use crate::{
-    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
+    api::{ApiClient, Me, NotificationLevel, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
         send::{self, ChannelSender, SendContext},
         store::{Decryption, EncryptedRow, RecipientSummary},
@@ -79,6 +81,16 @@ pub enum AppEvent {
         to: String,
     },
     ThreadLeft(String),
+    /// 全文検索の 1 ページ（`generation` が今のものと違えば捨てる）。
+    SearchResults {
+        generation: u64,
+        append: bool,
+        page: crate::api::SearchPage,
+    },
+    SearchFailed {
+        generation: u64,
+        message: String,
+    },
     ReadStatesPollFinished,
     EmojiPollFinished,
     TypingPollFinished,
@@ -91,6 +103,10 @@ pub enum AppEvent {
     },
     /// 暗号化の画面の裏の処理の結果（#360）。
     Encryption(super::encryption::EncryptionEvent),
+    /// 端末と検証の画面の裏の処理の結果（#362）。
+    Devices(super::devices::DevicesEvent),
+    /// 他のユーザーの検証の知らせ（#368）。
+    Verification(crate::e2ee::verification::VerificationEvent),
     /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
     /// 受信用セッションの数え（#361）。
     Decrypted {
@@ -125,6 +141,15 @@ pub enum AppEvent {
         requested_encryption: bool,
         encrypted: bool,
     },
+    /// 通知レベルの変更が終わった。失敗したときは、最後に確定した値まで戻す。
+    NotificationLevelFinished {
+        channel_id: String,
+        /// 送信した値。
+        level: NotificationLevel,
+        /// 開始時に振った操作 ID。最新の操作だけが保留や選択値を戻す。
+        op_id: u64,
+        succeeded: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +167,8 @@ pub enum SidebarItem {
     Thread {
         channel_id: String,
         id: String,
+        /// ピン留めの行の下に出すスレッドか。通常の一覧にも同じスレッドが出るので、選択位置を区別する。
+        pinned: bool,
     },
     MoreThreads {
         archived: bool,
@@ -164,9 +191,13 @@ pub enum Mode {
     },
     /// チャンネル名で絞り込む。
     Search(String),
+    /// 全文検索（状態は `App::global_search`）。
+    GlobalSearch,
     Help,
     /// 暗号化の画面（初回設定と解錠。#360）。
     Encryption,
+    /// 端末と検証の画面（端末一覧と失効、他のユーザーの検証、鍵スロット。#362）。
+    Devices,
     /// チャンネルか DM を作る（#361）。
     Create(CreateForm),
     /// 暗号化チャンネルの配布先の詳細（#361）。`scroll` 行目から出す。
@@ -237,6 +268,8 @@ pub struct App {
     /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
     pub inner_scroll: usize,
     pub thread: Option<ThreadView>,
+    /// 全文検索の語と結果。閉じても残し、開き直したときに続きから使う。
+    pub global_search: GlobalSearch,
     /// 直近の描画でタイムラインに出ていた最も新しいメッセージ (チャンネル, メッセージ)。
     /// 既読はここまでしか進めない。
     pub newest_shown: Option<(String, String)>,
@@ -253,6 +286,21 @@ pub struct App {
     pub unread: HashSet<String>,
     /// ピン留めの並びの版。書き込みのたびに更新し、409 のときは取り直す。
     pub pin_version: i64,
+    /// チャンネルごとに送信中の通知レベル。別チャンネルの操作では消さない。
+    notification_level_pending: HashMap<String, NotificationLevel>,
+    /// チャンネルごとの未完了の PATCH の数。0 になってはじめて Shape を正本に戻せる。
+    notification_level_in_flight: HashMap<String, usize>,
+    /// チャンネルごとに最後に選んだ通知レベル。Shape が古くてもこの値から次を計算する。
+    notification_level_selected: HashMap<String, NotificationLevel>,
+    /// チャンネルごとに最後に確定した通知レベル（成功した値、初期値は Store の値）。
+    /// 連続で失敗しても未保存の値を戻り先にしないため、ここを正本にする。
+    notification_level_confirmed: HashMap<String, NotificationLevel>,
+    /// 同じチャンネルへの PATCH を入力順に直列化するロック。別チャンネルは互いにブロックしない。
+    notification_level_locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// 通知レベルの操作に振る ID。同じ値を連続で送っても完了を区別できる。
+    notification_level_next_op_id: u64,
+    /// チャンネルごとの最新の操作 ID。古い操作の完了で状態を戻さないための照合に使う。
+    notification_level_latest_op: HashMap<String, u64>,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
     marked_read: HashMap<String, String>,
     /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
@@ -268,6 +316,10 @@ pub struct App {
     typing_poll: PollGate,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
+    /// 端末と検証の画面と、その裏の処理（#362、#368）。
+    pub devices: super::devices::Devices,
+    /// 検証の期限切れと送り直しを最後に確かめた時刻。
+    verification_tick: Option<Instant>,
     /// 暗号化したメッセージの復号の結果（#361）。
     pub decryptions: Decryptions,
     /// 暗号化チャンネルごとの、最後に判定した配布先（送信画面に出す。#361）。
@@ -303,8 +355,11 @@ impl App {
         crate::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
         let encryption =
             super::encryption::Encryption::new(api.clone(), http.clone(), app_tx.clone());
+        let devices = super::devices::Devices::new(api.clone(), http.clone(), app_tx.clone());
         let mut app = Self {
             encryption,
+            devices,
+            verification_tick: None,
             api,
             http,
             api_base_url,
@@ -329,6 +384,7 @@ impl App {
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
             thread_failed_append: [None, None],
+            global_search: GlobalSearch::default(),
             current: None,
             selected: None,
             scroll: 0,
@@ -343,6 +399,13 @@ impl App {
             should_quit: false,
             unread: HashSet::new(),
             pin_version: 0,
+            notification_level_pending: HashMap::new(),
+            notification_level_in_flight: HashMap::new(),
+            notification_level_selected: HashMap::new(),
+            notification_level_confirmed: HashMap::new(),
+            notification_level_locks: HashMap::new(),
+            notification_level_next_op_id: 0,
+            notification_level_latest_op: HashMap::new(),
             marked_read: HashMap::new(),
             typing: HashMap::new(),
             typing_session: uuid::Uuid::new_v4().to_string(),
@@ -368,6 +431,7 @@ impl App {
             ShapeId::Channels,
             ShapeId::Users,
             ShapeId::ChannelUsers,
+            ShapeId::ChannelNotificationSettings,
             ShapeId::UserPinnedChannels,
         ] {
             app.subscribe(id);
@@ -485,7 +549,21 @@ impl App {
         match event {
             ShapeEvent::Batch(id, batch) => {
                 let is_channels = matches!(id, ShapeId::Channels);
+                let is_notification_settings = matches!(id, ShapeId::ChannelNotificationSettings);
                 self.store.apply(&id, batch);
+                if is_notification_settings {
+                    // 未完了の PATCH がある間は Store が一致しても選択値を消さない。
+                    // 連打で選んだ値が Store の古い値に戻ると、一致を理由に解除され、
+                    // あとから反映された値を基準に次の値を送ってしまうため。
+                    let store = &self.store;
+                    let me_id = &self.me.id;
+                    let in_flight = &self.notification_level_in_flight;
+                    self.notification_level_selected
+                        .retain(|channel_id, level| {
+                            in_flight.contains_key(channel_id)
+                                || store.notification_level(channel_id, me_id) != *level
+                        });
+                }
                 if is_channels {
                     for channel in self.store.channels() {
                         if channel.encrypted
@@ -580,6 +658,8 @@ impl App {
                 self.store.account_profiles = profiles;
             }
             AppEvent::Encryption(event) => self.encryption.on_event(event),
+            AppEvent::Devices(event) => self.devices.on_event(event),
+            AppEvent::Verification(event) => self.on_verification(event),
             AppEvent::Decrypted {
                 channel_id,
                 results,
@@ -678,6 +758,7 @@ impl App {
                     selected = Some(SidebarItem::Thread {
                         channel_id: first.channel_id.clone(),
                         id: first.id.clone(),
+                        pinned: false,
                     });
                 }
                 self.thread_has_additional_pages[scope] = append || threads.len() > 100;
@@ -743,13 +824,28 @@ impl App {
                     "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
                 ));
             }
+            AppEvent::SearchResults {
+                generation,
+                append,
+                page,
+            } => self.global_search.apply(generation, append, page),
+            AppEvent::SearchFailed {
+                generation,
+                message,
+            } => self.global_search.fail(generation, message),
             AppEvent::ThreadLeft(id) => {
+                // 退出の応答を待つあいだにカーソルを動かしていても、同じ行に残す（行が消えて添字がずれるため）。
+                let selected = self.selected_sidebar_item();
                 self.active_threads.retain(|thread| thread.id != id);
                 self.archived_threads.retain(|thread| thread.id != id);
+                self.restore_sidebar_selection(selected);
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
             }
             AppEvent::ThreadRedirected { from, to } => {
+                // 一覧にない `from` の一時の行が消える（`to` が一覧にあれば、その行が代わりになる）と、
+                // 添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
                     thread.root_id = to.clone();
                     thread.selected = None;
@@ -759,8 +855,11 @@ impl App {
                 if self.target == Target::Reply(from) {
                     self.target = Target::Reply(to);
                 }
+                self.restore_sidebar_selection(selected);
             }
             AppEvent::ThreadsChanged { reopened } => {
+                // 再Openしたスレッドの行が増えて添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
                         id.clone(),
@@ -772,12 +871,61 @@ impl App {
                         .insert(id.clone(), (false, Instant::now()));
                     self.ensure_active_thread(&id);
                 }
+                self.restore_sidebar_selection(selected);
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
             }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 crate::mfm::set_emoji_catalog(shortcodes, custom)
+            }
+            AppEvent::NotificationLevelFinished {
+                channel_id,
+                level,
+                op_id,
+                succeeded,
+            } => {
+                // 未完了件数はすべての完了で減らす。最新でない操作の完了でも数を合わせないと、
+                // 最後の PATCH が終わっても Shape を正本に戻せなくなる。
+                if let Some(count) = self.notification_level_in_flight.get_mut(&channel_id) {
+                    if *count <= 1 {
+                        self.notification_level_in_flight.remove(&channel_id);
+                    } else {
+                        *count -= 1;
+                    }
+                }
+                // 値だけで照合すると、同じ値を連続で送ったときに古い操作の完了が
+                // 最新の操作の保留や選択値を消してしまう。ID が最新のときだけ状態を戻す。
+                let is_latest =
+                    self.notification_level_latest_op.get(&channel_id).copied() == Some(op_id);
+                if is_latest && self.notification_level_pending.get(&channel_id) == Some(&level) {
+                    self.notification_level_pending.remove(&channel_id);
+                }
+                if succeeded {
+                    // 成功した値だけがサーバーに保存された。Shape が遅れていても失敗時の戻り先はこれ。
+                    self.notification_level_confirmed
+                        .insert(channel_id.clone(), level);
+                } else if is_latest
+                    && self.notification_level_selected.get(&channel_id) == Some(&level)
+                {
+                    // 失敗した値のあとに別の操作がなければ、最後に確定した値へ戻す。
+                    // 途中の未保存の値を戻すと、連続失敗のあと実際の設定からずれてしまう。
+                    let confirmed = self
+                        .notification_level_confirmed
+                        .get(&channel_id)
+                        .copied()
+                        .unwrap_or_else(|| self.store.notification_level(&channel_id, &self.me.id));
+                    self.notification_level_selected
+                        .insert(channel_id.clone(), confirmed);
+                }
+                // すべての PATCH が終わったら、Store と一致する選択値を解除する。
+                // Shape が先に届いて解除できなかった場合でもここで正本に戻せる。
+                if !self.notification_level_in_flight.contains_key(&channel_id)
+                    && self.notification_level_selected.get(&channel_id)
+                        == Some(&self.store.notification_level(&channel_id, &self.me.id))
+                {
+                    self.notification_level_selected.remove(&channel_id);
+                }
             }
             AppEvent::Notice(message) => self.notify(message),
             AppEvent::RestoreDraft {
@@ -851,11 +999,65 @@ impl App {
                 Err(_) => self.known_encrypted_unreadable = true,
             }
         }
+        let mut context = context;
+        if let Some(events) = context.events.take() {
+            self.devices.attach(
+                context.oidc.clone(),
+                context.stores.clone(),
+                Some(events.device_limit),
+            );
+            // 端末の管理のタスクが受け取った検証のメッセージを、検証の処理に渡す。
+            if let Some(sas) = self.devices.sas.clone() {
+                let mut verifications = events.verifications;
+                tokio::spawn(async move {
+                    while let Some(messages) = verifications.recv().await {
+                        sas.handle_messages(messages);
+                    }
+                });
+            }
+        } else {
+            self.devices
+                .attach(context.oidc.clone(), context.stores.clone(), None);
+        }
         self.encryption.attach(context);
+    }
+
+    /// 他のユーザーの検証の知らせ。届いた要求は前面に出す。入力の途中などでは、キー操作を奪わないよう、
+    /// ステータス行で知らせて `D` で開いてもらう。
+    fn on_verification(&mut self, event: crate::e2ee::verification::VerificationEvent) {
+        let fresh = self.devices.on_verification(event);
+        if fresh && !matches!(self.mode, Mode::Normal | Mode::Devices) {
+            self.devices.sas_open = None;
+            self.notify("検証の要求が届いています（D で開く）");
+        }
+    }
+
+    /// 暗号化チャンネル（削除されていないもの）を共有する相手（Web の `useEncryptedPeers`）。
+    pub fn encrypted_peers(&self) -> Vec<String> {
+        let me = self.me.id.as_str();
+        let mut peers: Vec<String> = self
+            .store
+            .channels()
+            .into_iter()
+            .filter(|channel| channel.encrypted && self.store.is_member(&channel.id, me))
+            .flat_map(|channel| self.store.channel_members(&channel.id))
+            .map(|user| user.id.clone())
+            .filter(|id| id != me)
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
     }
 
     pub fn on_tick(&mut self) {
         self.encryption.on_tick(self.mode == Mode::Encryption);
+        if self
+            .verification_tick
+            .is_none_or(|at| at.elapsed() >= crate::e2ee::verification::TICK_INTERVAL)
+        {
+            self.verification_tick = Some(Instant::now());
+            self.devices.on_tick();
+        }
         self.sync_known_encrypted();
         self.request_decryptions();
         if self.terminal_active {
@@ -1075,45 +1277,65 @@ impl App {
         !archived
     }
 
+    /// チャンネルの下に出すスレッドの行。通常の一覧とピン留めで、同じスレッドを同じ並びで出す。
+    /// 参加していないチャンネルは、閲覧中の1件だけを出す。
+    fn thread_rows(&self, channel_id: &str, pinned: bool) -> Vec<SidebarItem> {
+        let joined = self
+            .store
+            .channel(channel_id)
+            .is_some_and(|channel| !channel.is_dm)
+            && self.store.is_member(channel_id, &self.me.id);
+        let row = |id: &str| SidebarItem::Thread {
+            channel_id: channel_id.to_owned(),
+            id: id.to_owned(),
+            pinned,
+        };
+        let mut rows: Vec<SidebarItem> = self
+            .threads()
+            .filter(|thread| {
+                joined
+                    && thread.channel_id == channel_id
+                    && !self.thread_is_archived(channel_id, &thread.id)
+            })
+            .map(|thread| row(&thread.id))
+            .collect();
+        if self.current.as_deref() == Some(channel_id)
+            && let Some(thread) = &self.thread
+        {
+            let selected = row(&thread.root_id);
+            if !rows.contains(&selected)
+                && self.store.message(channel_id, &thread.root_id).is_some()
+                && !self.thread_is_archived(channel_id, &thread.root_id)
+                && !self.store.replies(channel_id, &thread.root_id).is_empty()
+            {
+                rows.push(selected);
+            }
+        }
+        rows
+    }
+
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
         // ピン留めは先頭に出す。アーカイブ中は通常の一覧だけに残す（アンアーカイブで戻る）。
+        // 通常のチャンネルには、通常の一覧と同じスレッドを下に出す（DM には出さない）。
         for pin in self.store.pinned_channels() {
             let visible = self.store.channel(&pin.channel_id).is_some_and(|channel| {
                 channel.deleted_at.is_none() && channel.archive_at.is_none()
             });
             if visible {
                 items.push(SidebarItem::Pinned(pin.channel_id.clone()));
+                let is_dm = self
+                    .store
+                    .channel(&pin.channel_id)
+                    .is_some_and(|channel| channel.is_dm);
+                if !is_dm {
+                    items.extend(self.thread_rows(&pin.channel_id, true));
+                }
             }
         }
         for channel in self.store.channels() {
             items.push(SidebarItem::Channel(channel.id.clone()));
-            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
-            for thread in self.threads().filter(|thread| {
-                joined
-                    && thread.channel_id == channel.id
-                    && !self.thread_is_archived(&channel.id, &thread.id)
-            }) {
-                items.push(SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.id.clone(),
-                });
-            }
-            if self.current.as_deref() == Some(channel.id.as_str())
-                && let Some(thread) = &self.thread
-            {
-                let selected = SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.root_id.clone(),
-                };
-                if !items.contains(&selected)
-                    && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && !self.thread_is_archived(&channel.id, &thread.root_id)
-                    && !self.store.replies(&channel.id, &thread.root_id).is_empty()
-                {
-                    items.push(selected);
-                }
-            }
+            items.extend(self.thread_rows(&channel.id, false));
         }
         for archived in [false, true] {
             if !archived
@@ -1124,6 +1346,11 @@ impl App {
             }
         }
         items
+    }
+
+    /// カーソルがある行。一時のスレッドの行が増減する操作の前に控えて、あとで `restore_sidebar_selection` に渡す。
+    fn selected_sidebar_item(&self) -> Option<SidebarItem> {
+        self.sidebar_items().get(self.sidebar_index).cloned()
     }
 
     fn restore_sidebar_selection(&mut self, selected: Option<SidebarItem>) {
@@ -1300,6 +1527,12 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // 前面に出した他のユーザーの検証は、ほかの画面より先にキーを受け取る。
+        if matches!(self.mode, Mode::Normal | Mode::Devices) && self.devices.has_open_verification()
+        {
+            self.devices.on_verification_key(key);
+            return;
+        }
         match self.mode.clone() {
             Mode::Normal => self.on_normal_key(key),
             Mode::Insert => self.on_insert_key(key),
@@ -1326,11 +1559,21 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Mode::Search(query) => self.on_search_key(key, query),
+            Mode::GlobalSearch => self.on_global_search_key(key),
             Mode::React { message_id, input } => self.on_react_key(key, message_id, input),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Encryption => {
                 let user_id = self.me.id.clone();
                 if !self.encryption.on_key(key, &user_id) {
+                    self.mode = Mode::Normal;
+                }
+            }
+            Mode::Devices => {
+                // 読み直し（`r`）では、同期が進んで増えた、暗号化チャンネルを共有する相手も取り直す。
+                if key.code == KeyCode::Char('r') {
+                    self.devices.set_peers(self.encrypted_peers());
+                }
+                if !self.devices.on_key(key) {
                     self.mode = Mode::Normal;
                 }
             }
@@ -1362,6 +1605,20 @@ impl App {
                 self.mode = Mode::Encryption;
                 self.encryption.open();
             }
+            KeyCode::Char('D') => {
+                self.mode = Mode::Devices;
+                let peers = self.encrypted_peers();
+                self.devices.open(peers);
+                // 知らせただけの検証の要求があれば、前面に出す。
+                if !self.devices.has_open_verification() {
+                    self.devices.sas_open = self
+                        .devices
+                        .sas_entries
+                        .iter()
+                        .find(|(_, entry)| !entry.view.finished())
+                        .map(|(txn, _)| txn.clone());
+                }
+            }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
             // ピン留めの並び替えは Alt+↑↓ と [ / ]。通常の選択移動より先に判定する。
@@ -1375,6 +1632,9 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => self.move_selection(isize::MAX),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(true)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::GlobalSearch
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(false)
@@ -1400,7 +1660,9 @@ impl App {
             // J はピン留め行でもチャンネル参加。並び替えは [ / ] と Alt+↑↓ に分ける。
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
+            KeyCode::Char('N') => self.cycle_notification_level(),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
+            KeyCode::Char('S') => self.mode = Mode::GlobalSearch,
             KeyCode::Char('R') => self.restore_failed_draft(),
             KeyCode::Char('u') => self.reopen_thread(),
             KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
@@ -1540,8 +1802,19 @@ impl App {
             self.encryption.on_paste(text);
             return;
         }
+        if self.mode == Mode::Devices {
+            self.devices.on_paste(text);
+            return;
+        }
         if let Mode::Create(form) = &mut self.mode {
             form.input.extend(text.chars().filter(|c| !c.is_control()));
+            return;
+        }
+        if self.mode == Mode::GlobalSearch {
+            // 検索語に足すだけ。検索は Enter で行う。
+            self.global_search
+                .query
+                .extend(text.chars().filter(|c| !c.is_control()));
             return;
         }
         if self.mode != Mode::Insert {
@@ -1551,6 +1824,131 @@ impl App {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if self.composer.insert_str(text) {
             self.touch_typing();
+        }
+    }
+
+    fn on_global_search_key(&mut self, key: KeyEvent) {
+        match self.global_search.on_key(key) {
+            global_search::Action::None => {}
+            global_search::Action::Close => self.mode = Mode::Normal,
+            global_search::Action::Search => self.fetch_search(false),
+            global_search::Action::More => self.fetch_search(true),
+            global_search::Action::Open => {
+                if let Some(target) = self.global_search.destination() {
+                    self.mode = Mode::Normal;
+                    self.open_search_result(target);
+                }
+            }
+        }
+    }
+
+    /// 全文検索の 1 ページを取る。古い取得の結果は番号で捨てる（取り消しはしない）。
+    fn fetch_search(&mut self, append: bool) {
+        let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
+            return;
+        };
+        // `from:@名前`・`in:#チャンネル`（複数可）・`after:`・`before:`・`with:me`・`-is:bot` を絞り込みにする
+        // （名前は同期済みの一覧で引く）。
+        let parsed = global_search::parse_modifiers(&query);
+        // 日付は端末の暦の日として、その 0 時で区切る。
+        let tz = self
+            .global_search
+            .time_zone
+            .clone()
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let midnight = |day: Option<String>| day.map(|d| global_search::local_midnight(&d, &tz));
+        let mut filters = crate::api::SearchFilters {
+            after: midnight(parsed.after),
+            before: midnight(parsed.before),
+            exclude_bots: parsed.no_bots,
+            involving_me: parsed.with_me,
+            ..Default::default()
+        };
+        for name in &parsed.from {
+            match self
+                .store
+                .users()
+                .find(|user| user.user_name.eq_ignore_ascii_case(name))
+            {
+                Some(user) => filters.user_ids.push(user.id.clone()),
+                None => {
+                    self.global_search
+                        .fail(generation, format!("@{name} という人は見つかりません"));
+                    return;
+                }
+            }
+        }
+        for name in &parsed.channels {
+            match self
+                .store
+                .channels()
+                .into_iter()
+                .find(|channel| !channel.is_dm && channel.channel_name.eq_ignore_ascii_case(name))
+            {
+                Some(channel) => filters.channel_ids.push(channel.id.clone()),
+                None => {
+                    self.global_search.fail(
+                        generation,
+                        format!("#{name} というチャンネルは見つかりません"),
+                    );
+                    return;
+                }
+            }
+        }
+        if filters.user_ids.len() > 20 || filters.channel_ids.len() > 20 {
+            self.global_search.fail(
+                generation,
+                "from: と in: は、それぞれ 20 個まで書けます".into(),
+            );
+            return;
+        }
+        if parsed.terms.is_empty() {
+            self.global_search.fail(
+                generation,
+                "絞り込みのほかに、探す語を入れてください".into(),
+            );
+            return;
+        }
+        let terms = parsed.terms;
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let event = match api.search(kind, &terms, &filters, cursor.as_deref()).await {
+                Ok(page) => AppEvent::SearchResults {
+                    generation,
+                    append,
+                    page,
+                },
+                Err(error) => AppEvent::SearchFailed {
+                    generation,
+                    message: format!("{error:#}"),
+                },
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    /// 検索結果のメッセージを開く。スレッドの返信ならスレッドを開いてその返信を選ぶ。
+    /// 行がまだ同期されていなくても、選択は届いた時点で効く（描画時に位置を探す）。
+    fn open_search_result(&mut self, target: global_search::Destination) {
+        self.open_channel(target.channel_id);
+        match target.parent_id {
+            Some(root_id) => {
+                self.thread = Some(ThreadView {
+                    root_id,
+                    selected: Some(target.message_id),
+                    scroll: 0,
+                    inner_scroll: 0,
+                });
+                self.focus = Focus::Thread;
+                self.poll_typing();
+            }
+            None => {
+                self.selected = Some(target.message_id);
+                // 前に選んでいたメッセージの中のスクロールを持ち越さない（`move_selection` と同じ）。
+                self.inner_scroll = 0;
+                self.focus = Focus::Messages;
+            }
         }
     }
 
@@ -1805,7 +2203,7 @@ impl App {
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { channel_id, id } => self
+                    SidebarItem::Thread { channel_id, id, .. } => self
                         .thread_content(channel_id, id)
                         .unwrap_or_default()
                         .to_owned(),
@@ -1857,7 +2255,13 @@ impl App {
                 else {
                     return;
                 };
-                let mut ids = vec![thread.root_id.clone()];
+                // 親が削除されて描かれないときは、候補を描いている返信だけにする（見えない親を選ばない）。
+                let mut ids: Vec<String> = self
+                    .store
+                    .message(&channel_id, &thread.root_id)
+                    .map(|root| root.id.clone())
+                    .into_iter()
+                    .collect();
                 ids.extend(
                     self.store
                         .replies(&channel_id, &thread.root_id)
@@ -1908,23 +2312,31 @@ impl App {
         };
         if let Some(root_id) = root_id {
             self.typing_poll.wake();
+            // 一覧にないスレッドを開くと、その下に一時の行が増えるので、カーソルは同じ行に残す。
+            let selected = self.selected_sidebar_item();
             self.thread = Some(ThreadView {
                 root_id,
                 selected: None,
                 scroll: 0,
                 inner_scroll: 0,
             });
+            self.restore_sidebar_selection(selected);
             self.focus = Focus::Thread;
         }
     }
 
     fn activate_sidebar(&mut self) {
-        match self.sidebar_items().get(self.sidebar_index).cloned() {
+        match self.selected_sidebar_item() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
+                // カーソルは `open_channel` が、押した行に残す。
                 self.open_channel(channel_id);
                 self.focus = Focus::Messages;
             }
-            Some(SidebarItem::Thread { channel_id, id }) => {
+            Some(SidebarItem::Thread {
+                channel_id,
+                id,
+                pinned,
+            }) => {
                 self.open_channel(channel_id);
                 self.thread = Some(ThreadView {
                     root_id: id.clone(),
@@ -1932,9 +2344,11 @@ impl App {
                     scroll: 0,
                     inner_scroll: 0,
                 });
+                // 開いた行（ピン留めの下か通常の一覧か）に、カーソルを残す。
                 self.restore_sidebar_selection(Some(SidebarItem::Thread {
                     channel_id: self.current.clone().unwrap_or_default(),
                     id: id.clone(),
+                    pinned,
                 }));
                 self.focus = Focus::Thread;
                 self.poll_typing();
@@ -1948,6 +2362,9 @@ impl App {
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
+        // 別チャンネルの、一覧にないスレッドを閲覧中は、一時の行（ピン留めの下を含む）が出ている。
+        // チャンネルを開くとスレッドが閉じてその行が消え、添字がずれるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         if self.current.as_deref() != Some(channel_id.as_str()) {
             let previous: Vec<_> = self
                 .subscriptions
@@ -1985,6 +2402,7 @@ impl App {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current = Some(channel_id);
+        self.restore_sidebar_selection(selected);
         self.poll_typing();
     }
 
@@ -2000,7 +2418,10 @@ impl App {
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
         self.typing_poll.wake();
+        // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         self.thread = None;
+        self.restore_sidebar_selection(selected);
         self.focus = Focus::Messages;
         if matches!(self.target, Target::Reply(_)) {
             self.target = Target::Channel;
@@ -2204,6 +2625,105 @@ impl App {
                 Ok(())
             });
         }
+    }
+
+    fn notification_level_label(level: NotificationLevel) -> &'static str {
+        match level {
+            NotificationLevel::All => "すべての投稿",
+            NotificationLevel::Mentions => "メンション",
+            NotificationLevel::Mute => "メンション以外を通知しない",
+        }
+    }
+
+    fn next_notification_level(level: NotificationLevel) -> NotificationLevel {
+        match level {
+            NotificationLevel::All => NotificationLevel::Mentions,
+            NotificationLevel::Mentions => NotificationLevel::Mute,
+            NotificationLevel::Mute => NotificationLevel::All,
+        }
+    }
+
+    /// 開いているチャンネルの通知レベルを all → mentions → mute の順に変える。
+    /// 通知設定の Shape が新しい値を届けるので、書き込みのあとに取得はしない。
+    /// Shape が古くても選んだ値から次を計算するため、連続操作で同じ値を送らない。
+    fn cycle_notification_level(&mut self) {
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        // 自分の設定行が届いていないと store は既定値を返すだけなので、実際の設定から
+        // 循環できない。行が届くまで操作を止め、誤った値を送らないようにする。
+        if self
+            .store
+            .notification_setting(&channel_id, &self.me.id)
+            .is_none()
+        {
+            self.notify("通知設定を読み込み中です。少し待ってからもう一度押してください");
+            return;
+        }
+        // 未完了の操作がなく、かつ選択値が解除されていれば、他端末の変更が Shape で
+        // 同期済みの値を失敗時の戻り先にする。選択値が残っている間は Shape が保存済みの
+        // 値に追いついていないので、Store で上書きすると直近の PATCH 成功値を失う。
+        if self
+            .notification_level_in_flight
+            .get(&channel_id)
+            .copied()
+            .unwrap_or(0)
+            == 0
+            && !self.notification_level_selected.contains_key(&channel_id)
+        {
+            self.notification_level_confirmed.insert(
+                channel_id.clone(),
+                self.store.notification_level(&channel_id, &self.me.id),
+            );
+        }
+        let previous = self
+            .notification_level_selected
+            .get(&channel_id)
+            .copied()
+            .unwrap_or_else(|| self.store.notification_level(&channel_id, &self.me.id));
+        let next = Self::next_notification_level(previous);
+        // 初期値は Store の値（届いている設定行）。以降は成功した値だけを確定値にする。
+        if !self.notification_level_confirmed.contains_key(&channel_id) {
+            let initial = self.store.notification_level(&channel_id, &self.me.id);
+            self.notification_level_confirmed
+                .insert(channel_id.clone(), initial);
+        }
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        // 連打しても入力順に PATCH が届くよう、チャンネルごとにロックを取ってから送る。
+        // ロックの取得はタスクの中で行い、キー操作を待たせない（Mutex は待ち順が公平）。
+        let lock = self
+            .notification_level_locks
+            .entry(channel_id.clone())
+            .or_default()
+            .clone();
+        let label = format!("通知を {} にしました", Self::notification_level_label(next));
+        let op_id = self.notification_level_next_op_id;
+        self.notification_level_next_op_id += 1;
+        self.notification_level_latest_op
+            .insert(channel_id.clone(), op_id);
+        *self
+            .notification_level_in_flight
+            .entry(channel_id.clone())
+            .or_default() += 1;
+        self.notification_level_pending
+            .insert(channel_id.clone(), next);
+        self.notification_level_selected
+            .insert(channel_id.clone(), next);
+        self.spawn_api("通知設定の変更", async move {
+            let _guard = lock.lock().await;
+            let result = api.set_channel_notification_level(&channel_id, next).await;
+            let succeeded = result.is_ok();
+            let _ = tx.send(AppEvent::NotificationLevelFinished {
+                channel_id: channel_id.clone(),
+                level: next,
+                op_id,
+                succeeded,
+            });
+            result?;
+            let _ = tx.send(AppEvent::Notice(label));
+            Ok(())
+        });
     }
 
     /// チャンネルの暗号化の扱い（docs/e2ee.md の「暗号化の格下げを防ぐ」）。一度 `encrypted = true` を
@@ -2422,7 +2942,7 @@ impl App {
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
             if let Err(err) = result {
-                let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
+                let _ = tx.send(AppEvent::Notice(send_failure_notice(&target, &err)));
                 let _ = tx.send(AppEvent::RestoreDraft {
                     channel_id,
                     target,
@@ -2601,7 +3121,7 @@ impl App {
                         });
                         return;
                     }
-                    let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
+                    let _ = tx.send(AppEvent::Notice(send_failure_notice(&target, &err)));
                     let _ = tx.send(AppEvent::RestoreDraft {
                         channel_id,
                         target,
@@ -2611,6 +3131,17 @@ impl App {
                 }
             }
         });
+    }
+}
+
+/// 送信に失敗したときの通知。参加行があるスレッドへ未参加・退出済みのまま返信すると 403 になるので、
+/// 参加（`J`）すれば送れることを伝える。投稿権限がないなど、ほかの失敗は原因をそのまま出す。
+fn send_failure_notice(target: &Target, err: &anyhow::Error) -> String {
+    if matches!(target, Target::Reply(_)) && zoo2_client_core::http::is_thread_join_required(err) {
+        "このスレッドに参加していません。Esc で入力を終え、J で参加してから返信してください（アーカイブ済みなら、先に u で再Openします。下書きは残しています）"
+            .to_string()
+    } else {
+        format!("送信に失敗しました: {err}")
     }
 }
 
@@ -2691,6 +3222,57 @@ fn merge_pinned_order(intended: &[String], moved: &str, latest_active: &[String]
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_reply_to_a_thread_the_user_has_not_joined_points_to_join() {
+        let join_required: anyhow::Error = zoo2_client_core::http::HttpError::Status {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+            code: None,
+        }
+        .into();
+        let notice = send_failure_notice(&Target::Reply("root".into()), &join_required);
+        assert!(notice.contains("J で参加"), "{notice}");
+        // 暗号化チャンネルの API は ApiError でエラーを返す。
+        let coded: anyhow::Error = zoo2_client_core::http::ApiError {
+            status: reqwest::StatusCode::FORBIDDEN,
+            code: None,
+            message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+            body: serde_json::Value::Null,
+        }
+        .into();
+        assert!(send_failure_notice(&Target::Reply("root".into()), &coded).contains("J で参加"));
+        // 返信以外では参加しても直らないので、原因をそのまま出す。
+        let notice = send_failure_notice(&Target::Channel, &join_required);
+        assert!(notice.starts_with("送信に失敗しました"), "{notice}");
+        let forbidden: anyhow::Error = zoo2_client_core::http::HttpError::Status {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: "Only channel managers may post here".into(),
+            code: None,
+        }
+        .into();
+        let notice = send_failure_notice(&Target::Reply("root".into()), &forbidden);
+        assert!(notice.contains("Only channel managers"), "{notice}");
+    }
+
+    #[test]
+    fn notification_level_cycles_and_has_labels() {
+        let level = NotificationLevel::default();
+        assert_eq!(level, NotificationLevel::Mentions);
+        assert_eq!(App::next_notification_level(level), NotificationLevel::Mute);
+        assert_eq!(
+            App::next_notification_level(NotificationLevel::Mute),
+            NotificationLevel::All
+        );
+        assert_eq!(
+            App::next_notification_level(NotificationLevel::All),
+            NotificationLevel::Mentions
+        );
+        assert_eq!(
+            App::notification_level_label(NotificationLevel::Mute),
+            "メンション以外を通知しない"
+        );
+    }
+
     fn api_test_app(base: &str) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
         let http = reqwest::Client::new();
         let credentials = Credentials::Dev("u1".into());
@@ -2711,6 +3293,772 @@ mod tests {
             app_tx,
         );
         (app, app_rx)
+    }
+
+    fn set_notification_level(app: &mut App, channel_id: &str, level: NotificationLevel) {
+        set_notification_level_for(app, channel_id, "u1", level);
+    }
+
+    fn set_notification_level_for(
+        app: &mut App,
+        channel_id: &str,
+        user_id: &str,
+        level: NotificationLevel,
+    ) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelNotificationSettings,
+            Batch {
+                reset: false,
+                changes: vec![electric::Change::Upsert {
+                    key: format!("{channel_id}:{user_id}"),
+                    row: serde_json::json!({
+                        "user_id": user_id,
+                        "channel_id": channel_id,
+                        "notification_level": level.as_str(),
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                }],
+                up_to_date: true,
+            },
+        ));
+    }
+
+    /// 今までに届いた PATCH の本文に書かれた level を、送られた順に返す。
+    async fn received_notification_level_requests(
+        server: &wiremock::MockServer,
+        channel_id: &str,
+    ) -> Vec<String> {
+        let path = format!("/api/channels/{channel_id}/notification-settings");
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == path.as_str()
+            })
+            .map(|request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                body["level"].as_str().unwrap().to_owned()
+            })
+            .collect()
+    }
+
+    /// PATCH の本文に書かれた level を、送られた順に返す。
+    async fn notification_level_requests(
+        server: &wiremock::MockServer,
+        channel_id: &str,
+        count: usize,
+    ) -> Vec<String> {
+        for _ in 0..100 {
+            let levels = received_notification_level_requests(server, channel_id).await;
+            if levels.len() >= count {
+                return levels;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{channel_id} への PATCH が {count} 件届かなかった");
+    }
+
+    #[tokio::test]
+    async fn notification_level_cycles_without_waiting_for_shape() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // Shape は届かない。それでも選んだ値から次の値を計算できることを確かめる。
+        for level in ["mentions", "mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (mut app, _rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            app.notification_level_pending.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "all"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_burst_is_serialized_in_input_order() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // 最初の PATCH の応答を遅らせる。直列化されていれば、そのあいだに次の PATCH は届かない。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(400))
+                    .set_body_json(serde_json::json!({
+                        "data": { "level": "mentions" },
+                        "txid": "7",
+                    })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        for level in ["mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (mut app, _rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 1).await,
+            ["mentions"]
+        );
+        // Shape を待たずに続けて選ぶ。
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            received_notification_level_requests(&server, "c1").await,
+            ["mentions"]
+        );
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "all"]
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_other_channels_are_not_blocked() {
+        use wiremock::{
+            Mock, MockServer, Request, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        // c1 の PATCH の応答を明示的に保留する。到着通知を送ってから、解放されるまで
+        // wiremock のサーバースレッドを止めるため、c2 の要求は別のサーバーに送る。
+        let (release_c1, held_c1) = std::sync::mpsc::channel::<()>();
+        let (c1_arrived_tx, c1_arrived_rx) = std::sync::mpsc::channel::<()>();
+        let held_c1 = Arc::new(std::sync::Mutex::new(held_c1));
+        let c1_server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(move |_: &Request| {
+                let _ = c1_arrived_tx.send(());
+                // 解放通知を待たずに応答を返すと、全チャンネルで同じロックを取る
+                // 実装でも c2 の到着を確認できてしまう。タイムアウト・切断は
+                // 無視せず、理由の分かる失敗として扱う。
+                held_c1
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("c1 の PATCH が解放されずにタイムアウト、または解放側が切断された");
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": "mentions" },
+                    "txid": "7",
+                }))
+            })
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&c1_server)
+            .await;
+        let c2_server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c2/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&c2_server)
+            .await;
+        let (mut app, _rx) = api_test_app(&c1_server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        set_notification_level(&mut app, "c2", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if c1_arrived_rx.try_recv().is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("c1 の PATCH が届かなかった");
+        // c1 の応答がまだ返っていないことを確認してから、別チャンネルの操作をする。
+        app.current = Some("c2".into());
+        app.api = ApiClient::new(
+            reqwest::Client::new(),
+            &c2_server.uri(),
+            Credentials::Dev("u1".into()),
+        );
+        app.cycle_notification_level();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if !received_notification_level_requests(&c2_server, "c2")
+                    .await
+                    .is_empty()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("c1 の応答を待つあいだに c2 の PATCH が届かなかった");
+        // c2 の到着を確認できたので、c1 の応答を解放する。
+        let _ = release_c1.send(());
+        assert_eq!(
+            notification_level_requests(&c1_server, "c1", 1).await,
+            ["mentions"]
+        );
+        assert_eq!(
+            received_notification_level_requests(&c2_server, "c2").await,
+            ["mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_operations_are_isolated_per_channel() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c2/notification-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        set_notification_level(&mut app, "c2", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        app.current = Some("c2".into());
+        app.cycle_notification_level();
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        // c2 の操作で c1 の選んだ値が消えていない。
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mute)
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c2"),
+            Some(&NotificationLevel::Mentions)
+        );
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mute"]
+        );
+        assert_eq!(
+            notification_level_requests(&server, "c2", 1).await,
+            ["mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_failure_reverts_the_selected_value() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_empty());
+        // 確定値 All まで戻る。Store と一致した時点で選択値は消えても、基準は All のまま。
+        assert_eq!(
+            app.notification_level_selected
+                .get("c1")
+                .copied()
+                .unwrap_or_else(|| app.store.notification_level("c1", "u1")),
+            NotificationLevel::All
+        );
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("通知設定の変更に失敗しました"))
+        );
+        // 失敗してもう一度選べる。store の値に戻っているので同じ値を送る。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mentions"]
+        );
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_empty());
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("通知を メンション にしました"))
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_override_is_cleared_when_shape_catches_up() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        // PATCH が残っているあいだは、Store が一致しても古い Shape で上書きを消さない。
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        // すべての PATCH が終わり、選んだ値が届いたら store を正本に戻す。
+        set_notification_level(&mut app, "c1", NotificationLevel::Mentions);
+        assert!(!app.notification_level_selected.contains_key("c1"));
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mute"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_failure_keeps_the_last_saved_value_under_stale_shape() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // 最初の all -> mentions は成功するが、Shape は all のまま届かない。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Shape が古い間に要求した mute は失敗する。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mute" })))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // 再試行の mute は成功する。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mute" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mute" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 1).await,
+            ["mentions"]
+        );
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_in_flight.is_empty());
+        assert_eq!(
+            app.store.notification_level("c1", "u1"),
+            NotificationLevel::All
+        );
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+
+        // Shape がまだ all の間に次の変更を失敗させる。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mute"]
+        );
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_in_flight.is_empty());
+        // 古い Store で上書きせず、直近の PATCH 成功値を戻り先に保つ。
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+
+        // 再試行は保存済みの mentions を基準に mute を送る。古い all を基準にすると
+        // mentions を送ってしまい、サーバーの設定とずれたままになる。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "mute"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_stale_shape_keeps_selection_until_patches_finish() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        for level in ["mentions", "mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        // 連打で All に戻った直後、Store がまだ All のときに古い Shape が届いても解除しない。
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        // PATCH の反映で Store が Mentions になっても、選択値は All のまま。
+        set_notification_level(&mut app, "c1", NotificationLevel::Mentions);
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        for _ in 0..6 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_in_flight.is_empty());
+        // すべての PATCH が終わり、Store が All に追いついたので選択値を解除する。
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        assert!(!app.notification_level_selected.contains_key("c1"));
+        // 4 回目は Mentions を送る（Mentions 基準だと Mute になってしまう）。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 4).await,
+            ["mentions", "mute", "all", "mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_consecutive_failures_keep_the_confirmed_value() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        // All を確定値にしたまま、Mentions と Mute を続けて要求して両方失敗させる。
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mute"]
+        );
+        for _ in 0..4 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_empty());
+        assert!(app.notification_level_in_flight.is_empty());
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        assert_eq!(
+            app.notification_level_selected
+                .get("c1")
+                .copied()
+                .unwrap_or_else(|| app.store.notification_level("c1", "u1")),
+            NotificationLevel::All
+        );
+        // 連続失敗のあとの操作は、実際に残っている All から Mentions を送る。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_first_failure_does_not_undo_a_later_request_of_the_same_value() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // 1 回目の Mentions だけ失敗させる。4 回目も Mentions なので、値だけで照合すると
+        // 1 回目の失敗が 4 回目の選択値を取り消してしまう。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        for level in ["mentions", "mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .mount(&server)
+                .await;
+        }
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        for _ in 0..4 {
+            app.cycle_notification_level();
+        }
+        assert_eq!(
+            notification_level_requests(&server, "c1", 4).await,
+            ["mentions", "mute", "all", "mentions"]
+        );
+        // 1 回目の失敗の完了だけを処理する。4 回目がまだ送信中なので選択値は Mentions のまま。
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.contains_key("c1"));
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        for _ in 0..6 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_empty());
+        assert!(app.notification_level_in_flight.is_empty());
+        // 最新の操作が成功したので確定値は Mentions。次の操作は Mute を送る。
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 5).await,
+            ["mentions", "mute", "all", "mentions", "mute"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_waits_for_the_users_own_setting_row() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        app.current = Some("c1".into());
+        // 設定行が届いていないと既定値から計算してしまうので、何も送らない。
+        app.cycle_notification_level();
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("通知設定を読み込み中"))
+        );
+        assert!(app.notification_level_pending.is_empty());
+        // 他人の設定行だけではまだ始めない。
+        set_notification_level_for(&mut app, "c1", "u2", NotificationLevel::All);
+        app.cycle_notification_level();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            received_notification_level_requests(&server, "c1")
+                .await
+                .is_empty()
+        );
+        // 自分の行が届いたら、実際の Mute から All へ循環する。
+        // 行がないと既定の Mentions から Mute を送ってしまう。
+        set_notification_level(&mut app, "c1", NotificationLevel::Mute);
+        app.cycle_notification_level();
+        assert_eq!(notification_level_requests(&server, "c1", 1).await, ["all"]);
     }
 
     #[tokio::test]
@@ -2884,6 +4232,7 @@ mod tests {
         assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
+            pinned: false,
         }));
         let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
@@ -3111,6 +4460,7 @@ mod tests {
             oidc: None,
             stores,
             crypto_root: None,
+            events: None,
         });
         app.current = Some(CHANNEL.into());
 

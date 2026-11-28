@@ -10,7 +10,9 @@ export type TableName =
   | "call_invites"
   | "notifications"
   | "attachments"
-  | "user_pinned_channels";
+  | "user_pinned_channels"
+  /** 本人の通知設定だけを配信する実テーブル。 */
+  | "user_channel_notification_settings";
 
 export type UserRow = {
   id: string;
@@ -51,6 +53,8 @@ export type ChannelRow = {
    * 正準な整数にする。
    */
   membership_epoch?: string;
+  /** 投稿できる人。`managers` はチャンネル作成者とワークスペース管理者だけ。読み書きの権限は別（閲覧は誰でもできる）。 */
+  posting_policy?: "members" | "managers";
 };
 
 export type MessageRow = {
@@ -88,6 +92,8 @@ export type MessageRow = {
    * （docs/e2ee.md の「受信時の検証」）。
    */
   message_kind?: string | null;
+  /** 転送（引用）元のメッセージ ID 一覧（平文チャンネルのみ）。 */
+  forwarded_message_ids?: string[] | null;
 };
 
 export type MessageReactionRow = {
@@ -98,10 +104,24 @@ export type MessageReactionRow = {
   created_at: TimestampString;
 };
 
+/** チャンネルごとの通知レベル。`mentions` が既定。 */
+export type ChannelNotificationLevel = "all" | "mentions" | "mute";
+
 export type ChannelUserRow = {
   user_id: string;
   channel_id: string;
   joined_at: TimestampString;
+};
+
+/**
+ * チャンネルごとの通知設定。設定の置き場は `user_channel_notification_settings` で、
+ * メンバー一覧（channel_user）には設定列がない。本人の行だけが
+ * `channelNotificationSettings` Shape で配信される。
+ */
+export type ChannelNotificationSettingRow = {
+  user_id: string;
+  channel_id: string;
+  notification_level: ChannelNotificationLevel;
 };
 
 /** 自分でチャンネルを退出した日時。本人の行だけが届く。 */
@@ -174,6 +194,7 @@ export type NotificationDisplayData = {
     id: string;
     user_id: string;
     content: string;
+    has_forwards?: boolean;
     emojis?: Record<string, DisplayEmoji>;
   } | null;
   reactions: MessageDisplayData["reactions"];
@@ -201,6 +222,7 @@ export type TableRowMap = {
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  user_channel_notification_settings: ChannelNotificationSettingRow;
   channel_leave: ChannelLeaveRow;
   call_invites: CallInviteRow;
   attachments: AttachmentRow;

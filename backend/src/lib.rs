@@ -3,6 +3,7 @@ pub mod apns;
 pub mod apps;
 pub mod auth;
 pub mod call_invites;
+pub mod call_sfu;
 pub mod cards;
 pub mod components;
 pub mod config;

@@ -8,7 +8,8 @@ plugins {
 
 android {
     namespace = "works.zli.zoo"
-    compileSdk = 35
+    compileSdk = 36
+    testOptions.unitTests.isIncludeAndroidResources = true
     defaultConfig {
         applicationId = "works.zli.zoo"
         minSdk = 26
@@ -87,7 +88,12 @@ dependencies {
     // E2EE の初回設定と解錠（#360）。パスキーの PRF は Credential Manager、再認証は Custom Tabs。
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
-    implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.browser:browser:1.9.0")
+    // 他のユーザーの検証の QR（#567）：描画と読み取り（ZXing）と、読み取りのカメラ（CameraX）。
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
 }
 
 val translations by
@@ -96,9 +102,19 @@ val translations by
         into(layout.buildDirectory.dir("generated/assets/locales"))
     }
 
+val emojiCatalogs by tasks.registering(Sync::class) {
+    from("../src/commonMain/composeResources/files") {
+        include("shortcodes.json", "emoji-kitchen.json")
+    }
+    from("../../frontend/public/emojibase-data") {
+        include("*/data.json", "*/messages.json", "LICENSE")
+    }
+    into(layout.buildDirectory.dir("generated/assets/emoji"))
+}
+
 android.sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/assets"))
 
-tasks.named("preBuild") { dependsOn(translations) }
+tasks.named("preBuild") { dependsOn(translations, emojiCatalogs) }
 
 dependencies {
     testImplementation(kotlin("test-junit"))
@@ -107,6 +123,31 @@ dependencies {
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     testImplementation("io.ktor:ktor-client-mock:3.1.3")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+}
+
+// Fetch the SDKs used by @Config through Gradle's dependency cache before starting Robolectric.
+val robolectricSdkDirectory = layout.buildDirectory.dir("robolectric-sdks")
+val prepareRobolectricSdks by tasks.registering(Sync::class) {
+    val sdkVersions = listOf(
+        "8.0.0_r4-robolectric-r1-i7", // API 26
+        "9-robolectric-4913185-2-i7", // API 28
+        "13-robolectric-9030017-i7", // API 33
+        "15-robolectric-13954326-i7", // API 35
+    )
+    sdkVersions.forEach { version ->
+        // Separate configurations preserve every SDK version during conflict resolution.
+        from(configurations.detachedConfiguration(dependencies.create("org.robolectric:android-all-instrumented:$version")).apply {
+            isTransitive = false
+        })
+    }
+    into(robolectricSdkDirectory)
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(prepareRobolectricSdks)
+    inputs.dir(robolectricSdkDirectory).withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", robolectricSdkDirectory.get().asFile.absolutePath)
 }
 
 val electricLicense by
@@ -119,16 +160,6 @@ val electricLicense by
     }
 
 tasks.named("preBuild") { dependsOn(electricLicense) }
-
-val launcherIcon by
-    tasks.registering(Sync::class) {
-        from("../../frontend/public/icons/icon-512.png") { rename { "zoo_launcher.png" } }
-        into(layout.buildDirectory.dir("generated/launcherRes/drawable-nodpi"))
-    }
-
-android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/launcherRes"))
-
-tasks.named("preBuild") { dependsOn(launcherIcon) }
 
 // Bundle the shared WebRTC engine; SIP and credentials stay on the backend.
 // frontend/build contains media-viewer build tools and is an input of buildMediaPreview.

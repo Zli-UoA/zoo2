@@ -16,17 +16,6 @@ class ModelTest {
     private fun row(value: String): Row = json.parseToJsonElement(value).jsonObject
 
     @Test
-    fun channelNamesMatchUnicodeLettersMarksAndNumbers() {
-        assertTrue(validChannelName("開発-𠮷-e\u0301-Ⅳ-１２"))
-        assertTrue(validChannelName("𠮷".repeat(80)))
-        assertFalse(validChannelName("𠮷".repeat(81)))
-        assertFalse(validChannelName("hello😀"))
-        assertFalse(validChannelName("bad name"))
-        assertFalse(validChannelName("general"))
-        assertFalse(validChannelName("bad\ud800"))
-    }
-
-    @Test
     fun electricStringBooleansDoNotTreatFalseAsTrue() {
         assertFalse(row("""{"is_private":"false"}""").flag("is_private"))
         assertTrue(row("""{"is_private":"true"}""").flag("is_private"))
@@ -52,5 +41,13 @@ class ModelTest {
         assertTrue(canManage(channel, "owner", false))
         assertTrue(canManage(channel, "admin", true))
         assertFalse(canManage(channel, "member", false))
+    }
+
+    @Test
+    fun notificationLevelIsUnknownUntilTheSettingsRowArrives() {
+        val settings = listOf(row("""{"channel_id":"c","notification_level":"all"}"""))
+        assertNull(channelNotificationLevel(emptyList(), "c"))
+        assertEquals("all", channelNotificationLevel(settings, "c"))
+        assertNull(channelNotificationLevel(settings, "other"))
     }
 }

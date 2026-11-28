@@ -1,7 +1,7 @@
 WITH c AS MATERIALIZED (SELECT t.team_id,t.slack_channel_id FROM /* candidate_from */
  CROSS JOIN LATERAL (SELECT channel_id,last_ts FROM slack_channels sc WHERE sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id OFFSET 0) sc
  CROSS JOIN LATERAL (SELECT encrypted,slack_imported_at FROM channels ch WHERE ch.id=sc.channel_id OFFSET 0) ch
- WHERE NOT COALESCE(ch.encrypted,false) AND /* readiness */
+ WHERE /* team_filter */ AND NOT COALESCE(ch.encrypted,false) AND /* readiness */
  AND (t.lease_until IS NULL OR t.lease_until<now())
  AND (sc.last_ts IS NOT NULL OR ch.slack_imported_at IS NOT NULL)
  AND NOT EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.team_id=t.team_id

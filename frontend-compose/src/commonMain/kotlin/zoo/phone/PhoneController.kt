@@ -7,7 +7,7 @@ import kotlinx.serialization.json.*
 import zoo.*
 
 /** No credentials are stored in UI state, saved state, notification extras or caches. */
-data class PhoneCall(val id: String, val kind: String, val target: String, val label: String, val status: String, val peer: String = "", val muted: Boolean = false, val speaker: Boolean = false)
+data class PhoneCall(val id: String, val kind: String, val target: String, val label: String, val status: String, val peer: String = "", val muted: Boolean = false, val speaker: Boolean = false, val peerUserId: String? = null)
 data class SipRegistration(val lineId: String? = null, val status: String = "offline")
 interface PhoneMedia {
     suspend fun command(method: String, payload: Row = obj())
@@ -16,9 +16,11 @@ interface PhoneMedia {
 interface PhoneTelecom {
     suspend fun outgoing(call: PhoneCall)
     fun incoming(call: PhoneCall)
+    suspend fun startAudio(id: String)
     fun ended(id: String)
     fun speaker(id: String, enabled: Boolean)
 }
+private val SFU_OPS = setOf("join", "cf/publish", "cf/pull", "cf/answer")
 class PhoneController(
     parent: CoroutineScope,
     private val request: suspend (String, String, Row?) -> JsonElement,
@@ -33,6 +35,7 @@ class PhoneController(
     private val lifetime = SupervisorJob(parent.coroutineContext[Job])
     private val scope = CoroutineScope(parent.coroutineContext + lifetime)
     var call by mutableStateOf<PhoneCall?>(null); private set
+    var remoteAudioLevel by mutableFloatStateOf(0f); private set
     var registration by mutableStateOf(SipRegistration()); private set
     var lines by mutableStateOf<List<Row>>(emptyList()); private set
     var enabled by mutableStateOf(false); private set
@@ -40,6 +43,8 @@ class PhoneController(
     var loaded by mutableStateOf(false); private set
     var loadError by mutableStateOf(false); private set
     var error by mutableStateOf(false); private set
+    var sipConnectionError by mutableStateOf<String?>(null); private set
+    var dmWaitingError by mutableStateOf(false); private set
     var writeError by mutableStateOf(false); private set
     var writing by mutableStateOf(false); private set
     var busy by mutableStateOf(false); private set
@@ -110,7 +115,7 @@ class PhoneController(
     }
     fun connectSip(id: String) {
         if (!lifetime.isActive || registration.status != "offline" || lines.none { it.text("id") == id && it.flag("can_connect") }) return
-        error = false; registration = SipRegistration(id, "connecting")
+        sipConnectionError = null; registration = SipRegistration(id, "connecting")
         val generation = ++sipEpoch
         sipJob = scope.launch {
             try {
@@ -118,23 +123,30 @@ class PhoneController(
                 val credentials = data(api("${path(id)}/connect", "POST"))
                 if (generation != sipEpoch) return@launch
                 val ready = CompletableDeferred<Unit>()
-                val engine = GatewayPhone(scope, request = { path, method, body -> api(path, method, body) }, stream = phoneStream, media = { events -> media("sip", events) }) { event, _ ->
+                val engine = GatewayPhone(scope, request = { path, method, body -> api(path, method, body) }, stream = phoneStream, media = { events -> media("sip", events) }) { event, payload ->
                     if (generation == sipEpoch && lifetime.isActive) when (event) {
                         "registered" -> { registration = SipRegistration(id, "ready"); ready.complete(Unit) }
                         "incoming" -> incomingSip(id)
                         "ending" -> { registration = SipRegistration(id, "connecting") }
                         "connected" -> if (call?.kind == "sip") call = call?.copy(status = "active")
+                        "remote_audio_level" -> updateRemoteAudio("sip", payload)
                         "ended" -> if (call?.kind == "sip") finishCall()
-                        "failed" -> { disconnectSip(); error = true }
+                        "failed" -> sipConnectionFailed(id)
                     }
                 }
                 sip = engine; sipRevision = credentials.text("revision")
                 withTimeout(15_000) { engine.command("phone.register", credentials); ready.await() }
-            } catch (timeout: TimeoutCancellationException) { if (generation == sipEpoch) { disconnectSip(); error = true } }
+            } catch (timeout: TimeoutCancellationException) { if (generation == sipEpoch) sipConnectionFailed(id) }
             catch (cancel: CancellationException) { if (generation == sipEpoch) disconnectSip(); throw cancel }
-            catch (_: Exception) { if (generation == sipEpoch) { disconnectSip(); error = true } }
+            catch (_: Exception) { if (generation == sipEpoch) sipConnectionFailed(id) }
         }
     }
+    private fun sipConnectionFailed(id: String) {
+        val wasInCall = call?.kind == "sip"
+        disconnectSip()
+        if (wasInCall) error = true else sipConnectionError = id
+    }
+
     fun disconnectSip() {
         sipEpoch++; sipJob?.cancel(); sipJob = null
         if (call?.kind == "sip") finishCall()
@@ -151,7 +163,8 @@ class PhoneController(
         val next = PhoneCall(uuid(), "sip", line.text("id"), line.text("name"), "dialing", number)
         call = next; val epoch = ++callEpoch
         operation(epoch) {
-            authorizeSip(); telecom.outgoing(next)
+            authorizeSip(); if (epoch != callEpoch) return@operation
+            telecom.outgoing(next); telecom.startAudio(next.id)
             if (epoch == callEpoch) sip?.command("phone.call", obj("number" to number))
         }
     }
@@ -164,31 +177,46 @@ class PhoneController(
     }
     fun receiveDmCalls(value: Boolean) {
         if (!lifetime.isActive || value == dmWaiting || busy) return
+        dmWaitingError = false
         scope.launch {
             try { if (value) prepare(); ensureActive(); dmWaiting = value; waiting(value) }
             catch (cancel: CancellationException) { throw cancel }
-            catch (_: Exception) { dmWaiting = false; runCatching { waiting(false) }; error = true }
+            catch (_: Exception) { dmWaiting = false; runCatching { waiting(false) }; dmWaitingError = true }
         }
     }
+    fun restoreDmWaiting() {
+        if (!lifetime.isActive || dmWaiting) return
+        dmWaiting = true
+        waiting(true)
+    }
+
+    val ringingInviteId: String? get() = invite?.text("id")
+
     /** Only the session-wide network subscription supplies committed, private invite rows. */
-    fun invites(rows: List<Row>, userId: String, now: Long) {
+    fun invites(rows: List<Row>, userId: String, now: Long, preferredInviteId: String? = null) {
         if (!dmWaiting || !lifetime.isActive) return
         val current = invite
         if (current != null && call?.status == "incoming" && answeringInvite != current.text("id") && rows.none { it.text("id") == current.text("id") && it.text("status") == "pending" }) finishCall()
-        val pending = rows.firstOrNull { it.text("invitee_id") == userId && it.text("status") == "pending" && it.text("id") !in seenInvites && (timestampMillis(it.text("expires_at")) ?: 0L) > now } ?: return
+        if (preferredInviteId != null && call != null) return
+        val pending = rows.firstOrNull { (preferredInviteId == null || it.text("id") == preferredInviteId) && it.text("invitee_id") == userId && it.text("status") == "pending" && it.text("id") !in seenInvites && (timestampMillis(it.text("expires_at")) ?: 0L) > now } ?: return
         seenInvites.add(pending.text("id")); if (seenInvites.size > 1000) seenInvites.remove(seenInvites.first())
         if (call != null) { scope.launch { runCatching { api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/decline", "POST") } }; return }
-        val next = PhoneCall(uuid(), "dm", pending.text("channel_id"), pending.text("inviter_name").ifBlank { "Zoo" }, "incoming")
+        val next = PhoneCall(uuid(), "dm", pending.text("channel_id"), pending.text("inviter_name").ifBlank { "Zoo" }, "incoming",
+            peerUserId = pending.text("inviter_id").ifBlank { null })
         ++callEpoch; call = next; invite = pending
         try { telecom.incoming(next) } catch (_: Exception) { hangup(); error = true }
         val epoch = callEpoch
         inviteExpiry = scope.launch { delay(((timestampMillis(pending.text("expires_at")) ?: now) - now).coerceIn(0, 30_000)); if (epoch == callEpoch && call?.status == "incoming" && answeringInvite == null) finishCall() }
     }
-    fun callDm(channelId: String, label: String) {
+    fun callDm(channelId: String, label: String, peerUserId: String? = null) {
         if (!lifetime.isActive || call != null || busy) return
-        val next = PhoneCall(uuid(), "dm", channelId, label, "dialing")
+        val next = PhoneCall(uuid(), "dm", channelId, label, "dialing", peerUserId = peerUserId)
         call = next; val epoch = ++callEpoch
-        operation(epoch) { prepare(); telecom.outgoing(next); if (epoch == callEpoch) joinDm(next, epoch) }
+        operation(epoch) {
+            prepare(); if (epoch != callEpoch) return@operation
+            telecom.outgoing(next); telecom.startAudio(next.id)
+            if (epoch == callEpoch) joinDm(next, epoch)
+        }
     }
     fun answer() {
         val next = call?.takeIf { it.status == "incoming" } ?: return
@@ -197,14 +225,21 @@ class PhoneController(
         val epoch = callEpoch
         operation(epoch) {
             prepare()
-            if (next.kind == "sip") { authorizeSip(); if (epoch == callEpoch) { call = next.copy(status = "connecting"); sip?.command("phone.answer") } }
-            else {
+            if (epoch != callEpoch) return@operation
+            if (next.kind == "sip") authorizeSip()
+            if (epoch != callEpoch) return@operation
+            telecom.startAudio(next.id)
+            if (epoch != callEpoch) return@operation
+            if (next.kind == "sip") {
+                call = call?.copy(status = "connecting")
+                sip?.command("phone.answer")
+            } else {
                 val pending = invite ?: error("Invite ended")
-                val accepted = data(api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/accept", "POST"))
-                if (accepted.text("channel_id") != next.target) error("Invalid invitation")
+                val accepted = api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/accept", "POST").jsonObject
+                if (!accepted.flag("ok") || accepted.text("channel_id") != next.target) error("Invalid invitation")
                 if (epoch == callEpoch) {
                     inviteExpiry?.cancel(); invite = null; answeringInvite = null
-                    call = next.copy(status = "dialing"); joinDm(next, epoch)
+                    call = call?.copy(status = "dialing"); joinDm(next, epoch)
                 }
             }
         }
@@ -225,13 +260,16 @@ class PhoneController(
                         val engine = media("dm") { type, payload ->
                             if (epoch == callEpoch) when (type) {
                                 "connected" -> { setupExpiry?.cancel(); call = call?.copy(status = "active") }
+                                "remote_audio_level" -> updateRemoteAudio("dm", payload)
                                 "ended" -> hangup()
                                 "failed" -> { hangup(); error = true }
                                 "signal" -> signal(next.target, session, epoch, payload)
+                                "sfu_request" -> sfuRequest(next.target, session, epoch, payload)
                             }
                         }
                         dm = engine
-                        engine.command("rtc.start", obj("session_id" to session, "ice_servers" to (value["ice_servers"] ?: JsonArray(emptyList()))))
+                        engine.command("rtc.start", obj("session_id" to session, "ice_servers" to (value["ice_servers"] ?: JsonArray(emptyList())),
+                            "peer_user_id" to next.peerUserId))
                         heartbeat = scope.launch {
                             try { while (isActive && epoch == callEpoch) { delay(10_000); api("/api/channels/${next.target.encodeURLPathPart()}/call/heartbeat", "POST", obj("session_id" to session)) } }
                             catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
@@ -264,6 +302,26 @@ class PhoneController(
             catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
         }
     }
+    /** The WebView engine cannot reach the API itself; only these SFU calls are relayed (docs/calls-sfu.md). */
+    private fun sfuRequest(channel: String, session: String, epoch: Int, payload: Row) {
+        val id = payload["id"] as? JsonPrimitive ?: return
+        val op = payload.text("op")
+        scope.launch {
+            val reply = try {
+                check(op in SFU_OPS) { "Unknown SFU request" }
+                val body = buildJsonObject {
+                    (payload["body"] as? JsonObject)?.forEach { (key, value) -> if (key != "session_id") put(key, value) }
+                    put("session_id", session)
+                }
+                obj("id" to id, "ok" to true, "data" to api("/api/channels/${channel.encodeURLPathPart()}/call/sfu/$op", "POST", body))
+            }
+            // api() の 15 秒の制限は CancellationException の派生なので、先に失敗の返信にする（エンジンの待機を終わらせる）。
+            catch (_: TimeoutCancellationException) { obj("id" to id, "ok" to false) }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) { obj("id" to id, "ok" to false) }
+            if (epoch == callEpoch) runCatching { dm?.command("rtc.sfu.reply", reply) }
+        }
+    }
     private fun operation(epoch: Int, fatal: Boolean = true, block: suspend () -> Unit) {
         if (busy || !lifetime.isActive) return
         busy = true; error = false
@@ -287,8 +345,14 @@ class PhoneController(
         }
         finishCall()
     }
+    private fun updateRemoteAudio(kind: String, payload: Row) {
+        if (call?.let { it.kind == kind && it.status == "active" } != true) return
+        val value = (payload["level"] as? JsonPrimitive)?.floatOrNull ?: return
+        if (value.isFinite()) remoteAudioLevel = value.coerceIn(0f, 1f)
+    }
     private fun finishCall() {
         val previous = call
+        remoteAudioLevel = 0f
         ++callEpoch; inviteExpiry?.cancel(); inviteExpiry = null; invite = null; answeringInvite = null; setupExpiry?.cancel(); setupExpiry = null
         callJob?.cancel(); callJob = null; heartbeat?.cancel(); heartbeat = null
         dm?.close(); dm = null; sessionId = null; call = null; busy = false
@@ -308,7 +372,6 @@ class PhoneController(
     fun audioRoute(speaker: Boolean) { call = call?.copy(speaker = speaker) }
     fun dtmf(tone: String) { if (call?.kind != "sip" || call?.status != "active" || !Regex("[0-9*#]").matches(tone)) return; operation(callEpoch, fatal = false) { sip?.command("phone.dtmf", obj("tone" to tone)) } }
     fun clearError() { error = false }
-    fun nativeUnavailable() { stop(); error = true }
     fun nativeFailed(id: String) { if (call?.id == id) { hangup(); error = true } }
     fun stop() { hangup(); disconnectSip(); dmWaiting = false; waiting(false) }
     fun close() { stop(); read?.cancel(); lifetime.cancel(); lines = emptyList(); loaded = false }

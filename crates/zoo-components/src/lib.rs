@@ -5,7 +5,7 @@
 //! - `text`: 本文の代わりの文字
 //! - `legacy`: 旧形式（MessageCard と Block 一覧）からの変換
 //!
-//! backend・client-types（GPUI、Tauri の WebView、TUI）が同じ定義を使う。
+//! backend・client-types（Tauri の WebView、TUI）が同じ定義を使う。
 //! Web と Android は `fixtures/` の JSON で同じ結果になることを確かめる。
 
 pub mod legacy;

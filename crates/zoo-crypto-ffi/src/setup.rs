@@ -19,7 +19,11 @@ fn to_json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("コアの型は必ず JSON にできる")
 }
 
-fn server_state(user_id: &str, keys_query: &str, versions: &str) -> Result<core::ServerKeyState> {
+pub(crate) fn server_state(
+    user_id: &str,
+    keys_query: &str,
+    versions: &str,
+) -> Result<core::ServerKeyState> {
     let keys_query = parse_json("keys_query", keys_query)?;
     let versions = parse_json("versions", versions)?;
     Ok(core::ServerKeyState::from_json(
@@ -156,6 +160,33 @@ impl SetupSession {
         Ok(lock(&self.inner).secret_storage_request()?.to_string())
     }
 
+    /// E2EE のリセットの `POST /api/e2ee/secret_storage/keys` の本文（JSON）。前提の値は、
+    /// `GET /api/e2ee/secret_storage` で読んだ既定の鍵の ID と `secrets_revision`。
+    pub fn reset_secret_storage_request(
+        &self,
+        expected_default_key_id: Option<String>,
+        expected_secrets_revision: Option<u64>,
+    ) -> Result<String> {
+        Ok(lock(&self.inner)
+            .reset_secret_storage_request(
+                expected_default_key_id.as_deref(),
+                expected_secrets_revision,
+            )?
+            .to_string())
+    }
+
+    /// E2EE のリセットで、サーバーの今の鍵と版を新しく作った鍵に差し替える要求を決める。
+    pub fn plan_reset(
+        &self,
+        keys_query: String,
+        versions: String,
+        device_keys: String,
+    ) -> Result<ResumePlan> {
+        let server = server_state(&self.user_id, &keys_query, &versions)?;
+        let device_keys = parse_json("device_keys", &device_keys)?;
+        Ok(lock(&self.inner).plan_reset(&server, &device_keys)?.into())
+    }
+
     /// サーバーの状態（自分だけの `keys/query` と `GET /api/e2ee/key_backup/versions` の応答）と比べ、
     /// 続きに送る要求を決める。鍵が違えば `ServerKeyMismatch`。
     pub fn plan(
@@ -217,7 +248,7 @@ pub fn unlock_setup_with_recovery_key(
 /// 暗号ストアに置いた自分の鍵（[`core::OwnKeys`]）。
 #[derive(uniffi::Object)]
 pub struct OwnKeys {
-    inner: core::OwnKeys,
+    pub(crate) inner: core::OwnKeys,
 }
 
 #[uniffi::export]

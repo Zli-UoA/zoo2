@@ -2,20 +2,25 @@ import {
   getToken as defaultGetToken,
   getAuthRequestGeneration,
   getAuthSessionGeneration,
+  getTokenProviderGeneration,
+  currentAuthGenerations,
   notifyAuthorized,
   notifyUnauthorized,
+  type AuthGenerations,
   type AuthorizedHandler,
   type TokenProvider,
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
+import type { ChannelNotificationLevel } from "../electric/types";
 import type {
+  ChannelNotificationSettings,
   ChannelPinsResponse,
   PinChannelResult,
   ReorderChannelPinsResult,
   UnpinChannelResult,
 } from "./types";
-import { assertSafeApiPath } from "./path";
+import { apiPath, assertSafeApiPath } from "./path";
 import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
 
@@ -37,15 +42,34 @@ export class ApiError extends Error {
   readonly path: string | null;
   /** 失敗したリクエストの HTTP メソッド。 */
   readonly method: string | null;
+  /** 応答の `Retry-After` ヘッダー（秒）。読めない場合は `null`。 */
+  readonly retryAfter: number | null;
 
-  constructor(status: number, message: string, body?: unknown, request?: ApiErrorRequest) {
+  constructor(
+    status: number,
+    message: string,
+    body?: unknown,
+    request?: ApiErrorRequest,
+    retryAfter: number | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
     this.path = request?.path ?? null;
     this.method = request?.method ?? null;
+    this.retryAfter = retryAfter;
   }
+}
+
+/** `Retry-After` は秒数（推奨）と HTTP 日時の両方で来るので、秒数に正規化する。 */
+function parseRetryAfter(value: string | null): number | null {
+  if (value === null) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  const date = Date.parse(value);
+  if (!Number.isNaN(date)) return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+  return null;
 }
 
 export function isApiEnvelope(value: unknown): value is ApiEnvelope<unknown> {
@@ -127,6 +151,8 @@ export function sendKeepaliveRequest(
 export interface ApiClient {
   /** Uses this client's most recently resolved auth headers without asynchronous token refresh. */
   keepalive?(path: string, body: unknown): Promise<void>;
+  /** 現在の認証世代。待機中にセッションが切り替わったかを判定するために使う。 */
+  getAuthGenerations?(): AuthGenerations;
   request<T>(path: string, options?: RequestOptions): Promise<T>;
   requestWithTx<T>(path: string, options?: RequestOptions): Promise<ApiEnvelope<T>>;
   get<T>(path: string, options?: Omit<RequestOptions, "method" | "body">): Promise<T>;
@@ -160,27 +186,46 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   async function buildHeaders(
     explicit: Record<string, string> | undefined,
     hasBody: boolean,
-  ): Promise<Headers> {
+  ): Promise<{ headers: Headers; authHeaders: Headers }> {
     const headers = new Headers(explicit);
     const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId });
-    lastAuthHeaders = new Headers(authHeaders);
     authHeaders.forEach((value, key) => headers.set(key, value));
     headers.set("Accept", "application/json");
     if (hasBody) {
       headers.set("Content-Type", "application/json");
     }
 
-    return headers;
+    return { headers, authHeaders };
+  }
+
+  function assertRequestStillValid(
+    signal: AbortSignal | undefined,
+    expectedAuthSessionGen: number,
+    expectedTokenProviderGen: number,
+  ): void {
+    if (signal?.aborted) {
+      throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    }
+    if (
+      expectedAuthSessionGen !== getAuthSessionGeneration() ||
+      (!options.getToken && expectedTokenProviderGen !== getTokenProviderGeneration())
+    ) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
   }
 
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const authSessionGeneration = getAuthSessionGeneration();
     const authRequestGeneration = getAuthRequestGeneration();
+    const tokenProviderGeneration = getTokenProviderGeneration();
     assertSafeApiPath(path);
+    assertRequestStillValid(requestOptions.signal, authSessionGeneration, tokenProviderGeneration);
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
     const requestRoute = telemetry ? normalizeRouteGroup() : undefined;
-    const headers = await buildHeaders(requestOptions.headers, hasBody);
+    const { headers, authHeaders } = await buildHeaders(requestOptions.headers, hasBody);
+    assertRequestStillValid(requestOptions.signal, authSessionGeneration, tokenProviderGeneration);
+    lastAuthHeaders = new Headers(authHeaders);
     const url = joinUrl(baseUrl, path);
     const startedAt = Date.now();
 
@@ -242,6 +287,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         `Request to ${path} failed with status ${response.status}`,
         body,
         { path, method },
+        parseRetryAfter(response.headers.get("Retry-After")),
       );
     }
     if (
@@ -265,6 +311,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       lastAuthHeaders
         ? sendKeepaliveRequest(joinUrl(baseUrl, path), body, lastAuthHeaders, doFetch)
         : Promise.reject(new Error("No resolved authentication for keepalive request")),
+    getAuthGenerations: currentAuthGenerations,
     request,
     requestWithTx,
     get: (path, requestOptions) => request(path, { ...requestOptions, method: "GET" }),
@@ -316,5 +363,25 @@ export function createChannelPinsApi(client: ApiClient) {
         channel_ids: channelIds,
         expected_version: expectedVersion,
       }),
+  };
+}
+
+/**
+ * チャンネルごとの通知レベル。
+ *
+ * 表示値は `channelNotificationSettings` コレクションから読むため、画面ごとに GET はしない。
+ * GET はコレクションにない場合の個別確認と API テスト用に置く。
+ */
+export function createChannelNotificationSettingsApi(client: ApiClient) {
+  return {
+    getChannelNotificationSettings: (channelId: string) =>
+      client.get<ChannelNotificationSettings>(
+        apiPath`/api/channels/${channelId}/notification-settings`,
+      ),
+    updateChannelNotificationSettings: (channelId: string, level: ChannelNotificationLevel) =>
+      client.patch<ChannelNotificationSettings>(
+        apiPath`/api/channels/${channelId}/notification-settings`,
+        { level },
+      ),
   };
 }

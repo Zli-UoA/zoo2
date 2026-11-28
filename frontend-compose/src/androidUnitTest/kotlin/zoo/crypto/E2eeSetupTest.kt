@@ -176,20 +176,22 @@ class E2eeSetupTest {
             assertFailsWith<IllegalStateException> { encryption.send(channel, messageId, null, secret) }
             assertEquals(2, posts) // 一度確認した epoch より古い配布先には送らない。
             epoch = 2
-            encryption.edit(row, "EDITED-SECRET")
+            encryption.edit(row, "EDITED-SECRET @here", EncryptedMentions(here = true))
             assertEquals(3, posts)
             assertTrue(requests.none { "EDITED-SECRET" in it })
             assertEquals("1", accepted!!.getValue("revision").jsonPrimitive.content)
+            assertFalse("mentions" in accepted!!)
             assertEquals(2, delivered.size) // 同じ epoch の編集では、配布済みのセッションを再利用する。
             val editedRow = JsonObject(row + accepted!!)
             val displayed = EncryptedMessageDisplayState()
             displayed.receive(reopened.decrypt(editedRow))
-            assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            assertEquals("EDITED-SECRET @here", displayed.decoded?.body)
             val stale = reopened.decrypt(row)
             assertEquals(MessageRevision.STALE, stale.revision)
             displayed.receive(stale)
-            assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            assertEquals("EDITED-SECRET @here", displayed.decoded?.body)
             assertEquals("e2ee.revision.stale", displayed.decoded?.revisionNotice)
+            assertEquals(EncryptedMentions(here = true), displayed.decoded?.mentions)
             // 別セッションから同じ版の異なる本文が届いても、最初に確認した本文を保持する。
             displayed.receive(encryption.decrypt(editedRow))
             OutboundSession(channel, 2uL, 0uL).use { fork ->
@@ -198,13 +200,24 @@ class E2eeSetupTest {
                 val conflict = encryption.decrypt(JsonObject(editedRow + ("ciphertext" to alternate)))
                 assertEquals(MessageRevision.CONFLICT, conflict.revision)
                 displayed.receive(conflict)
-                assertEquals("EDITED-SECRET", displayed.decoded?.body)
+                assertEquals("EDITED-SECRET @here", displayed.decoded?.body)
             }
-            // 配れなかった鍵のセッションで本文を送らない。
+            // `undelivered` の端末があっても本文は送り（送信を止めない）、次の送信の前に同じセッションを配り直す
+            // （Web の `shareWithPendingDevices`、TUI の `send.rs` と同じ）。
             refuseDelivery = true
             epoch = 3
-            assertFailsWith<IllegalStateException> { encryption.send(channel, messageId, null, secret) }
-            assertEquals(3, posts)
+            val before = delivered.size
+            encryption.send(channel, messageId, null, secret)
+            assertEquals(4, posts)
+            assertEquals(before + 1, delivered.size)
+            refuseDelivery = false
+            encryption.send(channel, messageId, null, secret)
+            assertEquals(before + 2, delivered.size)
+            // 配り終えた端末には配り直さない。
+            encryption.send(channel, messageId, null, secret)
+            assertEquals(6, posts)
+            assertEquals(before + 2, delivered.size)
+            assertTrue(requests.none { secret in it })
             assertFailsWith<IllegalStateException> { encryption.edit(JsonObject(row - "ciphertext"), "plain edit") }
         } finally { lifetime.cancel(); http.close() }
     }
@@ -423,6 +436,45 @@ class E2eeSetupTest {
         assertEquals(0, second.setup.importKeyBackup())
     }
 
+    /** 鍵バックアップのアップロードの証明（#570。Web の `setupController.test.ts`、TUI の `e2ee_setup.rs` と同じ観点）。 */
+    @Test
+    fun keyBackupUploadsCarryTheProofOfTheCurrentVersion() = runBlocking<Unit> {
+        val device = Device("a")
+        val start = device.setup.begin()
+        device.setup.completeSetup(start.session, "t")
+        start.session.close()
+
+        // 今の版への正しい証明を付けて送る。
+        receiveRoomKey(device.store)
+        assertEquals(BackupUploadResult.Done(1), device.setup.uploadKeyBackup())
+        assertNotNull(server.proofs.single())
+
+        // サーバーの upload key が変わって証明が合わない（403）。その回は送るのをやめ、送信待ちに残す。
+        server.uploadKey = JsonPrimitive(BackupProofTestKit.OTHER_UPLOAD_KEY)
+        receiveRoomKey(device.store)
+        assertEquals(BackupUploadResult.Conflict("E2EE_BACKUP_PROOF_INVALID"), device.setup.uploadKeyBackup())
+        assertEquals(1, device.store.pendingBackupCount())
+        // 戻れば送る。
+        server.uploadKey = JsonPrimitive(BackupProofTestKit.UPLOAD_KEY)
+        assertEquals(BackupUploadResult.Done(1), device.setup.uploadKeyBackup())
+        assertEquals(0, device.store.pendingBackupCount())
+
+        // `upload_key` が鍵の形でなければ（文字列でない `null`、数値、オブジェクトも）、証明を省かずに送らない。
+        for (broken in listOf(JsonPrimitive("not-a-key"), JsonNull, JsonPrimitive(42), JsonObject(emptyMap()))) {
+            server.uploadKey = broken
+            receiveRoomKey(device.store)
+            val sent = server.proofs.size
+            assertIs<BackupUploadResult.Rejected>(device.setup.uploadKeyBackup(), broken.toString())
+            assertEquals(sent, server.proofs.size, broken.toString())
+        }
+
+        // `upload_key` のない版（証明を足す前のサーバー）だけ、ヘッダーを付けずに送る。
+        server.uploadKey = null
+        assertIs<BackupUploadResult.Done>(device.setup.uploadKeyBackup())
+        assertNull(server.proofs.last())
+        assertEquals(0, device.store.pendingBackupCount())
+    }
+
     @Test
     fun keyBackupRowsThatDoNotMatchAreDiscarded() = runBlocking<Unit> {
         val first = Device("first")
@@ -631,6 +683,14 @@ internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
     var backupPageSize = 1000
     var backupReads = 0
 
+    /**
+     * 今の版の `upload_key`（`GET /api/e2ee/key_backup/versions/current` に入れる値）。`null` ならフィールドを
+     * 入れない（証明を足す前のサーバー）。値は文字列とは限らない（壊れた応答を試す）。
+     */
+    var uploadKey: JsonElement? = JsonPrimitive(BackupProofTestKit.UPLOAD_KEY)
+    /** 受け取った `X-Zoo-Backup-Proof`（ヘッダーがなければ `null`）。 */
+    val proofs = mutableListOf<String?>()
+
     /** 置くと、鍵バックアップの送信がこれを待つ（送信が長引いた場合）。 */
     var holdBackup: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
@@ -734,7 +794,8 @@ internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
 
     override suspend fun backupVersions() = versionsJson()
 
-    override suspend fun currentBackupVersion(): JsonObject? = versions.lastOrNull()
+    override suspend fun currentBackupVersion(): JsonObject? =
+        versions.lastOrNull()?.let { version -> uploadKey?.let { JsonObject(version + ("upload_key" to it)) } ?: version }
 
     override suspend fun uploadCrossSigningKeys(body: JsonObject, reauth: String?) {
         requireReauth(reauth)
@@ -775,12 +836,22 @@ internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
         addVersion(body)
     }
 
-    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
+    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject, proof: String?) {
         holdBackup?.await()
         fail("backup_keys")
         backupConflict?.let { throw ApiException(409, code(it)) }
         check(version == versions.last()["version"]!!.jsonPrimitive.content)
         check(secretsRevision == revision)
+        proofs += proof
+        // 証明は、サーバーの今の upload key（0x22）で確かめる。`upload_key` を返さない版には、証明を付けない。
+        val key = (uploadKey as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (key == null) check(proof == null) { "upload_key のない版に証明が付いています" }
+        else {
+            val backupKey = versions.last()["auth_data"]!!.jsonObject["public_key"]!!.jsonPrimitive.content
+            if (proof != BackupProofTestKit.expectedProof(backupKey, userId, version)) {
+                throw ApiException(403, code("E2EE_BACKUP_PROOF_INVALID"))
+            }
+        }
         val sessions = body["sessions"]!!.jsonArray.map { it.jsonObject }
         backupUploads += sessions.size
         val rows = backupRows.getOrPut(version) { mutableListOf() }

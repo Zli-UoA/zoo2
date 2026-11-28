@@ -27,6 +27,9 @@ internal class AndroidNotifications(
     private val errors = mutableMapOf<String, String>()
     private val avatars = linkedMapOf<String, Bitmap>()
     private val avatarJobs = mutableMapOf<String, Job>()
+    private val pictures = linkedMapOf<String, Bitmap?>()
+    private val pendingPictures = linkedSetOf<String>()
+    private val pictureJobs = mutableMapOf<String, Job>()
     private val avatarSlots = Semaphore(2)
     private var closed = false
     private val actions = NotificationActions(
@@ -49,16 +52,7 @@ internal class AndroidNotifications(
         manager.activeNotifications.filter { notice ->
             notice.tag?.let { it.startsWith("zoo:") && (!it.startsWith(prefix) || it.startsWith("${prefix}group:")) } == true
         }.forEach { manager.cancel(it.tag, it.id) }
-        listOf(
-            "mentions" to "androidNotifications.mentions",
-            "messages" to "androidNotifications.messages",
-            "reactions" to "androidNotifications.reactions",
-        ).forEach { (id, label) ->
-            manager.createNotificationChannel(NotificationChannel(
-                "zoo.$id", app.t(label, "actor" to ""),
-                if (id == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH,
-            ).apply { enableVibration(true) })
-        }
+        DeliveryChannel.entries.forEach { it.register(activity, manager) }
         observer = app.scope.launch {
             app.repo.notifications.synchronizedRows.collectLatest(::update)
         }
@@ -108,6 +102,15 @@ internal class AndroidNotifications(
     private fun replyParent(row: Row): String? =
         notificationReplyParent(row, app.repo.cachedMessages(row.text("channel_id")))
 
+    private fun previewImage(row: Row): Row? {
+        if (row.text("notification_type") == "reaction") return null
+        val id = row.text("channel_id")
+        val channel = app.repo.channels.rows.value.find { it.text("id") == id } ?: return null
+        return notificationPreviewImage(
+            notificationCachedMessage(channel, row.text("message_id"), app.repo.cachedMessages(id)),
+        )
+    }
+
     private fun post(
         row: Row,
         error: String? = errors[row.text("id")],
@@ -121,8 +124,14 @@ internal class AndroidNotifications(
         val channel = data.nested("channel").text("channel_name")
         val kind = row.text("notification_type")
         val channelId = notificationChannel(row)
-        val body = notificationBody(row) { key, name -> app.t(key, "actor" to name) }
+        // Push で端末が復号した本文が同じ通知に出ていれば、それを残す（サーバーは暗号化チャンネルの本文を持たない。#510）。
+        // 印は端末が復号したときだけ付けるので、チャンネルの行がまだ同期されていなくても使う。
+        val tag = notificationTag(app.config.userId, id)
+        val decrypted = preservedDecryptedBody(manager, tag)
+        val body = decrypted ?: notificationBody(row) { key, name -> app.t(key, "actor" to name) }
         val avatar = avatars[notificationAvatar(row)]
+        val image = previewImage(row)
+        val picture = image?.let { pictures[it.text("id")] }
         val self = app.repo.users.rows.value.find { it.text("id") == app.config.userId }
             ?.let(::author)?.ifEmpty { null } ?: "Zoo"
         val destination = PushBinding(activity).openIntent(app.config.userId, id,
@@ -135,8 +144,11 @@ internal class AndroidNotifications(
             .setSmallIcon(works.zli.zoo.R.drawable.ic_notification)
             .setContentTitle(if (channel.isEmpty()) actor else "$actor · $channel")
             .setContentText(error ?: body)
-            .setStyle(if (error != null) Notification.BigTextStyle().bigText(error)
-                else notificationStyle(row, body, self, avatar))
+            .setStyle(when {
+                error != null -> Notification.BigTextStyle().bigText(error)
+                picture != null -> Notification.BigPictureStyle().bigPicture(picture).setSummaryText(body)
+                else -> notificationStyle(row, body, self, avatar)
+            })
             .setLargeIcon(avatar)
             .setWhen(timestampMillis(row.text("created_at")) ?: System.currentTimeMillis())
             .setGroup("zoo:${app.config.userId}:${notificationGroup(row)}")
@@ -145,7 +157,8 @@ internal class AndroidNotifications(
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             .setAutoCancel(true).setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setCategory(if (kind == "reaction") Notification.CATEGORY_SOCIAL else Notification.CATEGORY_MESSAGE)
+            .setExtras(android.os.Bundle().apply { decrypted?.let { putString(PUSH_DECRYPTED_BODY, it) } })
             .setDeleteIntent(action(id, "dismiss"))
             .addAction(Notification.Action.Builder(null, app.t("notifications.read"), action(id, "read")).build())
         if (kind != "reaction" && !actions.hasReplied(id) && canReply(row)) {
@@ -153,10 +166,50 @@ internal class AndroidNotifications(
             builder.addAction(Notification.Action.Builder(null, app.t("home.reply"), action(id, "reply", true))
                 .addRemoteInput(input).setAllowGeneratedReplies(true).build())
         }
-        try { manager.notify(notificationTag(app.repo.config.userId, id), 0, builder.build()) }
-        catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
+        // Push と同じロックで、出す直前にもう一度確かめる（読んでから出すまでのあいだに Push が復号した本文を出したら、
+        // それで上書きしない）。
+        synchronized(PushBinding.lock) {
+            val latest = preservedDecryptedBody(manager, tag)
+            // エラーを出すときも、復号した本文の印は残す（次に出し直すときに本文へ戻すため）。
+            (latest ?: decrypted)?.let { kept -> builder.setExtras(android.os.Bundle().apply { putString(PUSH_DECRYPTED_BODY, kept) }) }
+            if (latest != null && latest != decrypted && error == null) {
+                builder.setContentText(latest)
+                    .setStyle(if (picture != null) Notification.BigPictureStyle().bigPicture(picture).setSummaryText(latest)
+                        else notificationStyle(row, latest, self, avatar))
+            }
+            try { manager.notify(tag, 0, builder.build()) }
+            catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
+        }
         if (refreshSummary) updateSummaries()
         loadAvatar(row)
+        if (error == null && image != null) loadPicture(image.text("id"))
+    }
+
+    private fun loadPicture(id: String) {
+        if (closed || id.isBlank() || id in pictures || id in pictureJobs) return
+        if (pictureJobs.size >= 2) {
+            pendingPictures.add(id)
+            return
+        }
+        pendingPictures.remove(id)
+        val job = app.scope.launch(start = CoroutineStart.LAZY) {
+            val bitmap = try {
+                withTimeoutOrNull(8_000) {
+                    val bytes = app.image(app.attachmentLinks.get(id), signedAttachment = true)
+                    withContext(avatarDispatcher) { decodeOrientedBitmap(bytes, maxEdge = 720) }
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+            pictureJobs.remove(id)
+            if (closed) return@launch
+            pictures[id] = bitmap
+            while (pictures.size > 8) pictures.remove(pictures.keys.first())
+            if (bitmap != null) shown.values.filter { previewImage(it)?.text("id") == id }.toList()
+                .forEach { post(it, refreshSummary = false) }
+            pendingPictures.firstOrNull()?.let(::loadPicture)
+        }
+        pictureJobs[id] = job
+        job.start()
     }
 
     private fun loadAvatar(row: Row) {
@@ -262,8 +315,13 @@ internal class AndroidNotifications(
         observer.cancel()
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
+        pictureJobs.values.forEach { it.cancel() }
+        pictureJobs.clear()
+        pendingPictures.clear()
+        pictures.clear()
         avatars.clear()
-        if (preserveNotifications) {
+        // Push と同じロックの中で、今出ている通知を読んでから出し直す（あいだに Push が出した復号した本文を上書きしない）。
+        if (preserveNotifications) synchronized(PushBinding.lock) {
             val posted = manager.activeNotifications.associateBy { it.tag }
             for (row in shown.values.toList()) {
                 val id = row.text("id")

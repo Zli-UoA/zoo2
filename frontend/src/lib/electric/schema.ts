@@ -1,6 +1,7 @@
 import type {
   AttachmentRow,
   ChannelLeaveRow,
+  ChannelNotificationSettingRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -12,6 +13,7 @@ import type {
   TableRowMap,
   UserRow,
 } from "./types";
+import { asTableRow } from "./rowTypes";
 
 export type ElectricType =
   | "bool"
@@ -42,7 +44,9 @@ export type ShapeName =
   | "messages"
   | "messageReactions"
   | "users"
+  | "allUsers"
   | "channelUsers"
+  | "channelNotificationSettings"
   | "channelLeaves"
   | "notifications"
   | "callInvites"
@@ -60,7 +64,13 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
+  allUsers: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  // 通知設定は専用テーブル。自分の行だけを配信する別の Shape を使う。
+  channelNotificationSettings: {
+    table: "user_channel_notification_settings",
+    proxyPath: "channel_notification_settings",
+  },
   channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   callInvites: { table: "call_invites", proxyPath: "call_invites" },
   attachments: { table: "attachments", proxyPath: "attachments" },
@@ -110,6 +120,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     slack_imported_at: "timestamp",
     encrypted: "bool",
     membership_epoch: "int8",
+    posting_policy: "text",
   },
 };
 
@@ -140,6 +151,7 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     epoch: "int8",
     revision: "int4",
     message_kind: "text",
+    forwarded_message_ids: "jsonb",
   },
 };
 
@@ -160,6 +172,16 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
     user_id: "text",
     channel_id: "text",
     joined_at: "timestamp",
+  },
+};
+
+/** 本人の通知設定だけを配信する Shape の列定義。 */
+export const CHANNEL_NOTIFICATION_SETTINGS_SCHEMA: ShapeSchema<ChannelNotificationSettingRow> = {
+  table: "user_channel_notification_settings",
+  columns: {
+    user_id: "text",
+    channel_id: "text",
+    notification_level: "text",
   },
 };
 
@@ -237,6 +259,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  user_channel_notification_settings: CHANNEL_NOTIFICATION_SETTINGS_SCHEMA,
   channel_leave: CHANNEL_LEAVE_SCHEMA,
   call_invites: CALL_INVITE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,
@@ -280,5 +303,5 @@ export function coerceElectricRow<K extends TableName>(
       coerced[column] = coerceElectricValue(type, coerced[column]);
     }
   }
-  return coerced as unknown as TableRowMap[K];
+  return asTableRow<K>(coerced);
 }

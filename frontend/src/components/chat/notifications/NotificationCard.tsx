@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import {
   SmilePlusIcon,
   MessageCircleIcon,
+  MessageSquareIcon,
   AtSignIcon,
   UserRoundIcon,
   UsersIcon,
@@ -39,6 +40,7 @@ import {
 } from "./groupNotifications";
 import { useNotificationContext } from "./useNotificationContext";
 import { useReadVisibleNotification } from "./useReadVisibleNotification";
+import { isNestedControlClick } from "../../../lib/rowClick";
 
 export interface NotificationPreviewState {
   visible: boolean | null;
@@ -95,6 +97,14 @@ export function NotificationCard({
     return () => onPreviewChange?.(notification.id, null);
   }, [notification.id, isVisible, context.isLoading, channel?.id, onPreviewChange]);
   const message = context.data?.message;
+  const isForwardedOnlyPreview = Boolean(
+    message && message.content.trim() === "" && message.has_forwards,
+  );
+  const messagePreviewLabel = message
+    ? isForwardedOnlyPreview
+      ? t("notifications.forwardedPreview")
+      : quotePreview(message.content)
+    : "";
   const avatarReaction = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], [group.actorIds[0]!])[0]?.emoji
     : undefined;
@@ -108,6 +118,7 @@ export function NotificationCard({
   const actor = name(group.actorIds[0]!);
   // 不在着信にはメッセージがない。チャンネルへのリンクだけを出す。
   const isMissedCall = notification.notification_type === "missed_call";
+  const isChannelMessage = notification.notification_type === "channel_message";
   const label =
     isReaction && group.actorIds.length > 1
       ? t("notifications.reactionGroup", { actor, count: group.actorIds.length - 1 })
@@ -116,20 +127,24 @@ export function NotificationCard({
             ? "notifications.reaction"
             : isMissedCall
               ? "notifications.missedCall"
-              : notification.notification_type === "mention"
-                ? "notifications.mention"
-                : notification.notification_type === "dm"
-                  ? "notifications.dm"
-                  : "notifications.reply",
+              : isChannelMessage
+                ? "notifications.channelMessage"
+                : notification.notification_type === "mention"
+                  ? "notifications.mention"
+                  : notification.notification_type === "dm"
+                    ? "notifications.dm"
+                    : "notifications.reply",
           { actor },
         );
   const Icon = isReaction
     ? SmilePlusIcon
     : isMissedCall
       ? PhoneMissedIcon
-      : notification.notification_type === "mention"
-        ? AtSignIcon
-        : MessageCircleIcon;
+      : isChannelMessage
+        ? MessageSquareIcon
+        : notification.notification_type === "mention"
+          ? AtSignIcon
+          : MessageCircleIcon;
   const canOpen = Boolean(channel && (message || isMissedCall));
 
   const channelLabel = channel?.is_dm
@@ -153,11 +168,13 @@ export function NotificationCard({
       ? "notifications.reactionContext"
       : isMissedCall
         ? "notifications.missedCallContext"
-        : notification.notification_type === "mention"
-          ? "notifications.mentionContext"
-          : notification.notification_type === "dm"
-            ? "notifications.dmContext"
-            : "notifications.replyContext",
+        : isChannelMessage
+          ? "notifications.channelMessageContext"
+          : notification.notification_type === "mention"
+            ? "notifications.mentionContext"
+            : notification.notification_type === "dm"
+              ? "notifications.dmContext"
+              : "notifications.replyContext",
   );
   const actorSummary =
     group.actorIds.length > 1
@@ -168,8 +185,7 @@ export function NotificationCard({
     if (
       !canOpen ||
       event.defaultPrevented ||
-      !(event.target instanceof Element) ||
-      event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
+      isNestedControlClick(event) ||
       (window.getSelection()?.toString().length ?? 0) > 0
     )
       return;
@@ -259,7 +275,13 @@ export function NotificationCard({
           {isMissedCall ? null : channel && message ? (
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
+                {isForwardedOnlyPreview ? (
+                  <span className="text-muted-foreground">
+                    {t("notifications.forwardedPreview")}
+                  </span>
+                ) : (
+                  <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
+                )}
               </div>
             </blockquote>
           ) : (
@@ -277,7 +299,7 @@ export function NotificationCard({
               search={{ message: message ? (notification.message_id ?? undefined) : undefined }}
               onClick={() => shell.showChat()}
               title={channelLabel}
-              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}${message ? `: ${quotePreview(message.content)}` : ""}`}
+              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}${message ? `: ${messagePreviewLabel}` : ""}`}
               className="block w-fit max-w-full rounded-sm outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {destination}

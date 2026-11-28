@@ -7,11 +7,34 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import zoo.*
 
-internal fun notificationChannel(row: Row): String = when (row.text("notification_type")) {
-    "reaction" -> "reactions"
-    "dm" -> "messages"
-    else -> "mentions"
+internal enum class DeliveryChannel(val id: String, val label: Int) {
+    Mentions("mentions", works.zli.zoo.R.string.channel_mentions),
+    Replies("replies", works.zli.zoo.R.string.channel_replies),
+    Messages("messages", works.zli.zoo.R.string.channel_dm),
+    ChannelMessages("channel_messages", works.zli.zoo.R.string.channel_messages),
+    Reactions("reactions", works.zli.zoo.R.string.channel_reactions);
+
+    fun register(context: android.content.Context, manager: android.app.NotificationManager) {
+        val importance = when {
+            this == Reactions -> android.app.NotificationManager.IMPORTANCE_DEFAULT
+            this == Replies || this == ChannelMessages ->
+                manager.getNotificationChannel("zoo.mentions")?.importance ?: android.app.NotificationManager.IMPORTANCE_HIGH
+            else -> android.app.NotificationManager.IMPORTANCE_HIGH
+        }
+        manager.createNotificationChannel(android.app.NotificationChannel("zoo.$id", context.getString(label), importance)
+            .apply { enableVibration(true) })
+    }
 }
+
+internal fun deliveryChannel(kind: String) = when (kind) {
+    "reaction" -> DeliveryChannel.Reactions
+    "dm" -> DeliveryChannel.Messages
+    "reply" -> DeliveryChannel.Replies
+    "channel_message" -> DeliveryChannel.ChannelMessages
+    else -> DeliveryChannel.Mentions
+}
+
+internal fun notificationChannel(row: Row) = deliveryChannel(row.text("notification_type")).id
 
 // Keep reactions separate from messages, and never combine different channels/accounts.
 internal fun notificationGroup(row: Row): String =
@@ -27,12 +50,27 @@ internal fun notificationBody(row: Row, translate: (String, String) -> String): 
     val data = row.nested("display_data")
     val content = data.nested("message").text("content")
     val kind = row.text("notification_type")
-    if (kind != "reaction") return content.ifEmpty { translate("notifications.$kind", notificationActor(row)) }
-    val description = translate("notifications.$kind", notificationActor(row))
+    val actor = notificationActor(row)
+    if (kind != "reaction") return content.ifEmpty { notificationKindText(kind, actor, translate) }
+    val description = notificationKindText(kind, actor, translate)
     val emoji = data["reactions"]?.rows()?.firstOrNull {
         it.text("user_id") == row.text("actor_id")
     }?.text("emoji").orEmpty()
-    return listOf(description, emoji, content).filter { it.isNotEmpty() }.joinToString("\n")
+    val event = listOf(emoji, description).filter { it.isNotEmpty() }.joinToString(" ")
+    return listOf(event, content).filter { it.isNotEmpty() }.joinToString("\n")
+}
+
+/**
+ * `channel_message` のキーは新しい辞書だけに追加される。辞書に無いとき [translate] はキー名を返すので、
+ * 全ロケールに既存の `notifications.channelMessage` へ落とし、それも無いときは固定文言を使う。
+ * いずれの場合も翻訳キー名を通知に出さない。
+ */
+private fun notificationKindText(kind: String, actor: String, translate: (String, String) -> String): String {
+    val key = "notifications.$kind"
+    val text = translate(key, actor)
+    if (text != key || kind != "channel_message") return text
+    val previousKey = "notifications.channelMessage"
+    return translate(previousKey, actor).takeIf { it != previousKey } ?: "新しいメッセージ"
 }
 
 /** Native styles let Android handle expansion, accessibility and conversation layout. */

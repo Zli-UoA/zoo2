@@ -6,57 +6,51 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
+import io.ktor.client.*
+import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import works.zli.zoo.BuildConfig
-
-/** Native-only settings remain outside the shared Web/Android application screens. */
-@Composable
-internal fun AndroidUpdateFrame(context: Context, dark: Boolean, content: @Composable () -> Unit) {
-    var show by remember { mutableStateOf(false) }
-    MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            Surface(tonalElevation = 1.dp) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        "Android ${BuildConfig.VERSION_NAME}",
-                        Modifier.padding(vertical = 14.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    TextButton(onClick = { show = true }) { Text("アプリの更新") }
-                }
-            }
-            Box(Modifier.weight(1f)) { content() }
-        }
-        if (show) UpdateSettingsDialog(context) { show = false }
-    }
-}
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.unit.sp
+import zoo.android.ui.AndroidShell
+import zoo.android.ui.PageHeader
+import zoo.android.ui.TextAction
+import zoo.android.ui.TextActionStyle
+import zoo.android.ui.UiIcon
 
 @Composable
-private fun UpdateSettingsDialog(context: Context, close: () -> Unit) {
+internal fun UpdateSettings(context: Context, dark: Boolean, language: String, back: () -> Unit) {
     val prefs = remember { UpdatePreferences(context) }
     var enabled by remember { mutableStateOf(prefs.enabled) }
     var status by remember { mutableStateOf(prefs.status) }
+    var running by remember { mutableStateOf(Shizuku.pingBinder()) }
     var ready by remember { mutableStateOf(shizukuReady()) }
     var granting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    var fetching by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     DisposableEffect(Unit) {
         val changed =
             SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
                 enabled = prefs.enabled
                 status = prefs.status
             }
-        val received = Shizuku.OnBinderReceivedListener { ready = shizukuReady() }
+        val received = Shizuku.OnBinderReceivedListener { running = true; ready = shizukuReady(); error = "" }
         val dead =
             Shizuku.OnBinderDeadListener {
+                running = false
                 ready = false
                 granting = false
             }
@@ -79,72 +73,83 @@ private fun UpdateSettingsDialog(context: Context, close: () -> Unit) {
             Shizuku.removeRequestPermissionResultListener(permission)
         }
     }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("アプリの更新") },
-        text = {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(
-                    "main の最新ビルドに更新します。自動更新は6時間ごとに、従量制ではないネットワークと十分なバッテリーがあるときに確認します。更新時はアプリが終了することがあります。"
-                )
-                Text(if (ready) "Shizuku: 使用を許可済み" else "Shizuku: 起動と使用許可が必要です")
-                if (BuildConfig.DEBUG) Text("自動更新は署名付き release 版で利用できます。debug 版からの上書き更新はできません。")
-                if (!ready) {
-                    Button(
-                        onClick = {
-                            error = ""
-                            try {
-                                check(Shizuku.pingBinder() && !Shizuku.isPreV11()) {
-                                    "Shizuku を起動してください"
-                                }
-                                granting = true
-                                Shizuku.requestPermission(314)
-                            } catch (_: Exception) {
-                                granting = false
-                                error = "Shizuku アプリを起動し、サービスを開始してから許可してください"
-                            }
-                        },
-                        enabled = !granting && !BuildConfig.DEBUG,
-                    ) {
-                        Text("Shizuku の使用を許可")
-                    }
-                    TextButton(
-                        onClick = {
-                            context.startActivity(
-                                Intent(
-                                    Intent.ACTION_VIEW,
-                                    Uri.parse("https://shizuku.rikka.app/ja/"),
-                                )
-                            )
-                        }
-                    ) {
-                        Text("Shizuku の導入方法")
+    AndroidShell(null, dark, {}, language) { colors ->
+        PageHeader("アプリの更新", colors, onBack = back)
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("バージョン ${BuildConfig.VERSION_NAME}", color = colors.secondary, fontSize = 13.sp)
+            Text("自動更新は Wi-Fi などの従量制でない接続で確認します。インストールが終わると Zoo が開き直ります。",
+                color = colors.foreground)
+            Text(when { ready -> "Shizuku の使用を許可済み"; running -> "Shizuku の使用許可が必要です"; else -> "Shizuku のサービスが停止しています" },
+                color = colors.secondary)
+            if (BuildConfig.DEBUG) Text("自動更新は署名付きの配布版で利用できます。", color = colors.secondary)
+            if (!ready && !BuildConfig.DEBUG) {
+                TextAction("Shizuku の使用を許可", colors, icon = UiIcon.Key, enabled = running && !granting) {
+                    error = ""
+                    try {
+                        check(Shizuku.pingBinder() && !Shizuku.isPreV11())
+                        granting = true
+                        Shizuku.requestPermission(314)
+                    } catch (_: Exception) {
+                        granting = false
+                        error = "Shizuku のサービスを起動してから許可してください"
                     }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("自動更新", Modifier.padding(top = 12.dp))
-                    Switch(
-                        checked = enabled,
-                        onCheckedChange = {
-                            UpdateScheduler.configure(context, it)
-                            if (it) UpdateScheduler.checkNow(context)
-                        },
-                        enabled = !BuildConfig.DEBUG && (ready || enabled),
-                    )
-                }
-                Button(
-                    onClick = { UpdateScheduler.checkNow(context) },
-                    enabled = ready && !BuildConfig.DEBUG,
-                ) {
-                    Text("今すぐ更新を確認・適用")
-                }
-                Text(status, style = MaterialTheme.typography.bodySmall)
-                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
             }
-        },
-        confirmButton = { TextButton(onClick = close) { Text("閉じる") } },
-    )
+            if (!ready) TextAction("Shizuku の導入方法", colors, icon = UiIcon.External, style = TextActionStyle.Neutral) {
+                try {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/ja/")))
+                } catch (_: android.content.ActivityNotFoundException) {
+                    error = "ブラウザーを開けませんでした"
+                }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("自動更新", Modifier.weight(1f), color = colors.foreground)
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = {
+                        UpdateScheduler.configure(context, it)
+                    },
+                    enabled = !BuildConfig.DEBUG && (ready || enabled),
+                    modifier = Modifier.semantics { contentDescription = "自動更新" },
+                )
+            }
+            TextAction("今すぐ更新を確認", colors, icon = UiIcon.Refresh, enabled = ready && !BuildConfig.DEBUG) {
+                UpdateScheduler.checkNow(context)
+            }
+            TextAction("最新の APK をダウンロード", colors, icon = UiIcon.External, style = TextActionStyle.Neutral, enabled = !fetching) {
+                error = ""
+                fetching = true
+                scope.launch {
+                    try {
+                        val release =
+                            withContext(Dispatchers.IO) {
+                                HttpClient(OkHttp) {
+                                    engine { config { followSslRedirects(false) } }
+                                    install(HttpTimeout) { requestTimeoutMillis = 30_000 }
+                                }.use { fetchUpdateRelease(it) }
+                            }
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(release.url))
+                                .addCategory(Intent.CATEGORY_BROWSABLE)
+                        )
+                    } catch (_: android.content.ActivityNotFoundException) {
+                        error = "ブラウザーを開けませんでした"
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        error = e.message ?: "更新情報を取得できませんでした"
+                    } finally {
+                        fetching = false
+                    }
+                }
+            }
+            Text("Shizuku を使わない場合は、APK をダウンロードして開き、手動でインストールしてください。",
+                color = colors.secondary, fontSize = 13.sp)
+            if (status.isNotBlank()) Text(status, color = colors.secondary, fontSize = 13.sp)
+            if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+        }
+    }
 }

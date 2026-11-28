@@ -1,0 +1,5 @@
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/zoo_brand_yellow" />
+    <foreground><inset android:drawable="@drawable/zoo_mark" android:inset="14%" /></foreground>
+    <monochrome><inset android:drawable="@drawable/zoo_mark" android:inset="14%" /></monochrome>
+</adaptive-icon>

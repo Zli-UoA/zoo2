@@ -118,7 +118,17 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
                 .any(|v| v["id"] == root)
         );
     }
-    ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
+    // A write answers with the participants read after it committed, so they include the change.
+    let joined = ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
+    assert_eq!(joined["data"]["membership"], "joined");
+    assert!(
+        joined["data"]["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == users[2].as_str())
+    );
+    assert_eq!(joined["data"]["tracked"], true);
     let repeat = ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
     assert!(repeat["txid"].is_null());
     ok(&app, &users[1], "POST", &format!("{path}/leave"), json!({})).await?;
@@ -128,6 +138,17 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
         ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["membership"],
         "left"
     );
+    // The participant list reflects only people who are currently in the thread.
+    let detail = ok(&app, &users[2], "GET", &path, Value::Null).await?;
+    let listed: Vec<&str> = detail["data"]["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(listed.contains(&users[2].as_str()));
+    assert!(!listed.contains(&users[1].as_str()));
+    assert_eq!(detail["data"]["participant_count"], listed.len());
     toasty::sql::statement(
         "UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1",
     )
@@ -169,6 +190,54 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
     let nested_id = uuid::Uuid::new_v4().to_string();
     let nested =
         json!({"id":nested_id,"channel_id":channel,"parent_id":reply,"content":"Back again"});
+    // Like a channel, replying needs membership: a user who left must join again first.
+    assert_eq!(
+        call(&app, &users[1], "POST", "/api/messages", nested.clone())
+            .await?
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    // A Home reply is the exception: it joins the thread as it posts, even after a leave.
+    let home_root = ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/home",
+        json!({"content":"home root","channel_id":channel,"visibility":"public"}),
+    )
+    .await?["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let home_reply = json!({"content":"via home","in_reply_to":home_root,"channel_id":channel,"visibility":"public"});
+    ok(&app, &users[1], "POST", "/api/home", home_reply.clone()).await?;
+    let home_path = format!("/api/threads/{home_root}");
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("{home_path}/leave"),
+        json!({}),
+    )
+    .await?;
+    ok(&app, &users[1], "POST", "/api/home", home_reply).await?;
+    assert_eq!(
+        ok(&app, &users[1], "GET", &home_path, Value::Null).await?["data"]["membership"],
+        "joined"
+    );
+    assert_eq!(
+        ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["tracked"],
+        true
+    );
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("{path}/unarchive"),
+        json!({}),
+    )
+    .await?;
+    ok(&app, &users[1], "POST", &format!("{path}/join"), json!({})).await?;
     let created = ok(&app, &users[1], "POST", "/api/messages", nested.clone()).await?;
     assert_eq!(created["data"]["parent_id"], root);
     let state = ok(&app, &users[1], "GET", &path, Value::Null).await?;
@@ -342,6 +411,482 @@ async fn rollout_http_keeps_legacy_threads_readable_and_isolates_phases() -> any
     )
     .await?;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    fixture.cleanup().await?;
+    Ok(())
+}
+
+/// フラグ (`zoo.thread_live_import`) を一度も設定していない接続でも、zoo の返信 (作成日時が現在時刻) は、
+/// 退出が返信の作成日時より後でも、従来どおり再参加させる。
+/// 未設定のフラグは `current_setting` が NULL を返し、条件が NULL になって、再参加の UPDATE が動かないことがあった。
+/// プールの接続は、Slack の取り込みで一度フラグを設定すると、トランザクションのあとに空文字列へ戻り NULL にならないので、
+/// 新しい接続で確かめる
+#[tokio::test]
+async fn zoo_reply_rejoins_on_a_fresh_connection_even_when_the_leave_is_later() -> anyhow::Result<()>
+{
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
+    let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let users: Vec<_> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    for user in &users {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id":user,"user_name":user,"display_name":user}),
+        )
+        .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+    let root = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/messages",
+        json!({"id":root,"channel_id":channel,"content":"Root"}),
+    )
+    .await?;
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        "/api/messages",
+        json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":root,"content":"First"}),
+    )
+    .await?;
+
+    // 新しい接続（フラグを一度も設定していない）で、直接 SQL を流す
+    let (client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(connection);
+    let unset: Option<String> = client
+        .query_one(
+            "SELECT current_setting('zoo.thread_live_import', true)",
+            &[],
+        )
+        .await?
+        .get(0);
+    assert!(
+        unset.is_none(),
+        "a fresh connection has no flag, so current_setting is NULL"
+    );
+    // users[1] が、これから入れる返信の作成日時（現在時刻）より後の時刻に退出した状態にする
+    client
+        .execute(
+            "UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')+interval '1 minute' \
+             WHERE thread_id=$1 AND user_id=$2",
+            &[&root, &users[1]],
+        )
+        .await?;
+    // zoo の返信: 作成日時はトランザクションの開始時刻（現在時刻）
+    let inserted = client
+        .execute(
+            "INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) \
+             VALUES($1,$2,$3,'Again',$4,now() AT TIME ZONE 'UTC')",
+            &[
+                &uuid::Uuid::new_v4().to_string(),
+                &users[1],
+                &channel,
+                &root,
+            ],
+        )
+        .await?;
+    assert_eq!(inserted, 1);
+    let left: bool = client
+        .query_one(
+            "SELECT left_at IS NOT NULL FROM thread_participants WHERE thread_id=$1 AND user_id=$2",
+            &[&root, &users[1]],
+        )
+        .await?
+        .get(0);
+    assert!(
+        !left,
+        "a zoo reply rejoins even when the leave is dated later than the reply"
+    );
+    fixture.cleanup().await?;
+    Ok(())
+}
+
+/// 閉じて、`user` が、1 分前に退出した状態にする
+async fn close_and_leave(
+    client: &tokio_postgres::Client,
+    root: &str,
+    user: &str,
+) -> anyhow::Result<()> {
+    client
+        .execute(
+            "UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1",
+            &[&root],
+        )
+        .await?;
+    client
+        .execute(
+            "UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')-interval '1 minute' \
+             WHERE thread_id=$1 AND user_id=$2",
+            &[&root, &user],
+        )
+        .await?;
+    Ok(())
+}
+
+/// `(スレッドが閉じているか, user が退出しているか)`
+async fn archived_and_left(
+    client: &tokio_postgres::Client,
+    root: &str,
+    user: &str,
+) -> anyhow::Result<(bool, bool)> {
+    let row = client
+        .query_one(
+            "SELECT (SELECT thread_archive_at IS NOT NULL FROM messages WHERE id=$1), \
+                    (SELECT left_at IS NOT NULL FROM thread_participants WHERE thread_id=$1 AND user_id=$2)",
+            &[&root, &user],
+        )
+        .await?;
+    Ok((row.get(0), row.get(1)))
+}
+
+/// 返信の作成日時は、トランザクションの開始時刻（現在時刻）。フラグだけを変えて入れる
+async fn insert_reply_dated_now(
+    client: &mut tokio_postgres::Client,
+    channel: &str,
+    root: &str,
+    user: &str,
+    flag: Option<&str>,
+) -> anyhow::Result<()> {
+    let tx = client.transaction().await?;
+    if let Some(flag) = flag {
+        tx.query_one(
+            "SELECT set_config('zoo.thread_live_import',$1,true)",
+            &[&flag],
+        )
+        .await?;
+    }
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) \
+         VALUES($1,$2,$3,'Reply',$4,now() AT TIME ZONE 'UTC')",
+        &[&uuid::Uuid::new_v4().to_string(), &user, &channel, &root],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// フラグ (`zoo.thread_live_import`) の 3 つの状態。`off` (取り込みの履歴) は、返信の作成日時が現在時刻 (時計のずれで
+/// `created_at >= トランザクションの開始時刻`) でも、ライブにしない。未設定 (zoo の返信) は、作成日時が現在時刻なら、
+/// スレッドを再Openして、退出済みの投稿者を再参加させる。`on` (取り込みの直近の返信) は、再Openするが、返信より
+/// 後の退出は取り消さない
+#[tokio::test]
+async fn import_flag_off_is_history_even_when_the_reply_is_dated_now() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
+    let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let users: Vec<_> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    for user in &users {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id":user,"user_name":user,"display_name":user}),
+        )
+        .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+    let root = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/messages",
+        json!({"id":root,"channel_id":channel,"content":"Root"}),
+    )
+    .await?;
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        "/api/messages",
+        json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":root,"content":"First"}),
+    )
+    .await?;
+
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(connection);
+    let user = users[1].as_str();
+
+    // off: 取り込みの履歴。再Openも再参加もしない
+    close_and_leave(&client, &root, user).await?;
+    insert_reply_dated_now(&mut client, &channel, &root, user, Some("off")).await?;
+    assert_eq!(
+        archived_and_left(&client, &root, user).await?,
+        (true, true),
+        "history import: neither reopened nor rejoined"
+    );
+    // 未設定: zoo の返信。再Openして、再参加する
+    insert_reply_dated_now(&mut client, &channel, &root, user, None).await?;
+    assert_eq!(
+        archived_and_left(&client, &root, user).await?,
+        (false, false),
+        "a zoo reply reopens the thread and rejoins"
+    );
+    // on: 取り込みの直近の返信。再Openするが、返信より後の退出（1 分先）は取り消さない
+    close_and_leave(&client, &root, user).await?;
+    client
+        .execute(
+            "UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')+interval '1 minute' \
+             WHERE thread_id=$1 AND user_id=$2",
+            &[&root, &user],
+        )
+        .await?;
+    insert_reply_dated_now(&mut client, &channel, &root, user, Some("on")).await?;
+    assert_eq!(
+        archived_and_left(&client, &root, user).await?,
+        (false, true),
+        "a live import reply reopens, but does not rejoin someone who left later"
+    );
+    fixture.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleted_parent_threads_remain_readable_via_reply_without_exposing_body_or_allowing_normal_replies()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut db = init_db(&fixture.config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
+    let app = create_router(AppState::new(db.clone(), fixture.config.clone()));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let reader = uuid::Uuid::new_v4().to_string();
+    let outsider = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &reader, &outsider] {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id":user,"user_name":user,"display_name":user}),
+        )
+        .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    ok(
+        &app,
+        &reader,
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+
+    let deleted_root = uuid::Uuid::new_v4().to_string();
+    let orphan_deleted_root = uuid::Uuid::new_v4().to_string();
+    let imported_reply = uuid::Uuid::new_v4().to_string();
+    let deleted_reply = uuid::Uuid::new_v4().to_string();
+    {
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("SET LOCAL zoo.slack_import = 'on'")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,deleted_at) \
+             VALUES($1,$2,$3,'Secret deleted parent body',now() AT TIME ZONE 'UTC'), \
+                   ($4,$2,$3,'Deleted parent without replies',now() AT TIME ZONE 'UTC')",
+        )
+        .bind(deleted_root.as_str())
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .bind(orphan_deleted_root.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,parent_id) \
+             VALUES($1,$2,$3,'Imported reply under deleted parent',$4)",
+        )
+        .bind(imported_reply.as_str())
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .bind(deleted_root.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,parent_id,deleted_at) \
+             VALUES($1,$2,$3,'Deleted reply',$4,now() AT TIME ZONE 'UTC')",
+        )
+        .bind(deleted_reply.as_str())
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .bind(deleted_root.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    // Channel readers can resolve the thread from the surviving reply or deleted root
+    // as a contentless placeholder (`root_deleted: true`), without leaking the deleted body.
+    for target in [&imported_reply, &deleted_root] {
+        let detail = ok(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{target}"),
+            Value::Null,
+        )
+        .await?;
+        assert_eq!(detail["data"]["id"], deleted_root);
+        assert_eq!(detail["data"]["channel_id"], channel);
+        assert_eq!(detail["data"]["root_deleted"], true);
+        assert_eq!(detail["data"]["can_participate"], false);
+        assert!(detail["data"].get("content").is_none());
+    }
+
+    // A deleted reply or a deleted root without surviving replies still returns 404.
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{deleted_reply}"),
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{orphan_deleted_root}"),
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Normal replies and thread mutations against a deleted parent remain rejected.
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "POST",
+            "/api/messages",
+            json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":deleted_root,"content":"Normal reply"}),
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "POST",
+            "/api/messages",
+            json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":imported_reply,"content":"Normal nested reply"}),
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "POST",
+            &format!("/api/threads/{imported_reply}/join"),
+            json!({}),
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Private channels still reject nonmembers on GET /api/threads/{id}.
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        call(
+            &app,
+            &outsider,
+            "GET",
+            &format!("/api/threads/{imported_reply}"),
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        ok(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{imported_reply}"),
+            Value::Null
+        )
+        .await?["data"]["root_deleted"],
+        true
+    );
+
     fixture.cleanup().await?;
     Ok(())
 }

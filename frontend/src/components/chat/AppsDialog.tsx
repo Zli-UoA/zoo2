@@ -11,7 +11,7 @@ import { SettingsSection, panelTabClassName } from "../ui/control-panel";
 import { useNavigate } from "@tanstack/react-router";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
-import { useActiveChannels, useUsers } from "../../hooks/useRealtime";
+import { useActiveChannels, useAllUsers } from "../../hooks/useRealtime";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
@@ -52,36 +52,6 @@ type Surface = {
   channel_id: string | null;
   document: { blocks?: unknown; components?: unknown; flags?: number };
 };
-export function AppDialogs() {
-  const [open, setOpen] = useState(false);
-  const [appId, setAppId] = useState<string>();
-  const [messageId, setMessageId] = useState<string>();
-  useEffect(() => {
-    const listener = (event: Event) => {
-      setMessageId(undefined);
-      setAppId((event as CustomEvent<string>).detail);
-      setOpen(true);
-    };
-    const messageListener = (event: Event) => {
-      setAppId(undefined);
-      setMessageId((event as CustomEvent<string>).detail);
-      setOpen(true);
-    };
-    window.addEventListener("zoo:open-app", listener);
-    window.addEventListener("zoo:message-actions", messageListener);
-    return () => {
-      window.removeEventListener("zoo:open-app", listener);
-      window.removeEventListener("zoo:message-actions", messageListener);
-    };
-  }, []);
-  return (
-    <>
-      {open ? (
-        <AppsDialog initialId={appId} messageId={messageId} onClose={() => setOpen(false)} />
-      ) : null}
-    </>
-  );
-}
 export function AppsDialog({
   initialId,
   messageId,
@@ -146,7 +116,7 @@ function UserAppsDialog({
   const [commandArguments, setCommandArguments] = useState<Record<string, string>>({});
   const [surfaces, setSurfaces] = useState<Surface[]>([]);
   const [consent, setConsent] = useState<{ pending: boolean; error: string } | null>(null);
-  const people = useUsers().data ?? [];
+  const people = useAllUsers().data ?? [];
   const targetChannel = channels.find((channel) => channel.id === targetChannelId);
   const encryptedTarget = Boolean(targetChannel?.encrypted);
   const app = apps.find((a) => a.id === selected);

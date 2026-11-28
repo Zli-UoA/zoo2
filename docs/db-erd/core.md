@@ -97,9 +97,50 @@ erDiagram
       boolean is_muted
       text joined_at
       timestamptz expires_at
+      boolean sfu_capable
+      text sfu_id
+      text sfu_room
+      text cf_session_id
+      text livekit_identity
     }
     call_presence }o--o| channels : call_presence_channel_id_fkey
     call_presence }o--o| users : call_presence_user_id_fkey
+    call_rooms {
+      text channel_id PK,FK
+      text mode
+      bigint epoch
+      bigint track_version
+      bigint bridge_epoch
+      bigint bridge_room_gen
+    }
+    call_rooms |o--o| channels : call_rooms_channel_id_fkey
+    call_sfu_bridge {
+      smallint id PK
+      bigint epoch
+    }
+    call_sfu_departures {
+      bigint id PK
+      text channel_id
+      uuid session_id
+      text sfu_id
+      text sfu_room
+      text cf_session_id
+      text livekit_identity
+      integer attempts
+      timestamptz claimed_until
+      timestamptz created_at
+    }
+    call_sfu_tracks {
+      text channel_id PK,FK
+      uuid session_id PK,FK
+      text source PK
+      text cf_session_id
+      text track_name
+      bigint bridge_epoch
+      text bridge_publish_id
+      bigint bridge_room_gen
+    }
+    call_sfu_tracks }o--o| call_presence : call_sfu_tracks_presence_fkey
     channel_leave {
       text user_id PK,FK
       text channel_id PK,FK
@@ -128,6 +169,10 @@ erDiagram
     }
     channel_notes }o--o| channels : channel_notes_channel_id_fkey
     channel_notes }o--o| users : channel_notes_created_user_id_fkey
+    channel_notes_cleanup_cursor {
+      boolean id PK
+      text last_channel_id
+    }
     channel_pins {
       text channel_id PK,FK
       text item_type PK
@@ -148,6 +193,7 @@ erDiagram
       text user_id PK,FK
       text channel_id PK,FK
       timestamp(3) joined_at
+      text notification_level
     }
     channel_user }o--o| channels : channel_user_channel_id_fkey
     channel_user }o--o| users : channel_user_user_id_fkey
@@ -197,11 +243,16 @@ erDiagram
       integer attempts
       timestamptz retry_at
     }
-    home_image_deletions {
+    home_image_deletion_queue {
       text id PK
       text uploader_id
       bigint file_size
       timestamptz created_at
+      boolean thumbnail_accounted
+      bigint unconfirmed_thumbnail_bytes
+      boolean legacy_write_pending
+      boolean original_write_pending
+      boolean thumbnail_write_pending
     }
     home_image_upload_rates {
       text user_id PK,FK
@@ -219,6 +270,12 @@ erDiagram
       integer height
       text blurhash
       timestamptz created_at
+      bigint thumbnail_bytes
+      boolean thumbnail_ready
+      boolean thumbnail_conditional_write
+      boolean original_write_confirmed
+      boolean thumbnail_write_pending
+      timestamptz thumbnail_check_at
     }
     home_images }o--o| users : home_images_uploader_id_fkey
     home_posts {
@@ -237,6 +294,7 @@ erDiagram
       text reply_user_id FK
       jsonb media
       text reply_target_id
+      text quote_uri
     }
     home_posts }o--o| channels : home_posts_channel_id_fkey
     home_posts }o--o| users : home_posts_reply_user_id_fkey
@@ -296,6 +354,7 @@ erDiagram
       integer revision
       text reply_target_id
       text components
+      jsonb forwarded_message_ids
     }
     messages }o--o| apps : messages_app_origin_id_fkey
     messages }o--o| channels : messages_channel_id_fkey
@@ -441,6 +500,13 @@ erDiagram
     typing_presence }o--o| channels : typing_presence_channel_id_fkey
     typing_presence }o--o| messages : typing_presence_parent_id_fkey
     typing_presence }o--o| users : typing_presence_user_id_fkey
+    user_channel_notification_settings {
+      text user_id PK,FK
+      text channel_id PK,FK
+      text notification_level
+    }
+    user_channel_notification_settings }o--o| channels : user_channel_notification_settings_channel_id_fkey
+    user_channel_notification_settings }o--o| users : user_channel_notification_settings_user_id_fkey
     user_channel_pin_states {
       text user_id PK,FK
       bigint version

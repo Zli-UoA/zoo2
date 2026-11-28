@@ -9,6 +9,7 @@ import { SettingsSection } from "../ui/control-panel";
 import {
   ArrowLeftIcon,
   BellIcon,
+  DownloadIcon,
   LanguagesIcon,
   LogOutIcon,
   PaletteIcon,
@@ -16,6 +17,7 @@ import {
   Volume2Icon,
 } from "lucide-react";
 import { Tabs } from "@base-ui/react/tabs";
+import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { SearchEngineSelect } from "../preferences/SearchEngineSelect";
@@ -24,6 +26,7 @@ import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { isDesktopSession } from "../../lib/desktop";
 import { DesktopNotificationSelect } from "../desktop/DesktopNotificationSelect";
+import { DesktopDownloadSettings } from "../desktop/DesktopDownloadSettings";
 import { AppsPanel } from "../chat/AppsDialog";
 import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
@@ -33,8 +36,10 @@ import { EncryptionTab } from "../e2ee/EncryptionTab";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { useMyChannelMemberships } from "../../hooks/useRealtime";
 import { normalizeSettingsSearch, type SettingsTab } from "./settingsSearch";
 import { Button } from "../ui/button";
+import { Select } from "../ui/select";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
 import { joinUrl } from "../../lib/config";
@@ -150,16 +155,31 @@ export function ZooSettings() {
                 <SettingRow
                   icon={<BellIcon />}
                   label={t("pwa.desktopTitle")}
-                  description={t("pwa.desktopDescription")}
+                  description={`${t("pwa.desktopDescription")} ${t("notifications.settingsDefault")}`}
                 >
                   <DesktopNotificationSelect />
                 </SettingRow>
               ) : (
-                <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
+                <SettingRow
+                  icon={<BellIcon />}
+                  label={t("pwa.title")}
+                  description={t("notifications.settingsDefault")}
+                >
                   <PwaControls presentation="select" />
                 </SettingRow>
               )}
+              {isDesktopSession() ? (
+                // デスクトップ版は、WebView 任せにせず OS の保存ダイアログで保存する (lib/desktopDownloads.ts)。
+                <SettingRow
+                  icon={<DownloadIcon />}
+                  label={t("downloads.desktopTitle")}
+                  description={t("downloads.desktopDescription")}
+                >
+                  <DesktopDownloadSettings />
+                </SettingRow>
+              ) : null}
             </div>
+            <ChannelNotificationGuide />
             {config.oidc ? (
               <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50">
                 <SettingRow icon={<LogOutIcon />} label={t("auth.logout")}>
@@ -225,6 +245,63 @@ export function ZooSettings() {
         </Tabs.Root>
       </div>
     </section>
+  );
+}
+
+/**
+ * 通知レベルはチャンネルごとにヘッダーから変更する。設定画面からは、その画面へ
+ * 移動する導線だけを出す（値は本人の通知設定コレクションから読み、ここでは取得しない）。
+ */
+function ChannelNotificationGuide() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { channels } = useCollections();
+  const { joinedChannelIds } = useMyChannelMemberships();
+  const channelsQuery = useLiveQuery((q) => q.from({ channels }));
+  const [selected, setSelected] = useState("");
+  const options = useMemo(
+    () =>
+      (channelsQuery.data ?? []).filter(
+        (channel) => !channel.is_dm && joinedChannelIds.has(channel.id),
+      ),
+    [channelsQuery.data, joinedChannelIds],
+  );
+  const target = options.find((channel) => channel.id === selected) ?? options[0];
+  return (
+    <SettingsSection
+      className="mt-4"
+      title={t("notifications.channelSettings")}
+      description={t("notifications.settingsHint")}
+    >
+      {target ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            aria-label={t("notifications.channelSettings")}
+            value={target.id}
+            onChange={(event) => setSelected(event.target.value)}
+          >
+            {options.map((channel) => (
+              <option key={channel.id} value={channel.id}>
+                #{channel.channel_name}
+              </option>
+            ))}
+          </Select>
+          <Button
+            variant="outline"
+            onClick={() =>
+              void navigate({
+                to: "/channels/$channelId",
+                params: { channelId: target.id },
+              })
+            }
+          >
+            {t("notifications.openChannel")}
+          </Button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">{t("notifications.noChannel")}</p>
+      )}
+    </SettingsSection>
   );
 }
 

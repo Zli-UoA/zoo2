@@ -22,7 +22,9 @@ pub struct ApiClient {
     typing_write: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
-pub use zoo2_client_types::api::Me;
+pub use zoo2_client_types::api::{
+    ChannelNotificationSettings, ChannelNotificationSettingsUpdate, Me, NotificationLevel,
+};
 
 /// `GET /api/channel-read-states` の1件。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -32,6 +34,15 @@ pub struct ReadState {
     /// 最後に読んだ位置の時刻 (UTC)。一度も読んでいなければ `None`。未読の線を置くのに使う。
     #[serde(default)]
     pub last_read_at: Option<String>,
+    /// 自分以外の未読ルート投稿数 (最大1000)。
+    #[serde(default)]
+    pub unread_count: u32,
+    /// 上限に達して件数が切り詰められているか。
+    #[serde(default)]
+    pub unread_count_truncated: bool,
+    /// 最古の未読投稿時刻 (UTC)。未読がなければ `None`。
+    #[serde(default)]
+    pub first_unread_at: Option<String>,
 }
 
 /// 閲覧権限で絞り込まれた `GET /api/threads` の1件。
@@ -49,6 +60,94 @@ pub struct ThreadSummary {
 pub struct ThreadPage {
     pub items: Vec<ThreadSummary>,
     pub next_cursor: Option<String>,
+}
+
+/// `GET /api/search` の種類。`All`（既定）はメッセージとファイルをまとめて探す。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SearchKind {
+    #[default]
+    All,
+    Messages,
+    Files,
+    Notes,
+}
+
+/// `GET /api/search` の絞り込み。期間は `YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻
+/// （RFC 3339。端末の日付の 0 時）。`after` は含み、`before` は含まない。送信者とチャンネルは、どれか
+/// （空なら絞らない。最大 20 個）。`exclude_bots` はボット（アプリ）の投稿を除き、`involving_me` は自分が
+/// 参加中の会話（所属するチャンネル・DM、参加しているスレッド、メンションされたスレッド）に絞る。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchFilters {
+    pub user_ids: Vec<String>,
+    pub channel_ids: Vec<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+    pub exclude_bots: bool,
+    pub involving_me: bool,
+}
+
+impl SearchKind {
+    fn as_query(self) -> &'static str {
+        match self {
+            SearchKind::All => "all",
+            SearchKind::Messages => "messages",
+            SearchKind::Files => "files",
+            SearchKind::Notes => "notes",
+        }
+    }
+}
+
+/// 全文検索の 1 件（docs/search.md）。種類によって埋まる列が違う。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SearchItem {
+    /// メッセージ・添付・ノートの ID。
+    pub id: String,
+    /// `message`・`file`・`note`。
+    #[serde(default)]
+    pub kind: Option<String>,
+    pub channel_id: String,
+    pub channel_name: String,
+    #[serde(default)]
+    pub is_dm: bool,
+    /// スレッドの返信なら親の ID（メッセージ・ファイル）。
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// 添付が付いているメッセージ（ファイル）。
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// 投稿者の表示名（メッセージ・ファイル）。
+    #[serde(default, deserialize_with = "author_name")]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+fn author_name<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| {
+        v.get("display_name")
+            .or_else(|| v.get("user_name"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+    }))
+}
+
+/// 検索の 1 ページ。`items` が少なくても `next_cursor` があれば古い月が残っている。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchPage {
+    pub items: Vec<SearchItem>,
+    pub next_cursor: Option<String>,
+    /// どの月（`YYYY-MM`）まで見たか。
+    #[serde(default)]
+    pub searched_until: Option<String>,
 }
 
 /// ピン留めの 1 行（`GET /api/channel-pins`）。
@@ -432,6 +531,39 @@ impl ApiClient {
         Ok(())
     }
 
+    /// 全文検索（`GET /api/search`）。暗号化チャンネルは対象外。
+    pub async fn search(
+        &self,
+        kind: SearchKind,
+        query: &str,
+        filters: &SearchFilters,
+        cursor: Option<&str>,
+    ) -> Result<SearchPage> {
+        let mut path = format!("/api/search?type={}&q={}", kind.as_query(), segment(query));
+        let user_ids = (!filters.user_ids.is_empty()).then(|| filters.user_ids.join(","));
+        let channel_ids = (!filters.channel_ids.is_empty()).then(|| filters.channel_ids.join(","));
+        for (name, value) in [
+            ("user_id", &user_ids),
+            ("channel_id", &channel_ids),
+            ("after", &filters.after),
+            ("before", &filters.before),
+        ] {
+            if let Some(value) = value {
+                path.push_str(&format!("&{name}={}", segment(value)));
+            }
+        }
+        if filters.exclude_bots {
+            path.push_str("&exclude_bots=true");
+        }
+        if filters.involving_me {
+            path.push_str("&involving_me=true");
+        }
+        if let Some(cursor) = cursor {
+            path.push_str(&format!("&cursor={}", segment(cursor)));
+        }
+        self.get(&path).await
+    }
+
     pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
         self.thread_page(archived, before, None).await
     }
@@ -454,10 +586,12 @@ impl ApiClient {
 
     /// Thread membership does not grant channel access. Joining is available
     /// without having sent a message; leaving persists across reopen operations.
+    /// The three operations ask for the answer without the participant count and list
+    /// (`participants=none`): these clients never show them, and reading them costs O(P).
     pub async fn join_thread(&self, id: &str) -> Result<Option<String>> {
         self.write(
             Method::POST,
-            &format!("/api/threads/{}/join", segment(id)),
+            &format!("/api/threads/{}/join?participants=none", segment(id)),
             None,
         )
         .await
@@ -466,14 +600,14 @@ impl ApiClient {
     pub async fn leave_thread(&self, id: &str) -> Result<Option<String>> {
         self.write(
             Method::POST,
-            &format!("/api/threads/{}/leave", segment(id)),
+            &format!("/api/threads/{}/leave?participants=none", segment(id)),
             None,
         )
         .await
     }
 
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
-        let path = format!("/api/threads/{}/unarchive", segment(id));
+        let path = format!("/api/threads/{}/unarchive?participants=none", segment(id));
         self.write(Method::POST, &path, None).await
     }
 
@@ -761,6 +895,34 @@ impl ApiClient {
         self.write(Method::POST, &path, None).await
     }
 
+    /// チャンネルごとの通知レベル。設定の正本は `user_channel_notification_settings` で、
+    /// Shape の `channel_notification_settings` と同じ値。
+    /// `channel_user.notification_level` は旧アプリ互換列で、実際の設定は入らない。
+    pub async fn get_channel_notification_settings(
+        &self,
+        channel_id: &str,
+    ) -> Result<ChannelNotificationSettings> {
+        let path = format!(
+            "/api/channels/{}/notification-settings",
+            segment(channel_id)
+        );
+        self.get(&path).await
+    }
+
+    /// 通知レベルを変え、シェイプで反映を待つための txid を返す。
+    pub async fn set_channel_notification_level(
+        &self,
+        channel_id: &str,
+        level: NotificationLevel,
+    ) -> Result<Option<String>> {
+        let path = format!(
+            "/api/channels/{}/notification-settings",
+            segment(channel_id)
+        );
+        let body = serde_json::to_value(ChannelNotificationSettingsUpdate { level })?;
+        self.write(Method::PATCH, &path, Some(body)).await
+    }
+
     /// 自分のピン留めと、並びの版。
     pub async fn channel_pins(&self) -> Result<ChannelPins> {
         self.get("/api/channel-pins").await
@@ -1023,6 +1185,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn searches_with_escaped_query_and_cursor() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/search"))
+            .and(wiremock::matchers::query_param("type", "files"))
+            .and(wiremock::matchers::query_param("q", "会議 資料&x"))
+            .and(wiremock::matchers::query_param("cursor", "{\"m\":1}"))
+            .and(wiremock::matchers::query_param("user_id", "u1,u2"))
+            .and(wiremock::matchers::query_param("exclude_bots", "true"))
+            .and(wiremock::matchers::query_param("involving_me", "true"))
+            .and(wiremock::matchers::query_param("after", "2026-11-01"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
+                {"id":"a1","message_id":"m1","channel_id":"c1","channel_name":"general","is_dm":false,
+                 "parent_id":null,"user_id":"u2","author":{"id":"u2","user_name":"bob","display_name":"Bob"},
+                 "file_name":"議事録.pdf","snippet":"議事録.pdf","created_at":"2026-11-21T01:02:03.456"}
+            ],"next_cursor":null,"searched_until":"2025-12"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let page = client(&server)
+            .search(
+                SearchKind::Files,
+                "会議 資料&x",
+                &SearchFilters {
+                    user_ids: vec!["u1".into(), "u2".into()],
+                    after: Some("2026-11-01".into()),
+                    exclude_bots: true,
+                    involving_me: true,
+                    ..Default::default()
+                },
+                Some("{\"m\":1}"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items[0].author.as_deref(), Some("Bob"));
+        assert_eq!(page.items[0].message_id.as_deref(), Some("m1"));
+        assert_eq!(page.searched_until.as_deref(), Some("2025-12"));
+        assert!(page.next_cursor.is_none());
+    }
+
+    #[tokio::test]
     async fn lists_threads_and_reopens_with_the_authenticated_api() {
         let server = MockServer::start().await;
         Mock::given(method("GET")).and(path("/api/threads")).and(wiremock::matchers::query_param("archived", "false"))
@@ -1130,7 +1334,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/channel-read-states"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                { "channel_id": "c1", "last_read_at": null, "has_unread": true }
+                {
+                    "channel_id": "c1", "last_read_at": null, "has_unread": true,
+                    "unread_count": 2, "unread_count_truncated": false,
+                    "first_unread_at": "2026-01-01T00:00:00Z"
+                }
             ])))
             .mount(&server)
             .await;
@@ -1143,7 +1351,48 @@ mod tests {
                 channel_id: "c1".into(),
                 has_unread: true,
                 last_read_at: None,
+                unread_count: 2,
+                unread_count_truncated: false,
+                first_unread_at: Some("2026-01-01T00:00:00Z".into()),
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_and_changes_channel_notification_level() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "level": "mentions" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(json!({ "level": "mute" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "data": { "level": "mute" }, "txid": "7" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        assert_eq!(
+            api.get_channel_notification_settings("c1")
+                .await
+                .unwrap()
+                .level,
+            NotificationLevel::Mentions
+        );
+        assert_eq!(
+            api.set_channel_notification_level("c1", NotificationLevel::Mute)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("7")
         );
     }
 
@@ -1166,7 +1415,9 @@ mod tests {
         let api = client(&server);
         let err = api.join_channel("c1").await.unwrap_err();
         match err.downcast_ref::<HttpError>() {
-            Some(HttpError::Status { status, message }) => {
+            Some(HttpError::Status {
+                status, message, ..
+            }) => {
                 assert_eq!(status.as_u16(), 404);
                 assert_eq!(message, "Channel not found");
             }

@@ -36,6 +36,15 @@ async fn request(
     )
 }
 
+/// Other tests may create channels for the same actor; always pick by id.
+fn state_for<'a>(rows: &'a Value, channel: &str) -> &'a Value {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["channel_id"].as_str() == Some(channel))
+        .expect("channel must be in the detailed list")
+}
+
 #[tokio::test]
 async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Result<()> {
     let mut config = Config::from_env();
@@ -126,9 +135,41 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["channel_id"], channel);
     assert_eq!(listed[0]["has_unread"], true);
+    // The sidebar poll omits the expensive unread breakdown.
+    assert!(listed[0]["unread_count"].is_null());
+    assert!(listed[0]["first_unread_at"].is_null());
+    let (_, detailed) = request(
+        &app,
+        "GET",
+        "/api/channel-read-states?details=1",
+        &reader,
+        Value::Null,
+    )
+    .await;
+    let detailed = state_for(&detailed, &channel);
+    assert_eq!(detailed["channel_id"], channel);
+    assert_eq!(detailed["unread_count"], 2); // the reader's own post is excluded
+    assert_eq!(detailed["unread_count_truncated"], false);
+    assert!(
+        detailed["first_unread_at"]
+            .as_str()
+            .unwrap()
+            .contains("00:00:01")
+    );
     let (status, saved) = request(&app, "POST", &path, &reader, json!({"message_id":second})).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["data"]["has_unread"], false); // own later message is not unread
+    let (_, after_read) = request(
+        &app,
+        "GET",
+        "/api/channel-read-states?details=1",
+        &reader,
+        Value::Null,
+    )
+    .await;
+    let after_read = state_for(&after_read, &channel);
+    assert_eq!(after_read["unread_count"], 0);
+    assert!(after_read["first_unread_at"].is_null());
     let (_, older) = request(&app, "POST", &path, &reader, json!({"message_id":first})).await;
     assert_eq!(older["data"]["last_read_at"], saved["data"]["last_read_at"]);
     let another_app = create_router(AppState::new(init_db(&config.database_url).await?, config));
@@ -137,6 +178,22 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
     let (_, other_user) = request(&app, "GET", &path, &owner, Value::Null).await;
     assert!(other_user["last_read_at"].is_null());
     assert_eq!(other_user["has_unread"], true);
+    let (_, other_detailed) = request(
+        &app,
+        "GET",
+        "/api/channel-read-states?details=1",
+        &owner,
+        Value::Null,
+    )
+    .await;
+    let other_detailed = state_for(&other_detailed, &channel);
+    assert_eq!(other_detailed["unread_count"], 1);
+    assert!(
+        other_detailed["first_unread_at"]
+            .as_str()
+            .unwrap()
+            .contains("00:00:03")
+    );
     let foreign = Uuid::new_v4().to_string();
     assert_eq!(
         request(
@@ -191,5 +248,91 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
             .0,
         StatusCode::NOT_FOUND
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn archived_channels_are_left_out_of_the_read_state_list() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+    let owner = Uuid::new_v4().to_string();
+    let reader = Uuid::new_v4().to_string();
+    for actor in [&owner, &reader] {
+        assert_eq!(request(&app, "POST", "/api/users", actor, json!({"id":actor,"user_name":format!("read_{}",Uuid::new_v4().simple()),"display_name":"Reader"})).await.0, StatusCode::OK);
+    }
+    let channel = Uuid::new_v4().to_string();
+    assert_eq!(request(&app, "POST", "/api/channels", &owner, json!({"id":channel,"channel_name":format!("read_{}",Uuid::new_v4().simple()),"is_private":false})).await.0, StatusCode::OK);
+    for (method, path, actor, body) in [
+        (
+            "POST",
+            format!("/api/channels/{channel}/join"),
+            &reader,
+            Value::Null,
+        ),
+        (
+            "POST",
+            "/api/messages".to_string(),
+            &owner,
+            json!({"id":Uuid::new_v4().to_string(),"channel_id":channel,"content":"hello"}),
+        ),
+    ] {
+        assert_eq!(
+            request(&app, method, &path, actor, body).await.0,
+            StatusCode::OK
+        );
+    }
+    for query in ["", "?details=1"] {
+        let (_, listed) = request(
+            &app,
+            "GET",
+            &format!("/api/channel-read-states{query}"),
+            &reader,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(state_for(&listed, &channel)["has_unread"], true);
+    }
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("/api/channels/{channel}/archive"),
+            &owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    for query in ["", "?details=1"] {
+        let (_, listed) = request(
+            &app,
+            "GET",
+            &format!("/api/channel-read-states{query}"),
+            &reader,
+            Value::Null,
+        )
+        .await;
+        assert!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["channel_id"].as_str() != Some(channel.as_str())),
+            "archived channel must not be listed"
+        );
+    }
+    // The single-channel form still answers so an archived channel can be opened and read.
+    let (status, _) = request(
+        &app,
+        "GET",
+        &format!("/api/channels/{channel}/read-state"),
+        &reader,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     Ok(())
 }

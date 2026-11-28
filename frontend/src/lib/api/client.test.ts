@@ -4,16 +4,24 @@ import {
   ApiError,
   buildAuthHeaders,
   createApiClient,
+  createChannelNotificationSettingsApi,
   createChannelPinsApi,
   createConfiguredApiClient,
   unwrapEnvelope,
   type FetchLike,
 } from "./client";
-import { setAuthorizedHandler, setUnauthorizedHandler } from "../auth";
+import {
+  notifyAuthSessionEnded,
+  resetTokenProvider,
+  setAuthorizedHandler,
+  setTokenProvider,
+  setUnauthorizedHandler,
+} from "../auth";
 import { resolveConfig } from "../config";
 import { OidcClient } from "../oidc/client";
 
 afterEach(() => {
+  resetTokenProvider();
   setUnauthorizedHandler(null);
   setAuthorizedHandler(null);
 });
@@ -168,6 +176,33 @@ describe("createApiClient", () => {
       method: "GET",
     });
     await expect(client.get("/api/secrets")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("keeps the Retry-After header on ApiError in seconds", async () => {
+    const fetchMock = vi.fn<FetchLike>(
+      async () =>
+        new Response(JSON.stringify({ error: "busy", code: "THREAD_BUSY", retry_after: 5 }), {
+          status: 503,
+          headers: { "Retry-After": "5" },
+        }),
+    );
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.post("/api/messages", { id: "m1" })).rejects.toMatchObject({
+      status: 503,
+      retryAfter: 5,
+      path: "/api/messages",
+      method: "POST",
+    });
+  });
+
+  it("leaves retryAfter null when the error has no Retry-After header", async () => {
+    const fetchMock = vi.fn<FetchLike>(
+      async () => new Response(JSON.stringify({ error: "boom" }), { status: 500 }),
+    );
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.get("/api/boom")).rejects.toMatchObject({ retryAfter: null });
   });
 
   it("routes 401 responses to the default unauthorized handler", async () => {
@@ -328,6 +363,39 @@ describe("createApiClient", () => {
 
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  it("aborts without invoking fetch when auth session, tokenProvider, or signal changes while waiting for token", async () => {
+    for (const mode of ["logout", "provider", "signal"] as const) {
+      let resolveToken!: (token: string | null) => void;
+      setTokenProvider(
+        () =>
+          new Promise<string | null>((resolve) => {
+            resolveToken = resolve;
+          }),
+      );
+      const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ data: {}, txid: "1" }));
+      const controller = new AbortController();
+      const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+      const pending = client.post(
+        "/api/messages/forwards/resolve",
+        { ids: ["m1"] },
+        { signal: controller.signal },
+      );
+
+      if (mode === "logout") {
+        notifyAuthSessionEnded("logout");
+      } else if (mode === "provider") {
+        setTokenProvider(() => "new-token");
+      } else {
+        controller.abort();
+      }
+
+      resolveToken("stale-token");
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("createConfiguredApiClient", () => {
@@ -418,6 +486,35 @@ describe("createChannelPinsApi", () => {
         method: "PATCH",
         body: JSON.stringify({ channel_ids: ["c2", "c1"], expected_version: 7 }),
       }),
+    );
+  });
+});
+
+describe("createChannelNotificationSettingsApi", () => {
+  it("reads and updates the level on one encoded channel path", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ level: "mentions" }));
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: fetchMock,
+    });
+    const api = createChannelNotificationSettingsApi(client);
+
+    await expect(api.getChannelNotificationSettings("c 1")).resolves.toEqual({
+      level: "mentions",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/channels/c%201/notification-settings",
+      expect.objectContaining({ method: "GET" }),
+    );
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { level: "all" }, txid: "7" }));
+    await expect(api.updateChannelNotificationSettings("c 1", "all")).resolves.toEqual({
+      data: { level: "all" },
+      txid: "7",
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "http://localhost:8000/api/channels/c%201/notification-settings",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ level: "all" }) }),
     );
   });
 });

@@ -67,13 +67,38 @@ async fn exec(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Res
     Ok(())
 }
 
+/// フィクスチャ行を作る (または整える) トランザクション。ロック順を検証するテスト群が
+/// 見ているのは行ロックであってユーザー・チャンネル作成 API ではないため、API を通さず
+/// 直接行を書き、そのトランザクション内の app イベントも止める
+/// (`SET LOCAL zoo.suppress_app_events`)。
+async fn exec_quiet(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Result<()> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET LOCAL zoo.suppress_app_events = 'on'")
+        .exec(&mut tx)
+        .await?;
+    let mut q = toasty::sql::statement(statement);
+    for p in params {
+        q = q.bind(*p);
+    }
+    q.exec(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
+    create_user_with_id(app, &id, name).await
+}
+
+/// 呼び出し側で決めた ID でユーザーを作る。ID は作成より前に決めて後片付けに記録できるので、
+/// 作成の失敗が `Err` で返っても (パニックではなく) 消し漏れがない。
+async fn create_user_with_id(app: &Router, id: &str, name: &str) -> anyhow::Result<String> {
     let (status, _, _) = request(
         app,
         "POST",
         "/api/users",
-        Some(&id),
+        Some(id),
         Some(json!({
             "id": id,
             "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()),
@@ -81,8 +106,8 @@ async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
         })),
     )
     .await?;
-    assert_eq!(status, StatusCode::OK);
-    Ok(id)
+    anyhow::ensure!(status == StatusCode::OK, "create user returned {status}");
+    Ok(id.to_owned())
 }
 
 fn query_param(url: &str, name: &str) -> String {
@@ -794,6 +819,842 @@ async fn test_slack_link_does_not_add_guests_to_channels() -> anyhow::Result<()>
         }
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() -> anyhow::Result<()>
+{
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    // 作るユーザー・チャンネルの ID を先に決めて記録する。本体のどの時点で失敗しても
+    // (`?` で返っても) 後片付けはこれらの ID を消せる。
+    let user = uuid::Uuid::new_v4().to_string();
+    let owner = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let channel_name = format!("guest_race_{}", uuid::Uuid::new_v4().simple());
+    let team = format!("TR{}", uuid::Uuid::new_v4().simple());
+    let slack_user = "UG-RACE";
+    let placeholder = backend::slack::user_id(&team, slack_user);
+    let test_result: anyhow::Result<()> = async {
+    // ユーザー・チャンネル作成の API はこのテストの検証対象ではない。行を直接入れて
+    // app イベントを止める (`exec_quiet`) ので、API が取る既定チャンネルの FOR SHARE
+    // ロックや member/user イベントの配信が、この users 行のレースに無関係なロック
+    // 待ちや書き込みを重ねない。ゲストになる user は既定チャンネルにも参加させない。
+    exec_quiet(
+        &state,
+        "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Guest race')",
+        &[
+            &user,
+            &format!("link_guest_race_{}", uuid::Uuid::new_v4().simple()),
+        ],
+    )
+    .await?;
+    exec_quiet(
+        &state,
+        "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Guest race owner')",
+        &[
+            &owner,
+            &format!("link_guest_race_owner_{}", uuid::Uuid::new_v4().simple()),
+        ],
+    )
+    .await?;
+    exec_quiet(
+        &state,
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$2,$3,false)",
+        &[&channel, &channel_name, &owner],
+    )
+    .await?;
+    exec_quiet(
+        &state,
+        "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Slack placeholder','deactivated')",
+        &[&placeholder, &format!("slack_race_{}", uuid::Uuid::new_v4().simple())],
+    )
+    .await?;
+    exec_quiet(
+        &state,
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP)",
+        &[&placeholder, &channel],
+    )
+    .await?;
+    // The placeholder owns a message in the race channel: a guest reassignment skips
+    // the membership move but must still move the content (`move_content`).
+    let message = uuid::Uuid::new_v4().to_string();
+    exec_quiet(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$3,'from slack')",
+        &[&message, &placeholder, &channel],
+    )
+    .await?;
+
+    let (mut transition_connection, transition_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(transition_driver);
+    let transition_pid: i32 = transition_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let transition = transition_connection.transaction().await?;
+    // この更新もフィクスチャ作成の一部なので、同じトランザクションで app イベントを
+    // 止めておく (guest_kind の変更は user.guest_status_changed を配信する)。
+    transition
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    transition
+        .execute(
+            "UPDATE users SET guest_kind = 'single' WHERE id = $1",
+            &[&user],
+        )
+        .await?;
+
+    let reassign_db = state.db.clone();
+    let reassign_user = user.clone();
+    let reassign_team = team.clone();
+    let reassign = tokio::spawn(async move {
+        let mut db = reassign_db;
+        let mut tx = db.transaction().await?;
+        // JoinHandle を破棄してもタスクは止まらない。DB 側のロック待ちに期限を付け、
+        // 後片付けの削除がこのトランザクションを待って止まらないようにする。
+        toasty::sql::statement("SET LOCAL statement_timeout = '10s'")
+            .exec(&mut tx)
+            .await?;
+        backend::slack::link::reassign(&mut tx, &reassign_team, "UG-RACE", "Guest", &reassign_user)
+            .await?;
+        tx.commit().await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid)))",
+                    &[&transition_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+
+    transition.commit().await?;
+    // statement_timeout (10s) より長く待つ。失敗時も、再割り当てのトランザクションが
+    // DB 側で中断を終えてから後片付けへ進む。
+    tokio::time::timeout(std::time::Duration::from_secs(15), reassign).await???;
+    // ゲストは参加チャンネルを引き継がない (再割り当てのトランザクションが users の
+    // ロックを取ってから guest_kind を読み直した結果)。ただし投稿の付け替えは行われる。
+    let memberships = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+        &[&user, &channel],
+    )
+    .await?;
+    anyhow::ensure!(memberships[0]["n"] == 0, "guest must not inherit memberships");
+    let moved = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id)::text FROM messages WHERE id=$1",
+        &[&message],
+    )
+    .await?;
+    anyhow::ensure!(
+        moved[0]["user_id"] == user,
+        "the placeholder's message must be reassigned to the linked guest: {moved:?}"
+    );
+    Ok(())
+    }
+    .await;
+    let cleanup_result: anyhow::Result<()> = async {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("SET LOCAL zoo.suppress_app_events = 'on'")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM slack_users WHERE team_id=$1")
+            .bind(team.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM messages WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM app_deliveries WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        // 既定チャンネルへの参加行は ON DELETE RESTRICT でユーザー削除を拒否する。
+        // このテストで作ったユーザーの参加行だけを先に消す。
+        toasty::sql::statement("DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)")
+            .bind(user.as_str())
+            .bind(owner.as_str())
+            .bind(placeholder.as_str())
+            .exec(&mut tx)
+            .await?;
+        // 残ったロック待ちで後片付けが無期限に止まらないようにする。
+        toasty::sql::statement("SET LOCAL statement_timeout = '10s'")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM users WHERE id IN ($1,$2,$3)")
+            .bind(user.as_str())
+            .bind(owner.as_str())
+            .bind(placeholder.as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    match (test_result, cleanup_result) {
+        (Err(err), _) => Err(err),
+        (Ok(()), Err(err)) => Err(err),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+/// `reconcile_team` が users 行を ID 昇順にロックすることを、独立した users 行ロックの
+/// 保持者 (`lock_membership_users`。E2EE のメンバー追加・退出と同じロック) に対して確かめる。
+///
+/// 本番の API/ZIP 取り込み (`resolve_members` → `channel_users_with_additional_users`) は
+/// users 行をロックする前に `lock_links` (advisory lock) を取り、`reconcile_team` と全体で
+/// 直列化するため、このテストの行ロック区間にはそもそも重ならない。だからこのテストの
+/// 「取り込み」側は本番の `resolve_members` を装う代わりに、`lock_links` を取らない独立の
+/// 行ロック保持者を直接組み立てる (`lock_links` による直列化は
+/// `api_import::tests::resolve_members_waits_for_the_link_lock_before_touching_user_rows`
+/// が担保する)。保持者が小さい ID の行を先に持ったとき:
+/// - `reconcile_team` が正しく ID 昇順にロックするなら、大きい行を取る前に小さい行で
+///   止まるので、保持者の 2 つ目のロックは即座に通り、40P01 にはならない。
+/// - 順序が逆 (大きい行を先に取る) に戻った場合、`reconcile_team` が大きい行を持ったまま
+///   小さい行を待ち、保持者の 2 つ目のロックが循環を作るので PostgreSQL が 40P01 を返し、
+///   このテストは失敗する。
+#[tokio::test]
+#[ignore = "requires an explicitly configured disposable SLACK_LINK_TEST_DATABASE_URL"]
+async fn reconcile_team_user_row_locks_in_sorted_order_do_not_deadlock_with_lock_membership_users()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let database_url = std::env::var("SLACK_LINK_TEST_DATABASE_URL")?;
+    let (guard, guard_driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(guard_driver);
+    let database: String = guard
+        .query_one("SELECT current_database()", &[])
+        .await?
+        .get(0);
+    anyhow::ensure!(
+        database.contains("test"),
+        "refusing non-test database `{database}`"
+    );
+
+    let mut config = Config::from_env();
+    config.database_url = database_url;
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let team = format!("TLOCK{}", uuid::Uuid::new_v4().simple());
+    let slack_users = ["A-FIRST", "B-SECOND"];
+    let placeholders = slack_users.map(|slack_user| backend::slack::user_id(&team, slack_user));
+    // 作ったユーザー・チャンネルの ID をここに記録し、本体がどの時点で失敗しても
+    // (`?` や確定の失敗で返っても) 後片付けが必ず走るようにする。ID は作成の前に
+    // 記録するので、作成の途中で失敗した行も消し漏れない。
+    let mut created_users: Vec<String> = Vec::new();
+    let mut created_channel: Option<String> = None;
+    // 中断したタスクが 5 秒以内に終わらなかったときは、同じ行を触る後片付けを走らせない。
+    let mut tasks_terminated = true;
+    let test_result: anyhow::Result<()> = async {
+        let user_a = uuid::Uuid::new_v4().to_string();
+        created_users.push(user_a.clone());
+        let user_b = uuid::Uuid::new_v4().to_string();
+        created_users.push(user_b.clone());
+        let (low, high) = if user_a < user_b {
+            (user_a.clone(), user_b.clone())
+        } else {
+            (user_b.clone(), user_a.clone())
+        };
+        let owner = uuid::Uuid::new_v4().to_string();
+        created_users.push(owner.clone());
+        // ユーザー・チャンネル作成の API はこのテストの検証対象ではない。行を直接入れて
+        // app イベントを止める (`exec_quiet`) ので、API が取る既定チャンネルの FOR SHARE
+        // ロックや member/user イベントの配信が、この users 行のレースに無関係なロック
+        // 待ちや書き込みを重ねない。
+        exec_quiet(
+            &state,
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Reconcile lock a')",
+            &[
+                &user_a,
+                &format!("reconcile_lock_a_{}", uuid::Uuid::new_v4().simple()),
+            ],
+        )
+        .await?;
+        exec_quiet(
+            &state,
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Reconcile lock b')",
+            &[
+                &user_b,
+                &format!("reconcile_lock_b_{}", uuid::Uuid::new_v4().simple()),
+            ],
+        )
+        .await?;
+        exec_quiet(
+            &state,
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Reconcile lock owner')",
+            &[
+                &owner,
+                &format!("reconcile_lock_owner_{}", uuid::Uuid::new_v4().simple()),
+            ],
+        )
+        .await?;
+        let channel = uuid::Uuid::new_v4().to_string();
+        exec_quiet(
+            &state,
+            "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$2,$3,false)",
+            &[
+                &channel,
+                &format!("reconcile_lock_{}", uuid::Uuid::new_v4().simple()),
+                &owner,
+            ],
+        )
+        .await?;
+        created_channel = Some(channel.clone());
+
+        for (index, slack_user) in slack_users.iter().enumerate() {
+            exec_quiet(
+                &state,
+                "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Slack placeholder','deactivated')",
+                &[&placeholders[index], &format!("reconcile_ph_{}_{}", index, uuid::Uuid::new_v4().simple())],
+            )
+            .await?;
+            exec_quiet(
+                &state,
+                "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name) VALUES($1,$2,$3,true,'member')",
+                &[&team, slack_user, if index == 0 { &low } else { &high }],
+            )
+            .await?;
+            exec_quiet(
+                &state,
+                "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP)",
+                &[&placeholders[index], &channel],
+            )
+            .await?;
+        }
+        // Arrange the actual unordered query's first row to target the larger ID,
+        // which is the inversion that deadlocks against the importer's sorted locks.
+        let linked_order = sql(
+            &state,
+            "SELECT json_build_object('slack_user_id',slack_user_id)::text FROM slack_users WHERE team_id=$1 AND linked",
+            &[&team],
+        )
+        .await?;
+        anyhow::ensure!(linked_order.len() == 2, "expected two linked Slack users");
+        let first_slack = linked_order[0]["slack_user_id"].as_str().unwrap();
+        let second_slack = linked_order[1]["slack_user_id"].as_str().unwrap();
+        // 取り込み側 (本番) は小さい users 行から順にロックする。bulk pre-lock が無い場合の
+        // 回帰は、reconcile_team の順序なし取得が「大きい users 行に対応する組」を先に返す
+        // ときだけ再現する。その順序を UPDATE ではなく行の挿入順で整え、同じ形の照会で
+        // 先頭が実際に大きい行かまで確認する。確認できなければ、このテストは pre-lock の
+        // 欠落を検証できないため、黙って通す代わりに失敗させる。
+        exec_quiet(
+            &state,
+            "DELETE FROM slack_users WHERE team_id=$1 AND linked",
+            &[&team],
+        )
+        .await?;
+        exec_quiet(
+            &state,
+            "INSERT INTO slack_users (team_id,slack_user_id,user_id,linked) VALUES ($1,$2,$3,true)",
+            &[&team, first_slack, &high],
+        )
+        .await?;
+        exec_quiet(
+            &state,
+            "INSERT INTO slack_users (team_id,slack_user_id,user_id,linked) VALUES ($1,$2,$3,true)",
+            &[&team, second_slack, &low],
+        )
+        .await?;
+        let arranged = sql(
+            &state,
+            "SELECT json_build_object('slack_user_id',slack_user_id,'user_id',user_id)::text FROM slack_users WHERE team_id=$1 AND linked",
+            &[&team],
+        )
+        .await?;
+        anyhow::ensure!(
+            arranged.len() == 2 && arranged[0]["user_id"].as_str() == Some(high.as_str()),
+            "fixture row order does not put the higher user first; the live reconcile phase cannot exercise the missing pre-lock"
+        );
+        let first_placeholder = backend::slack::user_id(&team, first_slack);
+
+        // Reproduce the old lock order on PostgreSQL with raw SQL (this baseline is the
+        // historical scenario, not the current production path): reconcile owns the
+        // higher user and waits on its membership row; the sorted row-lock holder owns
+        // the lower user and waits on reconcile; the membership deleter then waits on
+        // the holder. PostgreSQL must detect this actual wait cycle and return 40P01.
+        //
+        // baseline の 3 タスクは、フェーズ本体の外にある Option ハンドルで保持する。
+        // 観測や接続が失敗・タイムアウトしても JoinHandle を捨ててタスクを切り離さず、
+        // 中断して終了を確認できるようにするため。開いたトランザクションが残ると、
+        // fixture の行ロックを保持したまま後片付けの削除と競合する。
+        type BaselineTask = tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>;
+        let mut baseline_import: Option<BaselineTask> = None;
+        let mut baseline_gate: Option<BaselineTask> = None;
+        let mut baseline_reconcile: Option<BaselineTask> = None;
+        let baseline_result: anyhow::Result<()> = async {
+            let (import_connection, import_driver) =
+                tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(import_driver);
+            let import_pid: i32 = import_connection
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await?
+                .get(0);
+            let (low_locked_tx, low_locked_rx) = tokio::sync::oneshot::channel();
+            let (try_high_tx, try_high_rx) = tokio::sync::oneshot::channel();
+            let import_low = low.clone();
+            let import_high = high.clone();
+            baseline_import = Some(tokio::spawn(async move {
+                let mut connection = import_connection;
+                let tx = connection.transaction().await?;
+                tx.query_one(
+                    "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                    &[&import_low],
+                )
+                .await?;
+                let _ = low_locked_tx.send(());
+                let _ = try_high_rx.await;
+                tx.query_one(
+                    "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                    &[&import_high],
+                )
+                .await?;
+                tx.commit().await?;
+                Ok::<(), tokio_postgres::Error>(())
+            }));
+            low_locked_rx.await?;
+
+            let (gate_connection, gate_driver) =
+                tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(gate_driver);
+            let gate_pid: i32 = gate_connection
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await?
+                .get(0);
+            let gate_channel = channel.clone();
+            let gate_placeholder = first_placeholder.clone();
+            let gate_low = low.clone();
+            baseline_gate = Some(tokio::spawn(async move {
+                let mut connection = gate_connection;
+                let tx = connection.transaction().await?;
+                tx.query_one(
+                    "SELECT user_id FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+                    &[&gate_placeholder, &gate_channel],
+                )
+                .await?;
+                tx.query_one(
+                    "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                    &[&gate_low],
+                )
+                .await?;
+                tx.commit().await?;
+                Ok::<(), tokio_postgres::Error>(())
+            }));
+            let (baseline_observer, baseline_observer_driver) =
+                tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(baseline_observer_driver);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let gate_waiting: bool = baseline_observer
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                            &[&gate_pid, &import_pid],
+                        )
+                        .await?
+                        .get(0);
+                    if gate_waiting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Ok::<(), tokio_postgres::Error>(())
+            })
+            .await??;
+
+            let (reconcile_connection, reconcile_driver) =
+                tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(reconcile_driver);
+            let reconcile_pid: i32 = reconcile_connection
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await?
+                .get(0);
+            let baseline_high = high.clone();
+            let baseline_placeholder = first_placeholder.clone();
+            let baseline_channel = channel.clone();
+            baseline_reconcile = Some(tokio::spawn(async move {
+                let mut connection = reconcile_connection;
+                let tx = connection.transaction().await?;
+                tx.query_one(
+                    "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                    &[&baseline_high],
+                )
+                .await?;
+                tx.execute(
+                    "DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+                    &[&baseline_placeholder, &baseline_channel],
+                )
+                .await?;
+                tx.commit().await?;
+                Ok::<(), tokio_postgres::Error>(())
+            }));
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let reconcile_waiting: bool = baseline_observer
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                            &[&reconcile_pid, &gate_pid],
+                        )
+                        .await?
+                        .get(0);
+                    if reconcile_waiting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Ok::<(), tokio_postgres::Error>(())
+            })
+            .await??;
+            // 3 本目の待機はポーリングしない。PostgreSQL がデッドロックを解消すると待機は
+            // 観測より先に消え、正しい 40P01 でもタイムアウトしてしまう。最初の 2 待機で
+            // サイクルの前辺を確認したら、期限付きで 3 タスクの結果をそのまま回収する。
+            // 期限切れでもハンドルは Option に残すので、下の中断処理で終了を確認できる。
+            let _ = try_high_tx.send(());
+            let mut baseline_results = Vec::with_capacity(3);
+            for (name, handle) in [
+                ("gate", &mut baseline_gate),
+                ("reconcile", &mut baseline_reconcile),
+                ("import", &mut baseline_import),
+            ] {
+                let task = handle
+                    .as_mut()
+                    .expect("baseline task handle must be set before joining");
+                let result = tokio::time::timeout(Duration::from_secs(10), &mut *task)
+                    .await
+                    .map_err(|elapsed| {
+                        anyhow::anyhow!("baseline {name} task did not finish: {elapsed}")
+                    })??;
+                *handle = None;
+                baseline_results.push(result);
+            }
+            anyhow::ensure!(
+                baseline_results.iter().any(|result| result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.code().is_some_and(|code| code.code() == "40P01"))),
+                "expected PostgreSQL to report deadlock_detected (40P01) for the old lock order"
+            );
+            exec_quiet(
+                &state,
+                "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
+                &[&first_placeholder, &channel],
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        // フェーズ本体が失敗・タイムアウトしたら、残っている baseline タスクを中断し、
+        // 終了を待ってから戻る。終了を確認できないまま後片付けに進むと、行ロックを
+        // 保持したトランザクションと削除が競合する。
+        if let Err(error) = baseline_result {
+            let mut termination_errors: Vec<String> = Vec::new();
+            for (name, handle) in [
+                ("import", &mut baseline_import),
+                ("gate", &mut baseline_gate),
+                ("reconcile", &mut baseline_reconcile),
+            ] {
+                let Some(task) = handle.as_mut() else {
+                    continue;
+                };
+                if task.is_finished() {
+                    continue;
+                }
+                task.abort();
+                match tokio::time::timeout(Duration::from_secs(5), &mut *task).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(join_error)) if join_error.is_cancelled() => {}
+                    Ok(Err(join_error)) => termination_errors
+                        .push(format!("baseline {name} task failed to join: {join_error}")),
+                    Err(elapsed) => {
+                        tasks_terminated = false;
+                        termination_errors.push(format!(
+                            "baseline {name} task did not terminate within 5s after abort: {elapsed}"
+                        ));
+                    }
+                }
+            }
+            let termination = termination_errors.join("; ");
+            if !tasks_terminated {
+                return Err(anyhow::anyhow!(
+                    "test failed: {error:#}; {termination}; cleanup skipped because a baseline task did not terminate"
+                ));
+            }
+            if !termination.is_empty() {
+                return Err(anyhow::anyhow!("test failed: {error:#}; {termination}"));
+            }
+            return Err(error);
+        }
+
+        // 本物の reconcile_team の users 行ロックの順を、独立したロック保持者と確かめる。
+        // 保持者は lock_membership_users (E2EE のメンバー追加・退出と同じロック) を直接
+        // 使い、小さい ID の users 行を先に持つ。本番の取り込み (resolve_members) は
+        // lock_links を先に取るため reconcile_team と直列化してこの行ロック区間に重なら
+        // ないので、ここでは lock_links を取らない保持者で順序そのものを検証する
+        // (lock_links による直列化は api_import の
+        // resolve_members_waits_for_the_link_lock_before_touching_user_rows が担保する)。
+        // 保持者が小さい ID の行を持ち、reconcile_team がそこで止まる。その間に保持者が
+        // 大きい ID の行を取る。正しい (ID 昇順の) ロック順なら reconcile_team は大きい行を
+        // 取る前に小さい行で止まるので、保持者の 2 つ目のロックは即座に通り、40P01 には
+        // ならない。順序が逆に戻った (大きい行を先に取る) 場合、reconcile_team が大きい行を
+        // 持ったまま小さい行を待ち、保持者の 2 つ目のロックが循環を作るので PostgreSQL が
+        // 40P01 を返し、この後の確定が失敗する。
+        let holder_db = state.db.clone();
+        let holder_low = low.clone();
+        let holder_high = high.clone();
+        let (low_locked_tx, low_locked_rx) = tokio::sync::oneshot::channel::<i32>();
+        let (try_high_tx, try_high_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut low_holder = tokio::spawn(async move {
+            let mut db = holder_db;
+            let mut tx = db.transaction().await?;
+            let pid: i32 = query(
+                &mut tx,
+                "SELECT json_build_object('pid',pg_backend_pid())::text",
+                &[],
+            )
+            .await?[0]["pid"]
+                .as_i64()
+                .unwrap() as i32;
+            backend::routes::e2ee_channels::lock_membership_users(
+                &mut tx,
+                &[holder_low.as_str()],
+            )
+            .await?;
+            let _ = low_locked_tx.send(pid);
+            // reconcile_team が小さい行で止まったことを観測してから大きい行を取る。
+            let _ = try_high_rx.await;
+            backend::routes::e2ee_channels::lock_membership_users(
+                &mut tx,
+                &[holder_high.as_str()],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok::<i32, anyhow::Error>(pid)
+        });
+        let holder_pid = low_locked_rx.await?;
+        let reconcile_db = state.db.clone();
+        let reconcile_team_id = team.clone();
+        let mut reconcile = tokio::spawn(async move {
+            let mut db = reconcile_db;
+            let mut tx = db.transaction().await?;
+            backend::slack::link::reconcile_team(&mut tx, &reconcile_team_id).await?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        let body_result: anyhow::Result<()> = async {
+            let (observer, observer_driver) = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls),
+            )
+            .await??;
+            tokio::spawn(observer_driver);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if reconcile.is_finished() {
+                        anyhow::bail!(
+                            "reconcile_team finished before blocking on the holder's smaller-ID row"
+                        );
+                    }
+                    if low_holder.is_finished() {
+                        anyhow::bail!(
+                            "the independent lock holder finished before reconcile_team blocked on its smaller-ID row"
+                        );
+                    }
+                    let waiting: bool = observer
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                            &[&holder_pid],
+                        )
+                        .await?
+                        .get(0);
+                    if waiting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+            // 保持者が大きい行を取る。正しい順序なら待ちなしで通り、コミットして戻る。
+            let _ = try_high_tx.send(());
+            let holder_pid_returned =
+                tokio::time::timeout(Duration::from_secs(10), &mut low_holder).await???;
+            anyhow::ensure!(
+                holder_pid_returned > 0,
+                "the independent lock holder must acquire both rows and finish"
+            );
+            tokio::time::timeout(Duration::from_secs(10), &mut reconcile).await???;
+            // reconcile_team は止まっていた分も含めて付け替えを終えている (プレースホルダの
+            // 参加行は連携済みメンバーへ移動している)。
+            let residual_memberships = sql(
+                &state,
+                "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE user_id IN ($1,$2)",
+                &[&placeholders[0], &placeholders[1]],
+            )
+            .await?;
+            anyhow::ensure!(
+                residual_memberships[0]["n"] == 0,
+                "reconcile_team did not move the placeholders' memberships: {residual_memberships:?}"
+            );
+            // 移動先も確認する: チャンネルには連携済みメンバー (low と high) 両方の参加行が残る。
+            let moved_memberships = sql(
+                &state,
+                "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE channel_id=$1 AND user_id IN ($2,$3)",
+                &[&channel, &low, &high],
+            )
+            .await?;
+            anyhow::ensure!(
+                moved_memberships[0]["n"] == 2,
+                "reconcile_team must move the placeholders' memberships to both linked members: {moved_memberships:?}"
+            );
+            Ok(())
+        }
+        .await;
+
+        // 本体が失敗・タイムアウトしたら、止まっているタスクを中断し、終了を待ってから
+        // 後片付けへ進む。users 行を保持したまま削除と競合させない。
+        let mut termination_errors: Vec<String> = Vec::new();
+        if !low_holder.is_finished() {
+            low_holder.abort();
+            match tokio::time::timeout(Duration::from_secs(5), &mut low_holder).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) if error.is_cancelled() => {}
+                Ok(Err(error)) => {
+                    termination_errors.push(format!("lock holder task failed to join: {error}"));
+                }
+                Err(elapsed) => {
+                    tasks_terminated = false;
+                    termination_errors.push(format!(
+                        "lock holder task did not terminate within 5s after abort: {elapsed}"
+                    ));
+                }
+            }
+        }
+        if !reconcile.is_finished() {
+            reconcile.abort();
+            match tokio::time::timeout(Duration::from_secs(5), &mut reconcile).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) if error.is_cancelled() => {}
+                Ok(Err(error)) => {
+                    termination_errors
+                        .push(format!("reconcile_team task failed to join: {error}"));
+                }
+                Err(elapsed) => {
+                    tasks_terminated = false;
+                    termination_errors.push(format!(
+                        "reconcile_team task did not terminate within 5s after abort: {elapsed}"
+                    ));
+                }
+            }
+        }
+        if !termination_errors.is_empty() {
+            let termination = termination_errors.join("; ");
+            return match body_result {
+                Ok(()) => Err(anyhow::anyhow!("{termination}")),
+                Err(error) => Err(anyhow::anyhow!("test failed: {error:#}; {termination}")),
+            };
+        }
+        body_result
+    }
+    .await;
+    // 成功・失敗の両経路で必ず後片付けする。本体の失敗を後片付けの失敗で上書きしない。
+    let cleanup_result: anyhow::Result<()> = if !tasks_terminated {
+        Err(anyhow::anyhow!(
+            "cleanup skipped because a spawned task did not terminate within 5s"
+        ))
+    } else {
+        match tokio::time::timeout(Duration::from_secs(15), async {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            toasty::sql::statement("SET LOCAL zoo.suppress_app_events = 'on'")
+                .exec(&mut tx)
+                .await?;
+            // 残ったロック待ちで後片付けが無期限に止まらないようにする。最初の削除より前に置く。
+            toasty::sql::statement("SET LOCAL statement_timeout = '10s'")
+                .exec(&mut tx)
+                .await?;
+            toasty::sql::statement("DELETE FROM slack_users WHERE team_id=$1")
+                .bind(team.as_str())
+                .exec(&mut tx)
+                .await?;
+            if let Some(channel) = created_channel.as_deref() {
+                toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+                    .bind(channel)
+                    .exec(&mut tx)
+                    .await?;
+                toasty::sql::statement("DELETE FROM app_deliveries WHERE channel_id=$1")
+                    .bind(channel)
+                    .exec(&mut tx)
+                    .await?;
+                toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+                    .bind(channel)
+                    .exec(&mut tx)
+                    .await?;
+            }
+            // 既定チャンネルへの参加行は ON DELETE RESTRICT でユーザー削除を拒否する。
+            // このテストで作ったユーザーの参加行だけを先に消す。
+            let mut all_users: Vec<&str> = created_users.iter().map(String::as_str).collect();
+            all_users.extend(placeholders.iter().map(String::as_str));
+            for id in &all_users {
+                toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1")
+                    .bind(*id)
+                    .exec(&mut tx)
+                    .await?;
+            }
+            for id in &all_users {
+                toasty::sql::statement("DELETE FROM users WHERE id=$1")
+                    .bind(*id)
+                    .exec(&mut tx)
+                    .await?;
+            }
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(elapsed) => Err(anyhow::anyhow!("fixture cleanup timed out: {elapsed}")),
+        }
+    };
+    match (test_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(test), Ok(())) => Err(test),
+        (Ok(()), Err(cleanup)) => Err(anyhow::anyhow!(
+            "test succeeded, but cleanup failed: {cleanup:#}"
+        )),
+        (Err(test), Err(cleanup)) => Err(anyhow::anyhow!(
+            "test failed: {test:#}; cleanup also failed: {cleanup:#}"
+        )),
+    }
 }
 
 #[tokio::test]

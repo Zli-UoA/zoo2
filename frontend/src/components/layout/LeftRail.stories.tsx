@@ -2,7 +2,7 @@ import { storyCollections } from "../../../.storybook/fixtures";
 import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within, waitFor } from "storybook/test";
+import { expect, screen, userEvent, within, waitFor } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { LeftRail } from "./LeftRail";
@@ -49,6 +49,49 @@ export const UserAvatar: Story = {
     await waitFor(async () => {
       const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
       await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
+};
+
+export const AboutZoo: Story = {
+  beforeEach: () => {
+    document.documentElement.dataset.zooBuildSha = "0123456789abcdef0123456789abcdef01234567";
+    return () => {
+      delete document.documentElement.dataset.zooBuildSha;
+    };
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: "Zooについて" });
+    await userEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "Zooについて" });
+    await waitFor(async () => {
+      await expect(
+        within(dialog).getByText("バージョン: 0123456789ab", { exact: true }),
+      ).toBeVisible();
+    });
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(async () => {
+      await expect(screen.queryByRole("dialog", { name: "Zooについて" })).not.toBeInTheDocument();
+      await expect(trigger).toHaveFocus();
+    });
+
+    await userEvent.keyboard("{Enter}");
+    await waitFor(async () => {
+      await expect(screen.getByRole("dialog", { name: "Zooについて" })).toBeVisible();
+    });
+  }),
+};
+
+export const AboutZooUnknownVersion: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: "Zooについて" });
+    await userEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "Zooについて" });
+    await waitFor(async () => {
+      await expect(within(dialog).getByText("バージョン: 不明", { exact: true })).toBeVisible();
     });
   }),
 };

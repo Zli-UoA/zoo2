@@ -19,6 +19,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({ useCurrentUser: () => ({ currentU
 vi.mock("../../hooks/useRealtime", () => ({
   useActiveChannels: () => state.query,
   useUsers: () => ({ data: [] }),
+  useAllUsers: () => ({ data: [] }),
   useChannelAccess: () => ({ members: [], canRead: true, isMembershipPending: false }),
 }));
 vi.mock("./ChannelHeader", () => ({

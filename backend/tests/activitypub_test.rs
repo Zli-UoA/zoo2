@@ -1587,6 +1587,82 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
 }
 
 #[tokio::test]
+async fn explicit_kitchen_named_custom_image_wins_over_bundled_catalog() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let post = format!("{}/notes/kitchen-name-collision", f.remote);
+    let name = ":kitchen_1f431_1f600:";
+    let selected_url = "https://cdn.remote.example/different-cat.png";
+    let note = json!({
+        "id":post, "type":"Note", "attributedTo":f.remote,
+        "content":name, "published":"2026-01-01T00:00:00Z",
+        "to":["https://www.w3.org/ns/activitystreams#Public"],
+        "tag":[{"type":"Emoji", "name":name, "icon":{"type":"Image", "url":selected_url}}]
+    });
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    let received = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == post)
+        .unwrap();
+    let image_id = received["emojis"][0]["image_id"].clone();
+    for (selection, expected_status, expected_url) in [
+        (
+            json!({"post_id":post,"reaction":name,"emoji_id":image_id}),
+            StatusCode::OK,
+            selected_url,
+        ),
+        (
+            json!({"post_id":post,"reaction":name,"emoji_id":"unknown"}),
+            StatusCode::BAD_REQUEST,
+            selected_url,
+        ),
+        (
+            json!({"post_id":post,"reaction":name}),
+            StatusCode::OK,
+            "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png",
+        ),
+        (
+            json!({"post_id":post,"reaction":"kitchen:1f431_1f600"}),
+            StatusCode::OK,
+            "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png",
+        ),
+    ] {
+        let (status, _) = request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(selection),
+        )
+        .await?;
+        assert_eq!(status, expected_status);
+        let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+        let post = feed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == post)
+            .unwrap();
+        let reaction = post["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["selected"] == true)
+            .unwrap();
+        assert_eq!(reaction["emoji"]["url"], expected_url);
+    }
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn reply_preserves_parent_recipient_and_audience_including_nonfollowed_author()
 -> anyhow::Result<()> {
     let _serial = PROTOCOL_SERIAL.lock().await;
@@ -1874,6 +1950,51 @@ async fn reposts_create_distinct_feed_entries_cursor_and_announces_but_never_pri
     assert_eq!(undo["type"], "Undo");
     assert_eq!(undo["object"], announce);
     assert_eq!(undo["to"], announce["to"]);
+    // The old public delivery remains visible, but a newer private origin cannot be redistributed.
+    toasty::sql::statement("INSERT INTO apub_quote_originals(id,actor_id,content,published,updated_at,emojis,media) VALUES($1,$2,'Private origin','2026-01-01','2026-01-02','[]','[]')")
+        .bind(remote_post.as_str()).bind(f.remote.as_str()).exec(&mut f.db).await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reposts",
+            Some(json!({"post_id":remote_post}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let real_author = format!("{}/canonical-author", f.remote);
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) SELECT $2,inbox,followers_url,user_name,display_name,$2,public_key FROM apub_actors WHERE id=$1")
+        .bind(f.remote.as_str()).bind(real_author.as_str()).exec(&mut f.db).await?;
+    toasty::sql::statement("UPDATE apub_quote_originals SET actor_id=$2 WHERE id=$1")
+        .bind(remote_post.as_str())
+        .bind(real_author.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reposts",
+            Some(json!({"post_id":remote_post}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let last=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&f.user]).await?;
+    assert_eq!(last["id"], row["id"]);
+    toasty::sql::statement("DELETE FROM apub_quote_originals WHERE id=$1")
+        .bind(remote_post.as_str())
+        .exec(&mut f.db)
+        .await?;
+    toasty::sql::statement("DELETE FROM apub_actors WHERE id=$1")
+        .bind(real_author.as_str())
+        .exec(&mut f.db)
+        .await?;
     let own = protocol_post(&f, "public", true).await?;
     let mut incoming = peer_activity(
         &f,

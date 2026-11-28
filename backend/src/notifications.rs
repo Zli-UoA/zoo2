@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -6,6 +9,20 @@ use crate::{
     models::{Channel, ChannelUser, Message, Notification, User, now_utc_millis},
     routes::e2ee_channels::Mentions,
 };
+
+/// API 全体の内訳計測（docs/query-design.md）。`notify_timing` 目標の低コスト event として、
+/// 各 SQL の「往復を含む実行時間」をメッセージ ID 単位で残す。SQL の計画だけは toasty
+/// ドライバから分離できないため、ここでは往復込みの時間として記録する。
+/// `debug!` にして既定フィルターでは出力しない。計測するときだけ `notify_timing` ターゲットの
+/// debug を有効にした subscriber を置く。無効なら静的なレベルチェックで終わり、挙動は変わらない。
+pub(crate) fn emit_timing(stage: &'static str, message_id: &str, began: Instant) {
+    tracing::debug!(
+        target: "notify_timing",
+        stage = stage,
+        message_id = message_id,
+        elapsed_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX),
+    );
+}
 
 pub(crate) async fn create_federated_notification(
     tx: &mut toasty::Transaction<'_>,
@@ -150,23 +167,87 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
     }
 }
 
+/// 1 投稿の通知先に関する運用上限 (docs/query-design.md)。超過しても配信は止めず、警告を出す。
+const MAX_NOTIFICATION_TARGETS: usize = 10_000;
+
+fn exceeds_notification_target_limit(targets: usize) -> bool {
+    targets > MAX_NOTIFICATION_TARGETS
+}
+
+/// チャンネルの通知設定を `channel_id` で1クエリだけ読み、user_id -> level にする。
+///
+/// `idx_user_channel_notification_settings_channel_id (channel_id, user_id)` の範囲走査で
+/// 対象チャンネルの行だけを読む。走査はそのチャンネルの設定行数 `S`（`S <= M`）までで、
+/// ユーザーごとの再問い合わせはしない。`channel_user.notification_level` は互換用の列なので読まない。
+pub(crate) async fn channel_notification_levels(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<HashMap<String, String>, AppError> {
+    let rows = crate::apps::query(
+        tx,
+        "SELECT json_build_object('user_id', user_id, 'level', notification_level)::text \
+         FROM user_channel_notification_settings WHERE channel_id = $1",
+        &[channel_id],
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let user_id = row["user_id"].as_str()?.to_owned();
+            let level = row["level"].as_str()?.to_owned();
+            Some((user_id, level))
+        })
+        .collect())
+}
+
+/// スレッドの全参加者を、通知レベルと退出日時 (`left_at`) と一緒に1回の問い合わせで読む (#620)。
+///
+/// `thread_participants` は主キー `(thread_id, user_id)` の範囲走査でそのスレッドの P 行だけを読み、
+/// `left_at` は SQL では除かず Rust 側で判定する（親投稿者の退出確認にも同じ結果を使う）。
+/// 通知レベルは `user_channel_notification_settings` を
+/// `idx_user_channel_notification_settings_channel_id` で P 行まで参照する。行が無ければ
+/// 既定値の `mentions` として扱う。ユーザー本体は読まない
+/// (bot・無効化・ゲストの除外は、ほかの通知対象とまとめて後段の1クエリで行う)。
+pub fn notification_participants_sql() -> &'static str {
+    "SELECT json_build_object('user_id', tp.user_id, \
+            'level', COALESCE(s.notification_level, 'mentions'), \
+            'left_at', tp.left_at)::text \
+     FROM thread_participants tp \
+     LEFT JOIN user_channel_notification_settings s \
+       ON s.channel_id = $2 AND s.user_id = tp.user_id \
+     WHERE tp.thread_id = $1"
+}
+
+fn is_muted(levels: &HashMap<String, String>, user_id: &str) -> bool {
+    levels.get(user_id).is_some_and(|level| level == "mute")
+}
+
 /// メッセージ作成時の通知生成
 ///
-/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信 > DM)。
+/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する
+/// (メンション > 返信 > DM > チャンネル投稿)。
 /// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
 /// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
 ///
+/// 通知レベル (#620) は `user_channel_notification_settings.notification_level` による。
+/// `mute` には明示メンションだけを届け、返信・DM・チャンネル投稿は作らない。`all` のメンバーには
+/// 上位の種別が付かなければ `channel_message` を1件作る (最下位の優先度)。`mentions` は従来どおり。
+///
 /// 暗号化チャンネル (#358) では本文を解析せず、送信側が平文で付けた `explicit_mentions` だけから
 /// メンションを作る (省略時はメンションなし)。平文チャンネルでは `explicit_mentions` を使わない。
+/// `all` でも本文は解析せず、Push は既存の暗号化プレースホルダを使う。
 pub async fn create_message_notifications(
     tx: &mut toasty::Transaction<'_>,
     message: &Message,
     actor_id: &str,
     parent_author_id: Option<&str>,
+    thread_root_id: Option<&str>,
     explicit_mentions: Option<&Mentions>,
 ) -> Result<Vec<Notification>, AppError> {
     // チャンネル情報を取得 (公開かプライベートかで通知先ポリシーを判定)
+    let began = Instant::now();
     let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
+    emit_timing("notif_channel", &message.id, began);
 
     let (mentions, mentioned_ids) = if channel.encrypted {
         let explicit = explicit_mentions.cloned().unwrap_or_default();
@@ -182,12 +263,55 @@ pub async fn create_message_notifications(
         (extract_mentions(&message.content), Vec::new())
     };
 
-    // チャンネル所属メンバーのIDを取得
+    // チャンネル所属メンバーを1回で取得 (走査は M 行、メンバーごとの再問い合わせはしない)。
+    // 通知レベルは別テーブルを channel_id で1回だけ読み、メンバーごとの設定行が無ければ
+    // 既定値の mentions として扱う (ローリング更新中でも設定が読めるようにする)。
+    let began = Instant::now();
     let channel_users =
         ChannelUser::filter(ChannelUser::fields().channel_id().eq(&message.channel_id))
             .exec(tx)
             .await?;
-    let member_ids: HashSet<String> = channel_users.into_iter().map(|cu| cu.user_id).collect();
+    emit_timing("notif_members", &message.id, began);
+    let mut member_levels: HashMap<String, String> = channel_users
+        .into_iter()
+        .map(|cu| (cu.user_id, "mentions".to_owned()))
+        .collect();
+    let began = Instant::now();
+    for (user_id, level) in channel_notification_levels(tx, message.channel_id.as_str()).await? {
+        if let Some(current) = member_levels.get_mut(&user_id) {
+            *current = level;
+        }
+    }
+    emit_timing("notif_levels", &message.id, began);
+    let member_ids: HashSet<String> = member_levels.keys().cloned().collect();
+
+    // スレッド参加者 (#620) を1回で読む。退出済みの行も返し、Rust 側で `left_at` を見て除く。
+    // 親投稿者の退出判定にも同じ結果を使うため、返信・親投稿のどちらかがあれば取得する。
+    // 走査は P 行までで、参加者ごとの再問い合わせはしない。
+    let mut participant_levels: HashMap<String, String> = HashMap::new();
+    let mut left_participants: HashSet<String> = HashSet::new();
+    if let Some(root_id) = thread_root_id {
+        let began = Instant::now();
+        let participants = crate::apps::query(
+            tx,
+            notification_participants_sql(),
+            &[root_id, message.channel_id.as_str()],
+        )
+        .await?;
+        emit_timing("notif_participants", &message.id, began);
+        for participant in participants {
+            let Some(user_id) = participant["user_id"].as_str() else {
+                continue;
+            };
+            if !participant["left_at"].is_null() {
+                left_participants.insert(user_id.to_owned());
+                continue;
+            }
+            if let Some(level) = participant["level"].as_str() {
+                participant_levels.insert(user_id.to_owned(), level.to_owned());
+            }
+        }
+    }
 
     // 通知対象ユーザーと通知タイプ (user_id -> notification_type)
     let mut targets_to_notify: HashMap<String, &'static str> = HashMap::new();
@@ -229,9 +353,12 @@ pub async fn create_message_notifications(
 
     // 3. スレッド返信: 親メッセージの投稿者 (本人除く)
     // [P2] 公開チャンネルなら非メンバー投稿者であっても返信通知を作成する
-    // プライベートチャンネルの場合は channel_user 所属を確認し、キック/退出者には通知しない
+    // プライベートチャンネルの場合は channel_user 所属を確認し、キック/退出者には通知しない。
+    // [P2] 親投稿者がこのスレッドから退出済みなら reply は出さない (退出判定は参加者クエリを再利用)。
     if let Some(parent_id) = parent_author_id
         && parent_id != actor_id
+        && !is_muted(&member_levels, parent_id)
+        && !left_participants.contains(parent_id)
     {
         let can_notify = if channel.is_private {
             member_ids.contains(parent_id)
@@ -247,44 +374,123 @@ pub async fn create_message_notifications(
         }
     }
 
+    // 3'. スレッド参加者 (#620): 参加中 (left_at IS NULL) のメンバーへ reply を出す。
+    // 退出済みの行は上で除いた。公開チャンネルは非メンバーも可、非公開は所属を確認する。
+    // 本人・bot・無効化ユーザー・権限のないゲストは後段の共通フィルターで除く。
+    for (user_id, level) in &participant_levels {
+        if user_id == actor_id || level == "mute" {
+            continue;
+        }
+        if channel.is_private && !member_ids.contains(user_id) {
+            continue;
+        }
+        targets_to_notify.entry(user_id.clone()).or_insert("reply");
+    }
+
     // 通常の DM も現在の参加者全員へ通知する。メンション・返信は優先して重複させない。
+    // `mute` の参加者には届けない。
     if channel.is_dm && channel.deleted_at.is_none() {
         for member_id in &member_ids {
-            if member_id != actor_id {
+            if member_id != actor_id && !is_muted(&member_levels, member_id) {
                 targets_to_notify.entry(member_id.clone()).or_insert("dm");
             }
         }
     }
 
+    // 4. `all` のメンバーには通常投稿を通知する。優先度は最下位なので、上で入った
+    // メンション・返信・DM は上書きしない。暗号化チャンネルでも本文は解析しない。
+    if channel.deleted_at.is_none() {
+        for (member_id, level) in &member_levels {
+            if level == "all" && member_id != actor_id {
+                targets_to_notify
+                    .entry(member_id.clone())
+                    .or_insert("channel_message");
+            }
+        }
+    }
+
+    // 上限は除外前の候補数 T で判定する。除外後に数えると、無効化ユーザー等が
+    // 候補に含まれていた事実が隠れ、運用者が監視したい負荷を見逃すため。
+    let candidate_targets = targets_to_notify.len();
+    if exceeds_notification_target_limit(candidate_targets) {
+        tracing::warn!(
+            target: "notifications",
+            channel_id = %message.channel_id,
+            message_id = %message.id,
+            targets = candidate_targets,
+            limit = MAX_NOTIFICATION_TARGETS,
+            "notification targets exceed the operational limit"
+        );
+    }
+
     // Apps receive events rather than human inbox notifications.
     // 無効化済みのユーザー (Slack から取り込んだ未連携のプレースホルダなど) にも通知しない。
+    // [P1] ゲストは公開チャンネルでも現在の channel_user 所属が必須。退出・キックされた
+    // ゲストには返信本文を届けない。宛先ごとの再問い合わせを増やさず、この1クエリで判定する。
     // 取り込んだチャンネルの @here・@channel で、メンバーの数だけ通知と配信の問い合わせを作らないため
     if !targets_to_notify.is_empty() {
         let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
-        let bots = crate::apps::query(tx, "SELECT json_build_object('id',id)::text FROM users WHERE (is_bot OR is_deactivated) AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
-        for bot in bots {
-            if let Some(id) = bot["id"].as_str() {
+        // ID 配列を駆動側にして users の主キーを T 回だけ引く (U に比例する Seq Scan を避ける)。
+        let began = Instant::now();
+        let excluded = crate::apps::query(tx, "SELECT json_build_object('id',u.id,'guest',u.is_guest,'bot',u.is_bot,'deactivated',u.is_deactivated)::text FROM jsonb_array_elements_text($1::jsonb) AS ids(id) JOIN users u ON u.id=ids.id WHERE u.is_bot OR u.is_deactivated OR u.is_guest", &[&ids]).await?;
+        emit_timing("notif_excluded", &message.id, began);
+        for row in excluded {
+            if let Some(id) = row["id"].as_str()
+                && (row["bot"] == true
+                    || row["deactivated"] == true
+                    || (row["guest"] == true && !member_ids.contains(id)))
+            {
                 targets_to_notify.remove(id);
             }
         }
     }
 
-    let mut created_notifications = Vec::new();
-    let now = now_utc_millis();
-
-    for (target_user_id, notif_type) in targets_to_notify {
-        let notification = Notification::create()
-            .id(Uuid::new_v4().to_string())
-            .user_id(target_user_id)
-            .actor_id(actor_id.to_string())
-            .channel_id(message.channel_id.clone())
-            .message_id(message.id.clone())
-            .notification_type(notif_type.to_string())
-            .is_read(false)
-            .created_at(now)
-            .exec(tx)
-            .await?;
-        created_notifications.push(notification);
+    // 宛先が数千人でも SQL 往復を1回にするため、ID は Rust で生成してまとめて INSERT する。
+    // 双方向トリガーと display_data の投影は FOR EACH ROW なので、1行ずつ動く。
+    let mut created_notifications = Vec::with_capacity(targets_to_notify.len());
+    if !targets_to_notify.is_empty() {
+        let now = now_utc_millis();
+        let mut rows = Vec::with_capacity(targets_to_notify.len());
+        for (target_user_id, notif_type) in &targets_to_notify {
+            let id = Uuid::new_v4().to_string();
+            created_notifications.push(Notification {
+                id: id.clone(),
+                user_id: target_user_id.clone(),
+                actor_id: actor_id.to_owned(),
+                channel_id: message.channel_id.clone(),
+                message_id: Some(message.id.clone()),
+                notification_type: (*notif_type).to_owned(),
+                is_read: false,
+                created_at: now,
+            });
+            rows.push(serde_json::json!({
+                "id": id,
+                "user_id": target_user_id,
+                "actor_id": actor_id,
+                "channel_id": message.channel_id,
+                "message_id": message.id,
+                "notification_type": notif_type,
+                "is_read": false,
+                "created_at": now.to_string(),
+            }));
+        }
+        let began = Instant::now();
+        let inserted = toasty::sql::statement(
+            "INSERT INTO channel_notifications(id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at) \
+             SELECT e->>'id', e->>'user_id', e->>'actor_id', e->>'channel_id', e->>'message_id', \
+                    e->>'notification_type', (e->>'is_read')::boolean, (e->>'created_at')::timestamp \
+             FROM jsonb_array_elements($1::jsonb) AS e",
+        )
+        .bind(serde_json::json!(rows).to_string())
+        .exec(tx)
+        .await?;
+        emit_timing("notif_insert", &message.id, began);
+        if inserted != created_notifications.len() as u64 {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "inserted {inserted} notifications for {} recipients",
+                created_notifications.len()
+            )));
+        }
     }
 
     Ok(created_notifications)
@@ -311,21 +517,21 @@ pub async fn create_reaction_notification(
     }
 
     let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
-    if channel.is_private {
-        let is_member = ChannelUser::filter(
-            ChannelUser::fields()
-                .channel_id()
-                .eq(&message.channel_id)
-                .and(ChannelUser::fields().user_id().eq(&message.user_id)),
-        )
-        .first()
-        .exec(tx)
-        .await?
-        .is_some();
-
-        if !is_member {
-            return Ok(None);
-        }
+    // メンバー判定は channel_user の主キー1回。通知レベルは設定テーブルを LEFT JOIN で1回だけ読み、
+    // 行が無ければ既定値の mentions として扱う。`mute` にはリアクションを届けない。
+    let membership = crate::apps::query(
+        tx,
+        "SELECT json_build_object('level', COALESCE(s.notification_level, 'mentions'))::text \
+         FROM channel_user cu \
+         LEFT JOIN user_channel_notification_settings s \
+           ON s.user_id = cu.user_id AND s.channel_id = cu.channel_id \
+         WHERE cu.channel_id=$1 AND cu.user_id=$2",
+        &[message.channel_id.as_str(), message.user_id.as_str()],
+    )
+    .await?;
+    let level = membership.first().and_then(|row| row["level"].as_str());
+    if level == Some("mute") || (channel.is_private && level.is_none()) {
+        return Ok(None);
     }
 
     let notification = Notification::create()
@@ -346,6 +552,13 @@ pub async fn create_reaction_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_target_limit_warns_only_above_ten_thousand() {
+        assert!(!exceeds_notification_target_limit(9_999));
+        assert!(!exceeds_notification_target_limit(10_000));
+        assert!(exceeds_notification_target_limit(10_001));
+    }
 
     #[test]
     fn account_avatar_shortcodes_do_not_send_mentions() {

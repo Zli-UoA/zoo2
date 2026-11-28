@@ -28,10 +28,13 @@ use zeroize::Zeroizing;
 use zoo_crypto::{
     BackupUpload, BackupUploadState, CryptoError, Curve25519PublicKey, DeviceAccount,
     InboundSessionStore, KeySnapshot, ListedDevice, OlmSession, OwnKeys, OwnSecrets,
-    ServerKeyState, SessionRef, StartupCheck, TrustStore, VersionChange,
+    ServerKeyState, SessionRef, StartupCheck, TrustStore, VERIFICATION_TYPES, VerificationMessage,
+    VersionChange,
 };
 
+mod devices;
 mod megolm;
+pub use devices::{ReverifyKeyChanged, VerificationNeedsUnlock, master_public_key};
 pub use megolm::{
     Decrypted, Decryption, EncryptedRow, MegolmError, RecipientSummary, SenderTrust, SharePlan,
     ShareResult, UndecryptableReason, UndeliverableReason,
@@ -117,6 +120,21 @@ struct State {
     /// 鍵バックアップからの取り込みの進み具合（秘密は入らない。Web の `meta` の `backup_import`）。
     #[serde(default)]
     backup_import: Option<BackupImportProgress>,
+    /// 終わっていない失効の進み具合（`RevocationState::pickle`。保存鍵で暗号化した封筒。#362）。
+    /// 端末を作り直すときは捨てる。
+    #[serde(default)]
+    revocation: Option<String>,
+    /// 失効を始める前（端末の削除の前）に残す、選んだ範囲と端末（#362）。端末を削除したあと、失効の記録を
+    /// 保存する前に止まっても、同じ範囲と端末で始め直せるようにする。失効の記録を保存するときに消す。
+    #[serde(default)]
+    revocation_intent: Option<RevocationIntent>,
+}
+
+/// 失効を始める前に残す、選んだ範囲と削除する端末（秘密は含まない）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevocationIntent {
+    pub scope: zoo_crypto::RevocationScope,
+    pub deleted_devices: Vec<String>,
 }
 
 /// 鍵バックアップからの取り込みの進み具合。途中で止まったら、同じ版なら続きから取り込み、版が変わったら
@@ -186,6 +204,19 @@ pub struct ToDeviceResult {
     pub dropped: usize,
     /// 新しく作った Olm セッションの数（ワンタイム鍵を使われたので補充する）。
     pub new_olm_sessions: usize,
+    /// 受信時の検証を通った、他のユーザーの検証のメッセージ（`m.key.verification.*`。#368）。届いた順。
+    /// `e2ee::verification` に渡す（暗号ストアには置かない）。
+    pub verifications: Vec<VerificationMessage>,
+}
+
+impl ToDeviceResult {
+    /// 1 行分の結果を足す（`processed` は呼ぶ側が足す）。
+    fn merge(&mut self, other: ToDeviceResult) {
+        self.room_keys += other.room_keys;
+        self.dropped += other.dropped;
+        self.new_olm_sessions += other.new_olm_sessions;
+        self.verifications.extend(other.verifications);
+    }
 }
 
 /// [`CryptoStore::prepare_backup_upload`] の結果。
@@ -273,6 +304,18 @@ fn user_dir(root: &Path, user_id: &str) -> Result<PathBuf> {
 }
 
 /// 0600 で書く。一時ファイルに書いてから置き換える。
+/// `state.json` を置き換えたが、ディレクトリーの同期に失敗した（新しい内容はもう読める。停電では前に戻りうる）。
+#[derive(Debug)]
+pub struct ReplacedButNotSynced(String);
+
+impl std::fmt::Display for ReplacedButNotSynced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} を同期できません", self.0)
+    }
+}
+
+impl std::error::Error for ReplacedButNotSynced {}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     {
@@ -292,7 +335,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         File::open(parent)
             .and_then(|dir| dir.sync_all())
-            .with_context(|| format!("{} を同期できません", parent.display()))?;
+            .map_err(|error| {
+                anyhow::Error::new(error)
+                    .context(ReplacedButNotSynced(parent.display().to_string()))
+            })?;
     }
     Ok(())
 }
@@ -646,6 +692,20 @@ impl CryptoStore {
         rows: &[ToDeviceRow],
         query: &Value,
     ) -> Result<ToDeviceResult> {
+        match self.process_to_device_partial(rows, query) {
+            (result, None) => Ok(result),
+            (_, Some(error)) => Err(error),
+        }
+    }
+
+    /// [`process_to_device_with_keys`](Self::process_to_device_with_keys) と同じだが、途中の行で失敗しても、
+    /// それより前に処理済みとして保存した行の結果（検証のメッセージを含む）を、エラーと一緒に返す。処理済みの
+    /// 印を保存した検証のメッセージは、次の回では読み飛ばすため、ここで渡さないと失われる。
+    pub fn process_to_device_partial(
+        &mut self,
+        rows: &[ToDeviceRow],
+        query: &Value,
+    ) -> (ToDeviceResult, Option<anyhow::Error>) {
         // 手順 4 の判定（`TrustStore::sender_trust`）に使う、送信ユーザーと自分の `keys/query`。
         // 解錠し直しが要るあいだは、暗号ストアの記録で送信端末を検証済みにしない（#360 の決まり）。
         let snapshot = if self.needs_unlock() {
@@ -667,23 +727,36 @@ impl CryptoStore {
         let mut result = ToDeviceResult::default();
         for row in rows {
             if !self.state.processed_to_device.contains(&row.id) {
+                // この行の結果は、処理済みの印を保存できたときだけ足す（保存できなければ次の回で処理し直す）。
+                let mut row_result = ToDeviceResult::default();
                 if row.r#type == "m.room.encrypted" {
-                    self.process_encrypted(
+                    if let Err(error) = self.process_encrypted(
                         row,
                         query,
                         snapshot.as_ref(),
                         own_self_signing.as_ref(),
-                        &mut result,
-                    )?;
+                        &mut row_result,
+                    ) {
+                        return (result, Some(error));
+                    }
                 } else {
-                    result.dropped += 1;
+                    row_result.dropped += 1;
                 }
                 self.state.processed_to_device.insert(row.id.clone());
-                self.save()?;
+                if let Err(error) = self.save() {
+                    // ファイルは置き換えた（処理済みの印と進んだ Olm の状態は、もう読める）なら、次の回はこの行を
+                    // 読み飛ばすので、この行の結果（検証のメッセージ）もエラーと一緒に返す。
+                    if error.downcast_ref::<ReplacedButNotSynced>().is_some() {
+                        result.merge(row_result);
+                        result.processed.push(row.id.clone());
+                    }
+                    return (result, Some(error));
+                }
+                result.merge(row_result);
             }
             result.processed.push(row.id.clone());
         }
-        Ok(result)
+        (result, None)
     }
 
     fn process_encrypted(
@@ -754,6 +827,20 @@ impl CryptoStore {
             }
             _ => None,
         };
+        // 他のユーザーの検証のメッセージ（#368）。手順 1〜3 を通ったものだけを渡す。送信端末がクロス
+        // 署名をたどれるかは、`SasVerification` が確かめる。
+        if decrypted
+            .plaintext()
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| VERIFICATION_TYPES.contains(&t))
+        {
+            match decrypted.verify_verification(&self.account, listed) {
+                Ok(message) => result.verifications.push(message),
+                Err(_) => result.dropped += 1,
+            }
+            return Ok(());
+        }
         let Ok(room_key) = decrypted.verify_room_key(&self.account, listed, trust.as_ref()) else {
             result.dropped += 1;
             return Ok(());
@@ -1323,6 +1410,8 @@ impl CryptoStore {
             encrypted_channels: self.state.encrypted_channels.clone(),
             recipients: self.state.recipients.clone(),
             backup_import: None,
+            revocation: None,
+            revocation_intent: None,
         };
         write_private(&self.dir.join(STATE_FILE), &serde_json::to_vec(&state)?)?;
 

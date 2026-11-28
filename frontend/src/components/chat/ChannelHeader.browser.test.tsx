@@ -1,10 +1,15 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import "../../styles.css";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { cdp, page } from "vite-plus/test/browser/context";
 
+import type { ApiClient } from "../../lib/api/client";
 import { DEFAULT_CONFIG } from "../../lib/config";
 import { encryptionSendState, resetSeenEncryptedChannels } from "../../lib/e2ee/encryptionGuard";
-import type { ChannelRow } from "../../lib/electric/types";
+import type { ChannelNotificationSettingRow, ChannelRow } from "../../lib/electric/types";
+import { createChannelNotificationSettingsWrites } from "../../lib/electric/writes";
 import type { UserPinnedChannelResponse } from "../../lib/api/types";
 import { PinnedChannelsProvider } from "../../hooks/usePinnedChannels";
 import { LocaleProvider } from "../i18n/LocaleProvider";
@@ -52,11 +57,29 @@ const pinsApi = vi.hoisted(() => ({
 // `userPinnedChannels` は同じ関数を返し続ける。毎回新しい関数を返すと、実際の
 // `usePinnedChannels` がコレクションの変更とみなして状態を取り直してしまう。
 const pinCollection = vi.hoisted(() => ({ factory: () => ({}) }));
+const notificationSettingsCollection = vi.hoisted(() => ({ factory: () => ({}) }));
 const adminState = vi.hoisted(() => ({ isArchived: false }));
-vi.mock("@tanstack/react-db", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@tanstack/react-db")>()),
-  useLiveQuery: () => ({ data: [], isLoading: false, isPersistedReady: true, isError: false }),
+// 通知設定の選択を検証するときだけ、実際のコレクションと live query を使う。
+const notificationState = vi.hoisted(() => ({
+  memberships: [] as { user_id: string; channel_id: string; joined_at: string }[],
+  useRealLiveQuery: false,
+  patch: vi.fn(),
 }));
+vi.mock("@tanstack/react-db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-db")>();
+  return {
+    ...actual,
+    useLiveQuery: ((...args: Parameters<typeof actual.useLiveQuery>) =>
+      notificationState.useRealLiveQuery
+        ? actual.useLiveQuery(...args)
+        : {
+            data: [],
+            isLoading: false,
+            isPersistedReady: true,
+            isError: false,
+          }) as typeof actual.useLiveQuery,
+  };
+});
 vi.mock("../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ currentUserId: "me", isLoading: false }),
 }));
@@ -67,7 +90,7 @@ vi.mock("../../lib/api/client", async (importOriginal) => {
     createConfiguredApiClient: () => ({
       get: pinsApi.get,
       post: pinsApi.post,
-      patch: vi.fn(),
+      patch: notificationState.patch,
       delete: pinsApi.del,
     }),
   };
@@ -77,6 +100,7 @@ vi.mock("../../lib/electric/collections-context", async (importOriginal) => ({
   useCollections: () => ({
     config: { ...DEFAULT_CONFIG, txidMode: "awaitTxId" },
     userPinnedChannels: pinCollection.factory,
+    channelNotificationSettings: notificationSettingsCollection.factory,
     channels: {
       utils: {
         // Shape の反映がいつまでも届かない（待ちが失敗する）場合。
@@ -110,6 +134,11 @@ vi.mock("../../hooks/useChannelAdmin", () => ({
 }));
 
 vi.mock("../../hooks/useRealtime", () => ({
+  useMyChannelMemberships: () => ({
+    memberships: notificationState.memberships,
+    allMemberships: notificationState.memberships,
+    joinedChannelIds: new Set(notificationState.memberships.map((row) => row.channel_id)),
+  }),
   useMessageFeed: () => ({
     data: [
       {
@@ -145,13 +174,67 @@ vi.mock("../layout/shell-context", () => ({
   }),
 }));
 
+let settingsCollection: { cleanup: () => Promise<void> } | null = null;
+let settingsSequence = 0;
+
+beforeEach(() => {
+  notificationState.memberships = [];
+  notificationState.useRealLiveQuery = false;
+  notificationState.patch.mockReset();
+});
+
+afterEach(async () => {
+  if (settingsCollection) {
+    await settingsCollection.cleanup();
+    settingsCollection = null;
+  }
+  notificationSettingsCollection.factory = () => ({});
+});
+
+function makeSettingsCollection() {
+  // REST の送信と txid 待ちは実装の書き込みハンドラを使い、コレクションだけをローカルに置く。
+  const writes = createChannelNotificationSettingsWrites({
+    client: { patch: notificationState.patch } as unknown as ApiClient,
+    txidMode: "skip",
+    getCurrentUserId: () => "me",
+  });
+  return createCollection(
+    localOnlyCollectionOptions<ChannelNotificationSettingRow>({
+      id: `notification-settings-browser-${settingsSequence++}`,
+      getKey: (row) => `${row.user_id}:${row.channel_id}`,
+      initialData: [{ user_id: "me", channel_id: channel.id, notification_level: "mentions" }],
+      onUpdate: (params) =>
+        writes.onUpdate(params as unknown as Parameters<typeof writes.onUpdate>[0]),
+    }),
+  );
+}
+
 describe("ChannelHeader", () => {
+  afterEach(async () => {
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  });
+
   beforeEach(() => {
     adminState.isArchived = false;
     pinsApi.pins = [];
     pinsApi.get.mockReset().mockImplementation(async () => ({ pins: pinsApi.pins, version: 1 }));
     pinsApi.post.mockReset();
     pinsApi.del.mockReset();
+  });
+
+  it("gives the members button a 44px touch target when the label is hidden", async () => {
+    await page.viewport(390, 844);
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+    render(
+      <LocaleProvider>
+        <ChannelHeader channel={channel} memberCount={undefined} />
+      </LocaleProvider>,
+    );
+    const button = screen.getByRole("button", { name: "メンバー" });
+    const { width, height } = button.getBoundingClientRect();
+
+    expect(width).toBeGreaterThanOrEqual(44);
+    expect(height).toBeGreaterThanOrEqual(44);
   });
 
   it("falls back to the no-description label for missing or whitespace descriptions", () => {
@@ -254,16 +337,21 @@ describe("ChannelHeader", () => {
       );
       await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
       await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
-      expect(await screen.findByText("このチャンネルを暗号化しますか？")).toBeVisible();
+      expect(
+        await screen.findByRole("alertdialog", { name: "このチャンネルを暗号化しますか？" }),
+      ).toHaveAttribute("data-open");
 
       rerender(
         <LocaleProvider>
           <ChannelHeader channel={privateB} memberCount={3} />
         </LocaleProvider>,
       );
-      await waitFor(() =>
-        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
-      );
+      await waitFor(() => {
+        const dialog = screen.queryByRole("alertdialog", {
+          name: "このチャンネルを暗号化しますか？",
+        });
+        expect(dialog?.hasAttribute("data-open") ?? false).toBe(false);
+      });
       expect(encryptApi.encryptChannel).not.toHaveBeenCalled();
     });
 
@@ -281,10 +369,16 @@ describe("ChannelHeader", () => {
       );
       await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
       await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
+      expect(
+        await screen.findByRole("alertdialog", { name: "このチャンネルを暗号化しますか？" }),
+      ).toHaveAttribute("data-open");
       await userEvent.click(await screen.findByRole("button", { name: "暗号化する" }));
-      await waitFor(() =>
-        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
-      );
+      await waitFor(() => {
+        const dialog = screen.queryByRole("alertdialog", {
+          name: "このチャンネルを暗号化しますか？",
+        });
+        expect(dialog?.hasAttribute("data-open") ?? false).toBe(false);
+      });
 
       expect(encryptApi.encryptChannel).toHaveBeenCalledWith(expect.anything(), "channel-a");
       // Shape はまだ `encrypted = false` のまま。それでも平文の送信を止める状態になる。
@@ -419,5 +513,81 @@ describe("ピン留めのフォーカス", () => {
     );
     await waitFor(() => expect(screen.queryByRole("button", { name: "ピン留め" })).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(document.body));
+  });
+});
+
+describe("チャンネル通知設定の選択", () => {
+  async function openDialog() {
+    notificationState.memberships = [
+      { user_id: "me", channel_id: channel.id, joined_at: "2026-01-01 00:00:00.000" },
+    ];
+    notificationState.useRealLiveQuery = true;
+    settingsCollection = makeSettingsCollection();
+    notificationSettingsCollection.factory = () => settingsCollection!;
+    render(
+      <LocaleProvider>
+        <ChannelHeader channel={channel} memberCount={3} />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    return await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+  }
+
+  it("sends a PATCH when a radio is selected", async () => {
+    notificationState.patch.mockResolvedValue({ data: { level: "mute" }, txid: "1" });
+    const dialog = await openDialog();
+    const mentions = within(dialog).getByRole("radio", { name: /メンションと返信/ });
+    await waitFor(() => expect(mentions).toBeChecked());
+
+    await userEvent.click(within(dialog).getByRole("radio", { name: /ミュート/ }));
+
+    await waitFor(() =>
+      expect(notificationState.patch).toHaveBeenCalledWith(
+        `/api/channels/${channel.id}/notification-settings`,
+        { level: "mute" },
+      ),
+    );
+    await waitFor(() =>
+      expect(within(dialog).getByRole("radio", { name: /ミュート/ })).toBeChecked(),
+    );
+  });
+
+  it("blocks further selection while the save is pending", async () => {
+    let release!: (value: unknown) => void;
+    notificationState.patch.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const dialog = await openDialog();
+    const mute = within(dialog).getByRole("radio", { name: /ミュート/ });
+    await userEvent.click(mute);
+    await waitFor(() => expect(notificationState.patch).toHaveBeenCalledTimes(1));
+
+    const group = within(dialog).getByRole("radiogroup");
+    await waitFor(() => expect(group).toHaveAttribute("disabled"));
+    await userEvent.click(within(dialog).getByRole("radio", { name: /すべてのメッセージ/ }));
+    expect(notificationState.patch).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mute).toBeChecked());
+
+    release({ data: { level: "mute" }, txid: "1" });
+    await waitFor(() => expect(group).not.toHaveAttribute("disabled"));
+  });
+
+  it("shows an error and restores the previous level when the save fails", async () => {
+    notificationState.patch.mockRejectedValue(new Error("PATCH failed"));
+    const dialog = await openDialog();
+
+    await userEvent.click(within(dialog).getByRole("radio", { name: /ミュート/ }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert").textContent).toContain(
+        "通知設定を変更できませんでした",
+      ),
+    );
+    await waitFor(() =>
+      expect(within(dialog).getByRole("radio", { name: /メンションと返信/ })).toBeChecked(),
+    );
+    expect(within(dialog).getByRole("radio", { name: /ミュート/ })).not.toBeChecked();
   });
 });

@@ -5,7 +5,12 @@ import type {
   UpdateMutationFnParams,
 } from "@tanstack/react-db";
 
-import { createChannelPinsApi, type ApiClient } from "../api/client";
+import {
+  createChannelNotificationSettingsApi,
+  createChannelPinsApi,
+  type ApiClient,
+} from "../api/client";
+import { postThreadReply } from "../api/threadReply";
 import type {
   AddChannelUserRequest,
   CreateChannelRequest,
@@ -18,6 +23,7 @@ import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
 import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED, type ThreadReplyRedirect } from "./threads";
 import type {
+  ChannelNotificationSettingRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -36,6 +42,8 @@ export interface WriteDependencies {
    * 削除ハンドラで本人確認に使う（解決前は null なので拒否される）。
    */
   getCurrentUserId: () => string | null;
+  /** 503 `THREAD_BUSY` の再送で待つ関数。既定は `setTimeout`（テストで差し替える）。 */
+  replyRetryDelay?: (ms: number) => Promise<void>;
 }
 
 type MessageInsertParams = InsertMutationFnParams<
@@ -75,6 +83,11 @@ type ChannelUserDeleteParams = DeleteMutationFnParams<
   string | number,
   ElectricCollectionUtils<ChannelUserRow>
 >;
+type NotificationSettingsUpdateParams = UpdateMutationFnParams<
+  ChannelNotificationSettingRow,
+  string | number,
+  ElectricCollectionUtils<ChannelNotificationSettingRow>
+>;
 
 /**
  * channel_user の書き込み種別。join と add はどちらも INSERT だが、叩く
@@ -93,31 +106,46 @@ function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
   return { action: "join" };
 }
 
+/** 通知設定 Shape の楽観更新種別。自分の行の通知レベルだけを書き換える。 */
+export type ChannelNotificationSettingsWriteMetadata = { action: "notificationLevel" };
+
+function readNotificationSettingsMetadata(
+  metadata: unknown,
+): ChannelNotificationSettingsWriteMetadata {
+  if (metadata && typeof metadata === "object" && "action" in metadata) {
+    return metadata as ChannelNotificationSettingsWriteMetadata;
+  }
+  return { action: "notificationLevel" };
+}
+
 export interface MessageWriteMetadata {
   attachment_ids?: string[];
   sensitive?: boolean;
   sensitive_attachment_ids?: string[];
+  forwarded_message_ids?: string[];
 }
 
 function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
-  if (!metadata || typeof metadata !== "object" || !("attachment_ids" in metadata)) {
+  if (!metadata || typeof metadata !== "object") {
     return {};
   }
-  const value = (metadata as { attachment_ids?: unknown }).attachment_ids;
-  if (!Array.isArray(value)) {
-    return {};
+  const typed = metadata as MessageWriteMetadata;
+  const out: MessageWriteMetadata = {};
+  if (Array.isArray(typed.attachment_ids)) {
+    out.attachment_ids = typed.attachment_ids.filter((id): id is string => typeof id === "string");
+    if (typed.sensitive) out.sensitive = true;
+    if (Array.isArray(typed.sensitive_attachment_ids)) {
+      out.sensitive_attachment_ids = typed.sensitive_attachment_ids.filter(
+        (id): id is string => typeof id === "string",
+      );
+    }
   }
-  return {
-    ...((metadata as MessageWriteMetadata).sensitive ? { sensitive: true } : {}),
-    ...(Array.isArray((metadata as MessageWriteMetadata).sensitive_attachment_ids)
-      ? {
-          sensitive_attachment_ids: (
-            metadata as MessageWriteMetadata
-          ).sensitive_attachment_ids!.filter((id): id is string => typeof id === "string"),
-        }
-      : {}),
-    attachment_ids: value.filter((id): id is string => typeof id === "string"),
-  };
+  if (Array.isArray(typed.forwarded_message_ids)) {
+    out.forwarded_message_ids = typed.forwarded_message_ids.filter(
+      (id): id is string => typeof id === "string",
+    );
+  }
+  return out;
 }
 
 /**
@@ -128,7 +156,7 @@ function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
  * Electric が流す operation は `delete` ではなく `update` になる。楽観更新も
  * `update` に揃えることで、delete→insert の再出現（ちらつき）を避ける。
  */
-export function createMessageWrites({ client, txidMode }: WriteDependencies) {
+export function createMessageWrites({ client, txidMode, replyRetryDelay }: WriteDependencies) {
   async function onInsert({ transaction, collection }: MessageInsertParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.modified;
@@ -141,15 +169,23 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       if (row.parent_id) {
         body.parent_id = row.parent_id;
       }
-      const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
+      const meta = readMessageMetadata(mutation.metadata);
+      const attachmentIds = meta.attachment_ids;
       if (attachmentIds?.length) {
         body.attachment_ids = attachmentIds;
-        const metadata = readMessageMetadata(mutation.metadata);
-        if (metadata.sensitive) body.sensitive = true;
-        if (metadata.sensitive_attachment_ids?.length)
-          body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
+        if (meta.sensitive) body.sensitive = true;
+        if (meta.sensitive_attachment_ids?.length)
+          body.sensitive_attachment_ids = meta.sensitive_attachment_ids;
       }
-      const { data, txid } = await client.post<MessageRow>("/api/messages", body);
+      if (meta.forwarded_message_ids?.length) {
+        body.forwarded_message_ids = meta.forwarded_message_ids;
+      } else if (row.forwarded_message_ids?.length) {
+        body.forwarded_message_ids = row.forwarded_message_ids;
+      }
+      // 返信だけ 503 THREAD_BUSY の対象。同じ body（同じ id・本文）で上限まで再送する。
+      const { data, txid } = row.parent_id
+        ? await postThreadReply<MessageRow>(client, body, { delay: replyRetryDelay })
+        : await client.post<MessageRow>("/api/messages", body);
       if (row.parent_id && data?.parent_id && data.parent_id !== row.parent_id) {
         // 未移行の子スレッドからの返信は最上位へ正規化される。表示先も追従させる。
         window.dispatchEvent(
@@ -362,6 +398,56 @@ async function waitForChannelUserSync(
       (value) => value.user_id === row.user_id && value.channel_id === row.channel_id,
     ),
   });
+}
+
+/**
+ * チャンネルごとの通知レベル（本人の user_channel_notification_settings 行だけを配信する Shape）。
+ *
+ * REST は `PATCH /api/channels/{id}/notification-settings` を叩き、`txid` は
+ * メンバー一覧ではなく通知設定 Shape の更新で待つ。他のメンバーの行は Shape に
+ * 届かないため、書き込み前に認証ユーザーとの一致を確認して楽観状態を戻す。
+ */
+export function createChannelNotificationSettingsWrites({
+  client,
+  txidMode,
+  getCurrentUserId,
+}: WriteDependencies) {
+  async function onUpdate({
+    transaction,
+    collection,
+  }: NotificationSettingsUpdateParams): Promise<void> {
+    const api = createChannelNotificationSettingsApi(client);
+    for (const mutation of transaction.mutations) {
+      const row = mutation.modified;
+      const changes = mutation.changes as Partial<ChannelNotificationSettingRow>;
+      const metadata = readNotificationSettingsMetadata(mutation.metadata);
+      if (metadata.action !== "notificationLevel" || !("notification_level" in changes)) {
+        throw new Error("Only notification_level can be updated on notification settings");
+      }
+      const currentUserId = getCurrentUserId();
+      if (!currentUserId || row.user_id !== currentUserId) {
+        throw new Error("Only your own notification settings can be changed");
+      }
+      const level = changes.notification_level;
+      if (level !== "all" && level !== "mentions" && level !== "mute") {
+        throw new Error(`Invalid notification level: ${String(level)}`);
+      }
+      const { txid } = await api.updateChannelNotificationSettings(row.channel_id, level);
+      await syncTxid({
+        mode: txidMode,
+        txid,
+        target: collection.utils,
+        match: changeMessageMatcher<ChannelNotificationSettingRow>(
+          "update",
+          (value) =>
+            value.user_id === row.user_id &&
+            value.channel_id === row.channel_id &&
+            value.notification_level === level,
+        ),
+      });
+    }
+  }
+  return { onUpdate };
 }
 
 /** リアクションの追加・解除。REST の正規化後の値で同期を照合する。 */

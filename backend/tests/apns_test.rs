@@ -136,7 +136,10 @@ async fn check_registration_with_config(mut config: backend::config::Config) -> 
     let availability = app.clone().oneshot(get(Some(&alice))).await?;
     assert_eq!(availability.status(), StatusCode::OK);
     let body: Value = serde_json::from_slice(&to_bytes(availability.into_body(), 4096).await?)?;
-    assert_eq!(body, json!({"sandbox":true, "production":false}));
+    assert_eq!(
+        body,
+        json!({"sandbox":true, "production":false, "voip":true})
+    );
 
     let token = backend::apns::digest(&Uuid::new_v4().to_string());
     let id = backend::apns::digest(&format!("sandbox:{token}"));
@@ -473,6 +476,52 @@ async fn check_registration_with_config(mut config: backend::config::Config) -> 
         post(&app, REGISTER, Some(&bob), registration(&token, &fresh))
             .await?
             .status(),
+        StatusCode::CONFLICT
+    );
+    // VoIPも既存の所有者確認・解除能力を使い、通常通知のテスト送信には混ぜない。
+    let caller = Uuid::new_v4().to_string();
+    assert_eq!(
+        post(
+            &app,
+            "/api/users",
+            None,
+            json!({"id":caller,"user_name":format!("voip_{caller}"),"display_name":"通話テスト"})
+        )
+        .await?
+        .status(),
+        StatusCode::OK
+    );
+    let voip_token = backend::apns::digest(&Uuid::new_v4().to_string());
+    let voip_secret = backend::apns::digest(&Uuid::new_v4().to_string());
+    let mut body = registration(&voip_token, &voip_secret);
+    body["kind"] = json!("voip");
+    let response = post(&app, REGISTER, Some(&caller), body.clone()).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+    let voip_id = backend::apns::PushKind::Voip.registration_id("sandbox", &voip_token);
+    assert_eq!(result["id"], voip_id);
+    assert_eq!(
+        post(&app, REGISTER, Some(&bob), body.clone())
+            .await?
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(post(&app, TEST, Some(&caller),
+        json!({"id":voip_id,"revocation_secret":voip_secret,"test_id":Uuid::new_v4().to_string()}))
+        .await?.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        post(
+            &secured,
+            REVOKE,
+            None,
+            json!({"id":voip_id,"revocation_secret":voip_secret})
+        )
+        .await?
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(&app, REGISTER, Some(&caller), body).await?.status(),
         StatusCode::CONFLICT
     );
     Ok(())

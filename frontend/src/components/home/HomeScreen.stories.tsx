@@ -11,6 +11,7 @@ import {
 } from "@tanstack/react-router";
 import { Button } from "../ui/button";
 import { DEFAULT_CONFIG } from "../../lib/config";
+import { resources } from "../../lib/i18n";
 import { DEFAULT_CURRENT_USER_ID, storyCollections } from "../../../.storybook/fixtures";
 import {
   HOME_POST_SETTINGS_PREFIX,
@@ -874,9 +875,11 @@ export const TimelineSwitch: Story = {
 };
 
 let liked = false;
+let likedReaction = "❤️";
 export const Like: Story = {
   beforeEach: () => {
     liked = false;
+    likedReaction = "❤️";
   },
   parameters: {
     msw: {
@@ -887,14 +890,18 @@ export const Like: Story = {
               ...posts[0],
               likes: liked ? 1 : 0,
               liked,
-              reactions: liked ? [{ reaction: "❤️", emoji: null, count: 1, selected: true }] : [],
+              reactions: liked
+                ? [{ reaction: likedReaction, emoji: null, count: 1, selected: true }]
+                : [],
             },
           ]),
         ),
         http.post("*/api/activitypub/reactions", async ({ request }) => {
-          const body = (await request.json()) as { post_id: string };
+          const body = (await request.json()) as { post_id: string; reaction: string };
           await expect(body.post_id).toBe(posts[0].id);
+          likedReaction = body.reaction;
           liked = true;
+          // 選択した絵文字が送信されていることは play 側で検証する。
           return HttpResponse.json({ ok: true });
         }),
         http.delete("*/api/activitypub/reactions", () => {
@@ -908,18 +915,19 @@ export const Like: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
-    await userEvent.click(
-      within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
-        name: "❤️",
-      }),
-    );
-    await expect(await canvas.findByRole("button", { name: "❤️ 1" })).toHaveAttribute(
+    // ピッカーに固定のクイックリアクションは置かないので、特定の絵文字をグリッドから選ぶ。
+    const cell = await picker.findByRole("gridcell", { name: "にっこり笑う" }, { timeout: 5000 });
+    await userEvent.click(cell);
+    // POST が反映されてから、選んだ値を使って検証する。
+    await waitFor(() => expect(liked).toBe(true));
+    await expect(likedReaction).toBe("😀");
+    await expect(await canvas.findByRole("button", { name: `${likedReaction} 1` })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await userEvent.click(canvas.getByRole("button", { name: "❤️ 1" }));
+    await userEvent.click(canvas.getByRole("button", { name: `${likedReaction} 1` }));
     await waitFor(() =>
-      expect(canvas.queryByRole("button", { name: "❤️ 1" })).not.toBeInTheDocument(),
+      expect(canvas.queryByRole("button", { name: `${likedReaction} 1` })).not.toBeInTheDocument(),
     );
     await expect(canvas.getByRole("button", { name: "リアクション 0" })).toBeVisible();
   }),
@@ -937,11 +945,9 @@ export const LikeError: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
-    await userEvent.click(
-      within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
-        name: "❤️",
-      }),
-    );
+    // ピッカーに固定のクイックリアクションは置かないので、特定の絵文字をグリッドから選ぶ。
+    const cell = await picker.findByRole("gridcell", { name: "にっこり笑う" }, { timeout: 5000 });
+    await userEvent.click(cell);
     await expect(await canvas.findByRole("alert")).toBeVisible();
   }),
 };
@@ -954,7 +960,7 @@ export const ActionBar: Story = {
       within(group)
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
+    ).toEqual(["返信 0", "リノート 0", "リアクション 0", "投稿の操作"]);
     await expect(group.querySelector("time")).toBeNull();
     await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
@@ -1022,7 +1028,7 @@ export const PrivateReply: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("button", { name: "リポスト 0" })).toBeDisabled();
+    await expect(await canvas.findByRole("button", { name: "リノート 0" })).toBeDisabled();
     await userEvent.click(canvas.getByRole("button", { name: "返信 0" }));
     const form = await visibleDialog("近況を投稿");
     await userEvent.click(form.getByRole("button", { name: "公開範囲: フォロワー限定" }));
@@ -1063,11 +1069,11 @@ export const Repost: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "リポスト 0" }));
-    await expect(await canvas.findByText("Aliceさんがリポスト")).toBeVisible();
-    const buttons = await canvas.findAllByRole("button", { name: "リポストを取り消す 1" });
+    await userEvent.click(await canvas.findByRole("button", { name: "リノート 0" }));
+    await expect(await canvas.findByText("Aliceさんがリノート")).toBeVisible();
+    const buttons = await canvas.findAllByRole("button", { name: "リノートを取り消す 1" });
     await userEvent.click(buttons[0]);
-    await waitFor(() => expect(canvas.queryByText("Aliceさんがリポスト")).not.toBeInTheDocument());
+    await waitFor(() => expect(canvas.queryByText("Aliceさんがリノート")).not.toBeInTheDocument());
   }),
 };
 
@@ -2395,11 +2401,11 @@ export const DeleteFromDetail: Story = {
     await userEvent.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", { name: "投稿を削除" }),
     );
-    await waitFor(() =>
-      expect(canvas.queryByRole("button", { name: "戻る" })).not.toBeInTheDocument(),
-    );
-    await expect(canvas.queryByText(/Homeから最初の公開投稿です/)).not.toBeInTheDocument();
-    await expect(await canvas.findByText(detailRemainingPost.content)).toBeVisible();
+    await waitFor(async () => {
+      await expect(canvas.queryByRole("button", { name: "戻る" })).not.toBeInTheDocument();
+      await expect(canvas.queryByText(/Homeから最初の公開投稿です/)).not.toBeInTheDocument();
+      await expect(canvas.getByText(detailRemainingPost.content)).toBeVisible();
+    });
   }),
 };
 export const DeleteFailure: Story = {
@@ -2422,7 +2428,9 @@ export const DeleteFailure: Story = {
     await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を削除" }));
     const dialog = await screen.findByRole("alertdialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "投稿を削除" }));
-    await expect(await within(dialog).findByRole("alert")).toBeVisible();
+    const error = await within(dialog).findByText(resources.ja.translation.home.deleteError);
+    await expect(error).toBeVisible();
+    await expect(error).toHaveAttribute("role", "alert");
     await expect(canvas.getByText(/Homeから最初の公開投稿です/)).toBeVisible();
   }),
 };

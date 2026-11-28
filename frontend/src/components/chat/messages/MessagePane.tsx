@@ -3,49 +3,63 @@ import {
   THREAD_REPLY_REDIRECTED,
   type ThreadReplyRedirect,
 } from "../../../lib/electric/threads";
-import { useThreadMembership } from "../../../hooks/useThreadMembership";
+import { isThreadJoinRequired, useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
+import { forgetForwardIds } from "../../../lib/api/forwards";
+import { DEFAULT_CONFIG } from "../../../lib/config";
 import { useTranslation } from "react-i18next";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import {
   useAttachmentUpload,
   useEncryptedAttachmentUpload,
   useMessageAttachments,
 } from "../../../hooks/useAttachments";
+import {
+  ForwardedMessagesProvider,
+  useForwardedMessages,
+} from "../../../hooks/useForwardedMessages";
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
 
 import type { UploadedAttachment } from "../../../lib/api/attachments";
+import type {
+  CreateMessageRequest,
+  MessageResponse,
+  ResolvedForwardMessage,
+} from "../../../lib/api/types";
 import {
+  useActiveChannels,
   useChannelMembers,
   useUsers,
   useMessageFeed,
-  useMessageReactions,
+  useMyChannelMemberships,
 } from "../../../hooks/useRealtime";
 import { useMessageById, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
-import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { useOfflineStatus } from "../../../lib/offline/offline-context";
-import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
+import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
-import { Button } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { ForwardMessageDialog, buildForwardDestinations } from "./ForwardMessageDialog";
+import { JoinPrompt } from "./JoinPrompt";
 import { MessageList } from "./MessageList";
+import type { FeedMessage } from "./messageFormat";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 import { ThreadPaneStatus } from "./ThreadPaneStatus";
+import { useChannelReactions } from "./useChannelReactions";
 import { EncryptionRecipientsNotice } from "./EncryptionRecipientsNotice";
 import { encryptedMentions } from "./mentions";
 import { useMessageDecryptions } from "../../../hooks/useMessageDecryptions";
@@ -57,19 +71,13 @@ import {
   type ChannelCryptoDeps,
 } from "../../../lib/e2ee/channelSend";
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
-import {
-  encryptionSendState,
-  encryptedChannelsVersion,
-  noteEncryptedChannel,
-  subscribeEncryptedChannels,
-  type KnownEncryptedState,
-} from "../../../lib/e2ee/encryptionGuard";
+import { useEncryptedDisplay } from "../../../hooks/useEncryptedDisplay";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import {
   isPlaintextBeforeEncryption,
   MessageDecryptionsProvider,
   firstEncryptedAt,
-  type MessageDecryption,
+  withUnencryptedRows,
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
 import { localizeApiError } from "../../../lib/i18n/apiError";
@@ -89,14 +97,13 @@ function JoinToPostPrompt({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="border-t px-3 py-3">
-      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
-        <p className="text-sm text-muted-foreground">{t("messages.joinToPostDescription")}</p>
-        <Button size="sm" onClick={onJoin} disabled={disabled || joining} aria-busy={joining}>
-          {t("messages.joinToPost")}
-        </Button>
-      </div>
-    </div>
+    <JoinPrompt
+      description={t("messages.joinToPostDescription")}
+      actionLabel={t("messages.joinToPost")}
+      onAction={onJoin}
+      pending={joining}
+      disabled={disabled}
+    />
   );
 }
 
@@ -117,6 +124,7 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  postingForbidden = false,
   encrypted = false,
   membershipEpoch,
   channelName,
@@ -126,6 +134,8 @@ export function MessagePane({
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** 投稿権限がない（`posting_policy=managers` で管理者・作成者ではない）。閲覧はでき、入力欄だけを理由付きで止める。 */
+  postingForbidden?: boolean;
   /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
   encrypted?: boolean;
   /** 暗号化チャンネルの Channels Shape の `membership_epoch`（int8 なので文字列）。 */
@@ -135,7 +145,7 @@ export function MessagePane({
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
-  const { messages, channelUsers, reactions, config } = useCollections();
+  const { messages, channelUsers, config } = useCollections();
   const appClient = useMemo(() => createConfiguredApiClient(config), [config]);
   const usersQuery = useUsers();
   const mentionUsers = (usersQuery.data ?? []).filter(
@@ -152,58 +162,17 @@ export function MessagePane({
     [members],
   );
   const messagesCollection = messages(channelId);
-  const reactionsCollection = reactions(channelId);
   // 新しい方から `MESSAGE_PAGE_SIZE` 件だけを同期し、上端付近で `loadOlder()` が古い方へ 1 ページずつ広げる。
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
-  const reactionsQuery = useMessageReactions(channelId);
   const channelUpload = useAttachmentUpload(channelId);
   const e2ee = useE2ee();
-  // 暗号化の格下げを防ぐ（docs/e2ee.md）。一度 `encrypted = true` を見たチャンネル、名前が `edm:` の
-  // チャンネル、暗号文のある行があるチャンネルに `encrypted = false` が届いたら、平文では送らず警告する。
-  // 見た時点で同期的に覚える（暗号ストアへの問い合わせを待たずに、格下げとして扱えるように）。
-  if (encrypted) noteEncryptedChannel(channelId);
-  // ほかの場所（暗号化への切り替えの確認の画面。#367）で覚えたときも描き直し、Shape の反映を待たずに送信を止める。
-  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
-  const [knownEncrypted, setKnownEncrypted] = useState<{
-    channelId: string;
-    known: KnownEncryptedState;
-  } | null>(null);
-  useEffect(() => {
-    const worker = e2ee.worker;
-    if (!worker) return;
-    let active = true;
-    if (encrypted) {
-      void worker.request({ op: "megolmRememberEncrypted", channelId }).catch(() => undefined);
-    } else {
-      setKnownEncrypted({ channelId, known: "pending" });
-      void worker
-        .request({ op: "megolmIsKnownEncrypted", channelId })
-        .then((known) => {
-          if (active) setKnownEncrypted({ channelId, known });
-        })
-        .catch(() => {
-          if (active) setKnownEncrypted({ channelId, known: "failed" });
-        });
-    }
-    return () => {
-      active = false;
-    };
-  }, [channelId, e2ee.worker, encrypted]);
-  // 別のチャンネルの結果や、問い合わせを始める前の描画では、確かめ終わっていないものとして扱う。
-  const { downgraded, checking: checkingEncryption } = encryptionSendState({
+  const { downgraded, checkingEncryption, treatAsEncrypted } = useEncryptedDisplay({
     channelId,
-    encrypted,
-    known: !e2ee.worker
-      ? "unavailable"
-      : knownEncrypted?.channelId === channelId
-        ? knownEncrypted.known
-        : "pending",
     channelName,
+    encrypted,
     hasCiphertext: feed.some((row) => row.ciphertext != null),
   });
-  /** 表示と添付の扱いを暗号化チャンネルにするか（格下げを見つけたときも暗号化として扱う）。 */
-  const treatAsEncrypted = encrypted || downgraded;
   // 暗号化チャンネルには、送る直前に Megolm で暗号化して送る（docs/e2ee.md）。このタブが暗号ストアを
   // 開いていない（別のタブが開いている、登録中、使えないブラウザー）あいだは、平文を送らないよう
   // 投稿、返信、編集を止める。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
@@ -257,31 +226,14 @@ export function MessagePane({
       ? uploadEncryptedAttachment
       : undefined
     : channelUpload;
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isAdmin } = useCurrentUser();
+  const { locale } = useLocale();
+  const channelsQuery = useActiveChannels();
+  const myMemberships = useMyChannelMemberships();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
-  const { error, setError, run, isPending: isWritePending } = useWriteRunner();
-
-  const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
-  const reactionRows = reactionsQuery.data ?? [];
-  const reactionGroups = useMemo(() => {
-    const names = Object.fromEntries(
-      (usersQuery.data ?? []).map((user) => [user.id, reactionUserLabel(user)]),
-    );
-    const groups = groupReactions(reactionRows, currentUserId);
-    for (const reactions of groups.values()) {
-      for (const reaction of reactions) {
-        reaction.userNames = { ...reaction.userNames, ...names };
-        reaction.usersLoading = usersQuery.isLoading;
-      }
-    }
-    return groups;
-  }, [reactionRows, currentUserId, usersQuery.data, usersQuery.isLoading]);
-  const { catalog } = useKitchenCatalog(
-    reactionRows.some((row) => row.emoji.startsWith("kitchen:")),
-  );
-  const pendingReactions = useRef(new Set<string>());
+  const { error, errorCause, setError, run, isPending: isWritePending } = useWriteRunner();
 
   const { threadRootId, openThread, closeThread } = useShell();
   const threadQuery = useThreadFeed(channelId, threadRootId);
@@ -293,6 +245,19 @@ export function MessagePane({
   );
   const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
   const threadMembership = useThreadMembership(currentUserId, threadRootId);
+  const retryMembership = threadMembership.retry;
+  // 参加が必要な 403 への対応（平文・暗号化の返信で共通）。表示している参加状態が古かった（ほかの画面・
+  // クライアントで退出した、など）ので、参加状態を取り直す。すると入力欄の代わりに参加ボタンが出る。
+  // 入力欄は隠れるだけなので、下書きは残る。対象のエラーなら true を返す。
+  const noticeJoinRequired = useCallback(
+    (cause: unknown): boolean => {
+      if (!isThreadJoinRequired(cause)) return false;
+      void retryMembership?.();
+      toast.info(t("threads.joinToReply"), { id: "thread-join-required" });
+      return true;
+    },
+    [retryMembership, t],
+  );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
@@ -348,32 +313,22 @@ export function MessagePane({
   // `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367）なので、本文を出す（MessageRow）。
   // 区切りより上の行には印を付けず、暗号化したメッセージより後ろにある行だけ警告を付ける（チャンネルの一覧は
   // MessageList が並びから、スレッドのペインは `encryptedSince` の日時から決める）。
-  const decryptions = useMemo(() => {
-    // フィードは削除済みの行を除くが、念のため `deleted_at` のある行（暗号文は DB が消す）は除く。
-    const unencrypted = decryptionRows.filter(
-      (row) =>
-        !row.ciphertext &&
-        !isPlaintextBeforeEncryption(row) &&
-        !(row as { deleted_at?: string | null }).deleted_at,
-    );
-    if (unencrypted.length === 0) return workerDecryptions;
-    const next = new Map(workerDecryptions);
-    for (const row of unencrypted) {
-      next.set(row.id, { status: "undecryptable", reason: "unencrypted" });
-    }
-    return next as ReadonlyMap<string, MessageDecryption>;
-  }, [decryptionRows, workerDecryptions]);
+  const decryptions = useMemo(
+    () => withUnencryptedRows(decryptionRows, workerDecryptions),
+    [decryptionRows, workerDecryptions],
+  );
 
   /** 暗号化した送信の失敗を利用者に知らせる。 */
   const reportEncryptedFailure = useCallback(
     (cause: unknown) => {
+      if (noticeJoinRequired(cause)) return;
       const code = (cause as { code?: unknown } | null)?.code;
       if (code === "NeedsUnlock") toast.error(t("e2ee.sendNeedsUnlock"));
       else if (cause instanceof EncryptedSendError) toast.error(t("e2ee.sendStaleEpoch"));
       else if (apiErrorCode(cause) === "E2EE_STALE_REVISION") toast.error(t("e2ee.editConflict"));
       else toast.error(t("common.writeErrorDetail", { error: localizeApiError(cause, t) }));
     },
-    [t],
+    [noticeJoinRequired, t],
   );
 
   const attachmentsQuery = useMessageAttachments(
@@ -416,14 +371,27 @@ export function MessagePane({
     [messagesCollection, threadIsArchived, threadRootId, threadReplies],
   );
 
+  // 親が削除されたスレッドの返信（検索・リンクで開いたまま読むだけにするもの）。
+  const isUnderDeletedRoot = useCallback(
+    (id: string) =>
+      !!threadRootRow?.deleted_at &&
+      (messagesCollection.get(id)?.parent_id === threadRootId ||
+        threadReplies.some((reply) => reply.id === id)),
+    [threadRootRow?.deleted_at, messagesCollection, threadRootId, threadReplies],
+  );
+
   useEffect(() => {
-    if (editingId && isArchivedMessage(editingId)) {
+    // 開いた後に親が削除されたら、その返信の編集・削除確認も閉じる。
+    if (editingId && (isArchivedMessage(editingId) || isUnderDeletedRoot(editingId))) {
       setEditingId(null);
       setEditingText("");
     }
-    if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
-    if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
-  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+    if (
+      pendingDeleteId &&
+      (isArchivedMessage(pendingDeleteId) || isUnderDeletedRoot(pendingDeleteId))
+    )
+      setPendingDeleteId(null);
+  }, [editingId, pendingDeleteId, isArchivedMessage, isUnderDeletedRoot]);
 
   // 編集中にチャンネルが暗号化に切り替わったら（#367）、切り替える前の平文のメッセージの編集をやめる。
   // サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。
@@ -437,46 +405,19 @@ export function MessagePane({
     }
   }, [treatAsEncrypted, editingId, messagesCollection, t]);
 
-  const handleReaction = useCallback(
-    async (messageId: string, emoji: string) => {
-      if (
-        !currentUserId ||
-        isArchivedMessage(messageId) ||
-        !messagesCollection.get(messageId) ||
-        messagesCollection.get(messageId)?.deleted_at
-      ) {
-        return;
-      }
-      const key = reactionKey(emoji);
-      const pendingKey = `${messageId}:${key}`;
-      if (pendingReactions.current.has(pendingKey)) {
-        return;
-      }
-      pendingReactions.current.add(pendingKey);
-      try {
-        await run(() => {
-          const own = Array.from(reactionsCollection.values()).find(
-            (row) =>
-              row.message_id === messageId &&
-              row.user_id === currentUserId &&
-              reactionKey(row.emoji) === key,
-          );
-          return own
-            ? reactionsCollection.delete(own.id)
-            : reactionsCollection.insert({
-                id: crypto.randomUUID(),
-                message_id: messageId,
-                user_id: currentUserId,
-                emoji,
-                created_at: nowIso(),
-              });
-        });
-      } finally {
-        pendingReactions.current.delete(pendingKey);
-      }
-    },
-    [currentUserId, messagesCollection, reactionsCollection, run, isArchivedMessage],
+  const isBlockedReactionMessage = useCallback(
+    (id: string) => isArchivedMessage(id) || isUnderDeletedRoot(id),
+    [isArchivedMessage, isUnderDeletedRoot],
   );
+  const channelReactions = useChannelReactions({
+    channelId,
+    currentUserId,
+    users: usersQuery.data,
+    usersLoading: usersQuery.isLoading,
+    readOnly,
+    isBlockedMessage: isBlockedReactionMessage,
+    runWrite: run,
+  });
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
   const resolvedTargetId =
@@ -536,6 +477,15 @@ export function MessagePane({
     t,
   ]);
 
+  // 検索・リンクで開いた返信の親が削除されていても、返信は残っている。そのスレッドは閉じずに、親の代わりに
+  // 知らせを出して読むだけにする。
+  const deletedRootForTarget =
+    !!threadRootRow?.deleted_at &&
+    !!target &&
+    !target.deleted_at &&
+    target.parent_id === threadRootId;
+  const threadPaneRoot = threadRoot ?? (deletedRootForTarget ? threadRootRow : null);
+
   // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
   // ID で取る。取得が終わるまでは判断しない。
@@ -544,6 +494,9 @@ export function MessagePane({
       return;
     }
     if (threadRootRow && !threadRootRow.deleted_at) return;
+    if (deletedRootForTarget) return;
+    // 検索・リンクの対象（返信）を取り終えるまでは決めない。先に閉じると対象の指定も消え、開き直せない。
+    if (resolvedTargetId && targetQuery.isLoading) return;
     closeThread();
     if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
@@ -553,18 +506,28 @@ export function MessagePane({
     threadRootRow,
     threadRootQuery.isLoading,
     threadRootQuery.isError,
+    deletedRootForTarget,
+    resolvedTargetId,
+    targetQuery.isLoading,
     closeThread,
     t,
   ]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
+  // `error` は英語の技術メッセージになり得るため、生の原因があれば localizeApiError で
+  // 現在のロケールの文言に換えてから出す（暗号化送信の失敗と同じ経路）。
   useEffect(() => {
     if (!error) {
       return;
     }
-    toast.error(t("common.writeError"), { description: error, id: "message-write-error" });
+    if (noticeJoinRequired(errorCause)) {
+      setError(null);
+      return;
+    }
+    const description = errorCause == null ? error : localizeApiError(errorCause, t);
+    toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
-  }, [error, setError, t]);
+  }, [error, errorCause, noticeJoinRequired, setError, t]);
 
   const handleJoin = useCallback(async () => {
     if (!currentUserId || isJoining) {
@@ -574,7 +537,11 @@ export function MessagePane({
     try {
       await run(() =>
         channelUsers.insert(
-          { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+          {
+            user_id: currentUserId,
+            channel_id: channelId,
+            joined_at: nowIso(),
+          },
           { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
         ),
       );
@@ -781,7 +748,7 @@ export function MessagePane({
   const handleStartEdit = useCallback(
     (id: string, content: string) => {
       // 暗号化チャンネルの編集も、暗号化して送れないあいだは始めない。
-      if (sendBlocked) return;
+      if (sendBlocked || isUnderDeletedRoot(id)) return;
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
@@ -797,7 +764,7 @@ export function MessagePane({
       setEditingId(id);
       setEditingText(content);
     },
-    [sendBlocked, encrypted, decryptions, messagesCollection],
+    [sendBlocked, encrypted, decryptions, messagesCollection, isUnderDeletedRoot],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -808,13 +775,24 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content || isArchivedMessage(id) || sendBlocked) {
+    if (!id || isArchivedMessage(id) || isUnderDeletedRoot(id) || sendBlocked) {
+      return;
+    }
+    const row =
+      messagesCollection.get(id) ??
+      feed.find((item) => item.id === id) ??
+      (threadRoot?.id === id ? threadRoot : undefined) ??
+      threadReplies.find((item) => item.id === id);
+    const rowAttachments = row?.display_data?.attachments ?? attachmentsByMessage.get(id) ?? [];
+    const allowEmpty =
+      !cryptoDeps && (rowAttachments.length > 0 || (row?.forwarded_message_ids?.length ?? 0) > 0);
+    if (!content && !allowEmpty) {
       return;
     }
     if (cryptoDeps) {
-      const row = messagesCollection.get(id);
+      const targetRow = messagesCollection.get(id);
       const decrypted = decryptions.get(id);
-      if (!row || decrypted?.status !== "decrypted" || savingEdit.current) return;
+      if (!targetRow || decrypted?.status !== "decrypted" || savingEdit.current) return;
       // 送れるまで編集中の本文を残す（失敗したら、そのまま直して保存し直せる）。
       savingEdit.current = true;
       try {
@@ -822,7 +800,7 @@ export function MessagePane({
           channelId,
           shapeEpoch: membershipEpoch,
           messageId: id,
-          parentId: row.parent_id,
+          parentId: targetRow.parent_id,
           revision: editingRevision + 1,
           body: content,
           kind: decrypted.kind,
@@ -863,13 +841,22 @@ export function MessagePane({
         message.content = content;
       }),
     );
+    forgetForwardIds(
+      { apiBaseUrl: config?.apiBaseUrl ?? DEFAULT_CONFIG.apiBaseUrl, currentUserId },
+      [id],
+    );
   }, [
     editingId,
     editingText,
     editingRevision,
     run,
     messagesCollection,
+    feed,
+    threadRoot,
+    threadReplies,
+    attachmentsByMessage,
     isArchivedMessage,
+    isUnderDeletedRoot,
     sendBlocked,
     cryptoDeps,
     decryptions,
@@ -877,12 +864,14 @@ export function MessagePane({
     membershipEpoch,
     usersQuery.data,
     reportEncryptedFailure,
+    config?.apiBaseUrl,
+    currentUserId,
   ]);
 
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    if (!id || isArchivedMessage(id)) {
+    if (!id || isArchivedMessage(id) || isUnderDeletedRoot(id)) {
       return;
     }
     // 論理削除は `deleted_at` の update。Electric が流す operation と揃えて
@@ -892,7 +881,172 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
+    forgetForwardIds(
+      { apiBaseUrl: config?.apiBaseUrl ?? DEFAULT_CONFIG.apiBaseUrl, currentUserId },
+      [id],
+    );
+  }, [
+    pendingDeleteId,
+    run,
+    messagesCollection,
+    isArchivedMessage,
+    isUnderDeletedRoot,
+    config?.apiBaseUrl,
+    currentUserId,
+  ]);
+
+  const forwardedIds = useMemo(() => {
+    if (treatAsEncrypted) return [];
+    const rows = [...feed, ...threadReplies, ...(threadRoot ? [threadRoot] : [])];
+    return rows.flatMap((row) => row.forwarded_message_ids ?? []);
+  }, [treatAsEncrypted, feed, threadReplies, threadRoot]);
+  const forwardedMessages = useForwardedMessages(forwardedIds, !treatAsEncrypted);
+
+  const currentChannel = useMemo(
+    () => (channelsQuery.data ?? []).find((channel) => channel.id === channelId) ?? null,
+    [channelsQuery.data, channelId],
+  );
+  const forwardDestinations = useMemo(
+    () =>
+      buildForwardDestinations({
+        channels: channelsQuery.data ?? [],
+        memberships: myMemberships.allMemberships ?? myMemberships.memberships,
+        users: usersQuery.data ?? [],
+        currentUserId,
+        isAdmin,
+        locale,
+        t,
+      }),
+    [
+      channelsQuery.data,
+      myMemberships.allMemberships,
+      myMemberships.memberships,
+      usersQuery.data,
+      currentUserId,
+      isAdmin,
+      locale,
+      t,
+    ],
+  );
+  const [forwardingSource, setForwardingSource] = useState<ResolvedForwardMessage | null>(null);
+  const [isForwarding, setIsForwarding] = useState(false);
+  const [forwardError, setForwardError] = useState<string | null>(null);
+  // 再試行時はサーバー側の冪等性（同じ client UUID）を効かせ、宛先やコメントを変えた場合のみ新規採番する
+  const pendingForwardKeyRef = useRef<{
+    sourceId: string;
+    destinationChannelId: string;
+    comment: string;
+    id: string;
+  } | null>(null);
+
+  const handleOpenForward = useCallback(
+    (msg: FeedMessage, msgAttachments: AttachmentRow[]) => {
+      if (treatAsEncrypted || !currentUserId) return;
+      const participantUsers = (members ?? []).flatMap((member) => {
+        const user = (usersQuery.data ?? []).find((candidate) => candidate.id === member.user_id);
+        return user
+          ? [{ id: user.id, user_name: user.user_name, display_name: user.display_name }]
+          : [];
+      });
+      pendingForwardKeyRef.current = null;
+      setForwardError(null);
+      setForwardingSource({
+        id: msg.id,
+        channel_id: msg.channel_id ?? channelId,
+        channel_name: currentChannel?.channel_name ?? channelName ?? "",
+        is_private: currentChannel?.is_private ?? false,
+        is_dm: currentChannel?.is_dm ?? false,
+        dm_participants: participantUsers,
+        parent_id: msg.parent_id,
+        user_id: msg.user_id,
+        created_at: msg.created_at,
+        updated_at: msg.updated_at ?? null,
+        content: msg.content,
+        card: msg.card ?? null,
+        components: msg.components ?? null,
+        message_kind: msg.message_kind ?? null,
+        author: {
+          id: msg.user_id,
+          user_name: msg.user_name ?? msg.user_id,
+          display_name: msg.display_name ?? msg.user_name ?? msg.user_id,
+          avatar_url: msg.avatar_url ?? null,
+          is_bot: !!msg.is_bot,
+          app_id: msg.app_id ?? null,
+        },
+        emojis: msg.display_data?.emojis ?? {},
+        attachments: msgAttachments,
+        has_forwards: (msg.forwarded_message_ids?.length ?? 0) > 0,
+      });
+    },
+    [
+      treatAsEncrypted,
+      currentUserId,
+      members,
+      usersQuery.data,
+      channelId,
+      currentChannel,
+      channelName,
+    ],
+  );
+
+  const handleSubmitForward = useCallback(
+    async (destinationChannelId: string, comment: string) => {
+      if (!forwardingSource || isForwarding) return;
+      setIsForwarding(true);
+      setForwardError(null);
+      try {
+        const existingKey = pendingForwardKeyRef.current;
+        const messageId =
+          existingKey &&
+          existingKey.sourceId === forwardingSource.id &&
+          existingKey.destinationChannelId === destinationChannelId &&
+          existingKey.comment === comment
+            ? existingKey.id
+            : crypto.randomUUID();
+        pendingForwardKeyRef.current = {
+          sourceId: forwardingSource.id,
+          destinationChannelId,
+          comment,
+          id: messageId,
+        };
+        const body: CreateMessageRequest = {
+          id: messageId,
+          channel_id: destinationChannelId,
+          content: comment,
+          forwarded_message_ids: [forwardingSource.id],
+        };
+        await appClient.post<MessageResponse>("/api/messages", body);
+        const targetDest = forwardDestinations.find((dest) => dest.id === destinationChannelId);
+        pendingForwardKeyRef.current = null;
+        setForwardingSource(null);
+        toast.success(
+          targetDest
+            ? t("messages.forwardedTo", {
+                channel: targetDest.isDm ? targetDest.label : `#${targetDest.label}`,
+              })
+            : t("messages.forwarded"),
+        );
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 404) {
+          setForwardError(t("messages.forwardSourceUnavailable"));
+        } else {
+          setForwardError(localizeApiError(cause, t));
+        }
+      } finally {
+        setIsForwarding(false);
+      }
+    },
+    [forwardingSource, isForwarding, appClient, forwardDestinations, t],
+  );
+
+  const threadTargetMessageId =
+    resolvedTargetId &&
+    threadPaneRoot &&
+    resolvedTargetId !== threadPaneRoot.id &&
+    (threadReplies.some((reply) => reply.id === resolvedTargetId) ||
+      (target?.id === resolvedTargetId && target.parent_id === threadPaneRoot.id))
+      ? resolvedTargetId
+      : undefined;
 
   return (
     <MessageDecryptionsProvider
@@ -901,215 +1055,256 @@ export function MessagePane({
       encrypted={treatAsEncrypted}
       encryptedSince={encryptedSince}
     >
-      <section className="relative flex h-full min-h-0">
-        <div className="flex min-w-0 flex-1 flex-col">
-          {reactionsQuery.isError ||
-          messagesQuery.isError ||
-          messagesQuery.persistedStatus === "error" ? (
-            <div
-              role="status"
-              className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
-            >
-              {reactionsQuery.isError ? (
-                <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
-              ) : null}
-              {messagesQuery.isError ? (
-                <span
-                  className={
-                    feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
-                  }
-                >
-                  {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
-                </span>
-              ) : null}
-              {messagesQuery.persistedStatus === "error" ? (
-                <span className="text-xs text-destructive">
-                  {t("offline.persistenceErrorTitle")}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-
-          <MessageList
-            targetMessageId={targetMessageId}
-            key={`${channelId}:${currentUserId}`}
-            channelId={channelId}
-            messages={feed}
-            isWritePending={isWritePending}
-            isLoading={messagesQuery.isLoading}
-            isError={messagesQuery.isError}
-            currentUserId={readOnly ? null : currentUserId}
-            canModerate={canModerate}
-            editingId={editingId}
-            editingText={editingText}
-            onEditingTextChange={setEditingText}
-            onStartEdit={handleStartEdit}
-            onCancelEdit={handleCancelEdit}
-            onSaveEdit={handleSaveEdit}
-            onRequestDelete={setPendingDeleteId}
-            reactions={reactionGroups}
-            attachments={attachmentsByMessage}
-            kitchenCatalog={catalog}
-            canReact={
-              !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
-            }
-            onReaction={handleReaction}
-            onPickReaction={setReactionMessageId}
-            onOpenThread={openThread}
-            canCompose={isMember}
-            isOffline={!isOnline}
-            hasOlder={messagesQuery.hasOlder}
-            isLoadingOlder={messagesQuery.isLoadingOlder}
-            onLoadOlder={() => void messagesQuery.loadOlder()}
-            onRetry={() => window.location.reload()}
-          />
-
-          {readOnly ? null : isMember ? (
-            <>
-              <TypingIndicator users={typing.users} />
-              {downgraded ? (
-                <p role="alert" className="mx-3 mb-2 text-xs text-destructive">
-                  {t("e2ee.downgraded")}
-                </p>
-              ) : null}
-              {/* 配布先の表示は、増えた人か配れない人がいるときだけ出る。中身が後から入っても読み上げられる
-                  よう、live region は常に置いておく。 */}
-              <div role="status" aria-live="polite" data-testid="encryption-recipients-status">
-                {encrypted && recipients ? (
-                  <EncryptionRecipientsNotice summary={recipients} users={usersQuery.data ?? []} />
+      <ForwardedMessagesProvider value={forwardedMessages}>
+        <section className="relative flex h-full min-h-0">
+          <div className="flex min-w-0 flex-1 flex-col">
+            {channelReactions.isError ||
+            messagesQuery.isError ||
+            messagesQuery.persistedStatus === "error" ? (
+              <div
+                role="status"
+                className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
+              >
+                {channelReactions.isError ? (
+                  <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
+                ) : null}
+                {messagesQuery.isError ? (
+                  <span
+                    className={
+                      feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
+                    }
+                  >
+                    {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
+                  </span>
+                ) : null}
+                {messagesQuery.persistedStatus === "error" ? (
+                  <span className="text-xs text-destructive">
+                    {t("offline.persistenceErrorTitle")}
+                  </span>
                 ) : null}
               </div>
-              <Composer
-                commands={commandSuggestions.commands}
-                onRequestCommands={commandSuggestions.load}
-                mentionUsers={mentionUsers}
-                mentionMemberIds={mentionMemberIds}
-                key={channelId}
-                onSend={handleSend}
-                onUploadAttachment={uploadAttachment}
-                onTyping={typing.onTyping}
-                // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
-                // 最初のページの取得を止めるため、互いに待ち合って失敗する。
-                disabled={readOnly || sendBlocked || !isOnline || messagesQuery.isLoading}
-                placeholder={
-                  downgraded
+            ) : null}
+
+            <MessageList
+              targetMessageId={targetMessageId}
+              key={`${channelId}:${currentUserId}`}
+              channelId={channelId}
+              messages={feed}
+              isWritePending={isWritePending}
+              isLoading={messagesQuery.isLoading}
+              isError={messagesQuery.isError}
+              currentUserId={readOnly ? null : currentUserId}
+              viewerId={isMember ? currentUserId : null}
+              canModerate={canModerate}
+              editingId={editingId}
+              editingText={editingText}
+              onEditingTextChange={setEditingText}
+              onStartEdit={handleStartEdit}
+              onCancelEdit={handleCancelEdit}
+              onSaveEdit={handleSaveEdit}
+              onRequestDelete={setPendingDeleteId}
+              onForward={!treatAsEncrypted && currentUserId ? handleOpenForward : undefined}
+              reactions={channelReactions.reactionGroups}
+              attachments={attachmentsByMessage}
+              kitchenCatalog={channelReactions.kitchenCatalog}
+              canReact={channelReactions.canReact}
+              onReaction={channelReactions.handleReaction}
+              onPickReaction={channelReactions.openReactionPicker}
+              onOpenThread={openThread}
+              canCompose={isMember}
+              isOffline={!isOnline}
+              hasOlder={messagesQuery.hasOlder}
+              isLoadingOlder={messagesQuery.isLoadingOlder}
+              onLoadOlder={() => void messagesQuery.loadOlder()}
+              onRetry={() => window.location.reload()}
+            />
+
+            {readOnly ? null : isMember ? (
+              <>
+                <TypingIndicator users={typing.users} />
+                {downgraded ? (
+                  <p role="alert" className="mx-3 mb-2 text-xs text-destructive">
+                    {t("e2ee.downgraded")}
+                  </p>
+                ) : null}
+                {/* 配布先の表示は、増えた人か配れない人がいるときだけ出る。中身が後から入っても読み上げられる
+                  よう、live region は常に置いておく。 */}
+                <div role="status" aria-live="polite" data-testid="encryption-recipients-status">
+                  {encrypted && recipients ? (
+                    <EncryptionRecipientsNotice
+                      summary={recipients}
+                      users={usersQuery.data ?? []}
+                    />
+                  ) : null}
+                </div>
+                <Composer
+                  commands={commandSuggestions.commands}
+                  onRequestCommands={commandSuggestions.load}
+                  mentionUsers={mentionUsers}
+                  mentionMemberIds={mentionMemberIds}
+                  key={channelId}
+                  onSend={handleSend}
+                  onUploadAttachment={uploadAttachment}
+                  onTyping={typing.onTyping}
+                  // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
+                  // 最初のページの取得を止めるため、互いに待ち合って失敗する。
+                  disabled={
+                    readOnly ||
+                    postingForbidden ||
+                    sendBlocked ||
+                    !isOnline ||
+                    messagesQuery.isLoading
+                  }
+                  placeholder={
+                    postingForbidden
+                      ? t("channels.postingManagersOnly")
+                      : downgraded
+                        ? t("e2ee.downgraded")
+                        : checkingEncryption
+                          ? t("e2ee.checking")
+                          : sendBlocked
+                            ? t("e2ee.deviceNotReady")
+                            : isOnline
+                              ? undefined
+                              : t("offline.composeDisabled")
+                  }
+                />
+              </>
+            ) : (
+              <JoinToPostPrompt
+                onJoin={() => void handleJoin()}
+                joining={isJoining}
+                disabled={!currentUserId || !isOnline}
+              />
+            )}
+          </div>
+
+          {threadPaneRoot ? (
+            <ThreadPane
+              commands={commandSuggestions.commands}
+              onRequestCommands={commandSuggestions.load}
+              targetMessageId={threadTargetMessageId}
+              mentionUsers={mentionUsers}
+              mentionMemberIds={mentionMemberIds}
+              key={threadPaneRoot.id}
+              readOnly={readOnly || !threadRoot}
+              rootDeleted={!threadRoot}
+              isArchived={threadIsArchived}
+              isMember={!readOnly && isMember}
+              isOffline={!isOnline}
+              typingUsers={threadTyping.users}
+              onTyping={threadTyping.onTyping}
+              root={threadPaneRoot}
+              replies={threadReplies}
+              membership={threadMembership.data?.membership}
+              membershipPending={threadMembership.pending}
+              membershipError={threadMembership.error}
+              membershipLoading={!threadMembership.data}
+              participantCount={threadMembership.data?.participant_count}
+              participants={threadMembership.data?.participants}
+              onMembershipRetry={() => void threadMembership.retry?.()}
+              onJoinThread={() => void threadMembership.change?.("join")}
+              onLeaveThread={() => void threadMembership.change?.("leave")}
+              onReopenThread={() => void threadMembership.change?.("unarchive")}
+              onReopenAndJoinThread={() =>
+                void (async () => {
+                  // 再Openに失敗したら参加しない（アーカイブ中の参加は 409 になり、原因が分からなくなる）。
+                  if (await threadMembership.change?.("unarchive")) {
+                    await threadMembership.change?.("join");
+                  }
+                })()
+              }
+              isLoading={threadQuery.isLoading}
+              isError={threadQuery.isError}
+              currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+              viewerId={currentUserId}
+              mentionUserId={isMember ? currentUserId : null}
+              canModerate={canModerate && !threadIsArchived && !!threadRoot}
+              reactions={channelReactions.reactionGroups}
+              attachments={attachmentsByMessage}
+              onUploadAttachment={uploadAttachment}
+              kitchenCatalog={channelReactions.kitchenCatalog}
+              canReact={channelReactions.canReact && !threadIsArchived && !!threadRoot}
+              onReaction={channelReactions.handleReaction}
+              onPickReaction={channelReactions.openReactionPicker}
+              editingId={editingId}
+              editingText={editingText}
+              onEditingTextChange={setEditingText}
+              onStartEdit={handleStartEdit}
+              onCancelEdit={handleCancelEdit}
+              onSaveEdit={handleSaveEdit}
+              onRequestDelete={setPendingDeleteId}
+              onSendReply={handleSendReply}
+              onOpenThread={openThread}
+              onForward={!treatAsEncrypted && currentUserId ? handleOpenForward : undefined}
+              composeDisabledReason={
+                postingForbidden
+                  ? t("channels.postingManagersOnly")
+                  : downgraded
                     ? t("e2ee.downgraded")
                     : checkingEncryption
                       ? t("e2ee.checking")
                       : sendBlocked
                         ? t("e2ee.deviceNotReady")
-                        : isOnline
-                          ? undefined
-                          : t("offline.composeDisabled")
-                }
-              />
-            </>
-          ) : (
-            <JoinToPostPrompt
-              onJoin={() => void handleJoin()}
-              joining={isJoining}
-              disabled={!currentUserId || !isOnline}
+                        : undefined
+              }
+              postingForbidden={postingForbidden}
+              hasOlder={threadQuery.hasOlder}
+              isLoadingOlder={threadQuery.isLoadingOlder}
+              onLoadOlder={() => void threadQuery.loadOlder()}
+              onRetry={() => window.location.reload()}
+              onClose={closeThread}
             />
-          )}
-        </div>
+          ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
+            <ThreadPaneStatus
+              isError={!!threadRootQuery.isError}
+              onRetry={() => window.location.reload()}
+              onClose={closeThread}
+            />
+          ) : null}
 
-        {threadRoot ? (
-          <ThreadPane
-            commands={commandSuggestions.commands}
-            onRequestCommands={commandSuggestions.load}
-            targetMessageId={resolvedTargetId}
-            mentionUsers={mentionUsers}
-            mentionMemberIds={mentionMemberIds}
-            key={threadRoot.id}
-            readOnly={readOnly}
-            isArchived={threadIsArchived}
-            isMember={!readOnly && isMember}
-            isOffline={!isOnline}
-            typingUsers={threadTyping.users}
-            onTyping={threadTyping.onTyping}
-            root={threadRoot}
-            replies={threadReplies}
-            membership={threadMembership.data?.membership}
-            membershipPending={threadMembership.pending}
-            membershipError={threadMembership.error}
-            onMembershipRetry={() => void threadMembership.retry?.()}
-            onJoinThread={() => void threadMembership.change?.("join")}
-            onLeaveThread={() => void threadMembership.change?.("leave")}
-            onReopenThread={() => void threadMembership.change?.("unarchive")}
-            isLoading={threadQuery.isLoading}
-            isError={threadQuery.isError}
-            currentUserId={readOnly || threadIsArchived ? null : currentUserId}
-            canModerate={canModerate && !threadIsArchived}
-            reactions={reactionGroups}
-            attachments={attachmentsByMessage}
-            onUploadAttachment={uploadAttachment}
-            kitchenCatalog={catalog}
-            canReact={
-              !readOnly &&
-              !threadIsArchived &&
-              !!currentUserId &&
-              !reactionsQuery.isLoading &&
-              !reactionsQuery.isError
-            }
-            onReaction={handleReaction}
-            onPickReaction={setReactionMessageId}
-            editingId={editingId}
-            editingText={editingText}
-            onEditingTextChange={setEditingText}
-            onStartEdit={handleStartEdit}
-            onCancelEdit={handleCancelEdit}
-            onSaveEdit={handleSaveEdit}
-            onRequestDelete={setPendingDeleteId}
-            onSendReply={handleSendReply}
-            onOpenThread={openThread}
-            composeDisabledReason={
-              downgraded
-                ? t("e2ee.downgraded")
-                : checkingEncryption
-                  ? t("e2ee.checking")
-                  : sendBlocked
-                    ? t("e2ee.deviceNotReady")
-                    : undefined
-            }
-            hasOlder={threadQuery.hasOlder}
-            isLoadingOlder={threadQuery.isLoadingOlder}
-            onLoadOlder={() => void threadQuery.loadOlder()}
-            onRetry={() => window.location.reload()}
-            onClose={closeThread}
+          <ReactionPicker
+            open={channelReactions.reactionMessageId !== null}
+            onOpenChange={(open) => {
+              if (!open) {
+                channelReactions.closeReactionPicker();
+              }
+            }}
+            onSelect={(emoji) => {
+              if (channelReactions.reactionMessageId) {
+                void channelReactions.handleReaction(channelReactions.reactionMessageId, emoji);
+              }
+            }}
           />
-        ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
-          <ThreadPaneStatus
-            isError={!!threadRootQuery.isError}
-            onRetry={() => window.location.reload()}
-            onClose={closeThread}
+
+          <ConfirmActionDialog
+            open={pendingDeleteId !== null}
+            onOpenChange={(open) => {
+              if (!open) setPendingDeleteId(null);
+            }}
+            title={t("messages.deleteTitle")}
+            description={t("messages.deleteDescription")}
+            confirmLabel={t("messages.delete")}
+            onConfirm={handleConfirmDelete}
           />
-        ) : null}
 
-        <ReactionPicker
-          open={reactionMessageId !== null}
-          onOpenChange={(open) => {
-            if (!open) {
-              setReactionMessageId(null);
-            }
-          }}
-          onSelect={(emoji) => {
-            if (reactionMessageId) {
-              void handleReaction(reactionMessageId, emoji);
-            }
-          }}
-        />
-
-        <ConfirmActionDialog
-          open={pendingDeleteId !== null}
-          onOpenChange={(open) => {
-            if (!open) setPendingDeleteId(null);
-          }}
-          title={t("messages.deleteTitle")}
-          description={t("messages.deleteDescription")}
-          confirmLabel={t("messages.delete")}
-          onConfirm={handleConfirmDelete}
-        />
-      </section>
+          <ForwardMessageDialog
+            open={forwardingSource !== null}
+            onOpenChange={(open) => {
+              if (!open && !isForwarding) {
+                pendingForwardKeyRef.current = null;
+                setForwardingSource(null);
+                setForwardError(null);
+              }
+            }}
+            source={forwardingSource}
+            destinations={forwardDestinations}
+            isSubmitting={isForwarding}
+            error={forwardError}
+            onSubmit={handleSubmitForward}
+          />
+        </section>
+      </ForwardedMessagesProvider>
     </MessageDecryptionsProvider>
   );
 }

@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { pathMatcher, PR_WORKFLOWS, selectWorkflows, WORKFLOWS } from './merge-queue-changes.mjs';
+import { aggregateChecks, expectedWorkflows } from './automerge-gate.mjs';
+import { selectPrPlans, selectWorkflowPlan } from './test-selection.mjs';
+import { workflowChanges } from './test-selection-diff.mjs';
 import { changedSections, jobClosure, workflowJobs, restrictWorkflow } from './workflow-test-selection.mjs';
 
 const source = `name: CI
@@ -61,8 +66,9 @@ test('CI-only changes are narrowed per workflow; application changes never use t
   assert.equal(workflowJobs('ci-backend', [{ status: 'D', path }]), null);
 });
 
-test('Tauri Linux-only edits do not select macOS; frontend proxy-only edits need no Wasm', () => {
-  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['check'])).desktopTauri, { check: true, macos: false });
+test('Tauri Linux-only edits do not select macOS or Windows; frontend proxy-only edits need no Wasm', () => {
+  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['check'])).desktopTauri, { check: true, macos: false, windows: false });
+  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['windows'])).desktopTauri, { check: false, macos: false, windows: true });
   const plan = restrictWorkflow({ frontend: {} }, 'ci-frontend', new Set(['proxy', 'runner', 'test-selection']));
   assert.equal(plan.frontend.proxy, true);
   assert.equal(plan.frontend.browser, false);
@@ -74,4 +80,145 @@ test('needs parses its entire multiline block, including comments and later entr
   assert.deepEqual([...jobClosure(multiline, new Set(['test-selection']))].sort(), ['check', 'deploy-image', 'e2e', 'runner', 'test-selection']);
   assert.equal(jobClosure(multiline.replace('      - test-selection', '      unexpected: test-selection'), new Set(['runner'])), null);
   assert.equal(jobClosure(multiline.replace('      - test-selection', '      - *unknown'), new Set(['runner'])), null);
+});
+
+test('expensive checks run on PRs and remain wired into the merge queue gate', () => {
+  const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  const queue = readWorkflow('merge-queue');
+  const deferred = {
+    'ci-backend': ['deploy-image'],
+    'ci-frontend-auth-e2e': ['crypto-wasm'],
+    'ci-frontend-e2ee-e2e': ['crypto-wasm'],
+    'ci-android': ['android'],
+    'ci-desktop-tauri': ['check', 'macos', 'windows'],
+    'ci-home-query-budget': ['query-budget'],
+    'ci-components-query-budget': ['query-budget'],
+    'ci-phone-query-budget': ['query-budget'],
+    'ci-search-query-budget': ['query-budget'],
+    'ci-read-state-worker-budget': ['query-budget'],
+  };
+  for (const [workflow, jobs] of Object.entries(deferred)) {
+    const source = readWorkflow(workflow);
+    const selected = selectWorkflows([`.github/workflows/${workflow}.yaml`], readWorkflow);
+    assert.equal(selected[workflow], true, workflow);
+    assert.ok(queue.includes(`uses: ./.github/workflows/${workflow}.yaml`), workflow);
+    assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${workflow}\n`), workflow);
+
+    const blocks = source.split(/^jobs:\n/m)[1].split(/^  (?=[\w-]+:)/m);
+    for (const job of jobs) {
+      const block = blocks.find(block => block.startsWith(`${job}:\n`));
+      assert.ok(block, `${workflow}/${job}`);
+      assert.doesNotMatch(block.match(/^    if: [^\n]*(?:\n {6}[^\n]*)*/m)?.[0] ?? '', /github\.event_name != 'pull_request'/);
+    }
+  }
+});
+
+test('PR gate and merge queue agree on platform and test ownership', () => {
+  const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  const definitions = [...WORKFLOWS, 'pr-ci'].map(name => ({ path: `${name}.yaml`, source: readWorkflow(name) }));
+  const scenarios = [
+    ['frontend-compose/androidApp/src/main/App.kt', ['ci-android']],
+    ['crates/zoo-crypto-ffi/src/lib.rs', ['ci-android']],
+    ['frontend/src/android-phone/engine.ts', ['ci-android']],
+    ['frontend/src/media-preview-entry.tsx', ['ci-android']],
+    ['frontend/scripts/media-preview-bundle.test.mjs', ['ci-android']],
+    ['frontend/e2e/oidc.spec.ts', ['ci-frontend-auth-e2e']],
+    ['frontend/e2e/e2ee.spec.ts', ['ci-frontend-e2ee-e2e']],
+    ['backend/tests/apns_test.rs', ['ci-backend']],
+    ['backend/tests/home_scale_test.rs', ['ci-backend', 'ci-home-query-budget']],
+    ['infra/db/erd.sh', ['ci-db-erd']],
+    ['infra/db/compare-phone-work.py', ['ci-phone-query-budget']],
+    ['infra/db/compare-search-work.py', ['ci-search-query-budget']],
+    ['sdk/src/e2ee.ts', ['ci-github-bot']],
+  ];
+  for (const [path, expected] of scenarios) {
+    const actual = Object.entries(selectWorkflows([path], readWorkflow)).filter(([, selected]) => selected).map(([name]) => name);
+    assert.deepEqual(actual.sort(), expected, path);
+    assert.deepEqual(expectedWorkflows([path], definitions).sort(),
+      [...expected.filter(name => !PR_WORKFLOWS.includes(name)).map(name => `${name}.yaml`), 'pr-ci.yaml'].sort(), path);
+  }
+  const selected = selectWorkflows(['frontend/src/lib/sip/controller.ts', 'frontend/src/android-phone/dm-media.browser.test.ts'], readWorkflow);
+  assert.equal(selected['ci-frontend'], true);
+  assert.equal(selected['ci-android'], true);
+  assert.equal(selectWorkflows(['infra/db/schema.sql'], readWorkflow)['ci-components-query-budget'], true);
+});
+
+test('a mixed platform diff retains only relevant files for per-workflow selection', () => {
+  const web = { status: 'M', path: 'frontend/src/components/Button.tsx' };
+  const android = { status: 'D', path: 'frontend/src/android-phone/engine.ts' };
+  assert.deepEqual(workflowChanges('ci-frontend', [android, web]), [web]);
+  assert.deepEqual(workflowChanges('ci-android', [android, web]), [android]);
+});
+
+test('ordered path exclusions support nested and top-level matches and re-inclusion', () => {
+  const matches = pathMatcher(['frontend/**', '!frontend/**/*.test.ts', 'frontend/keep.test.ts']);
+  assert.equal(matches('frontend/unit.test.ts'), false);
+  assert.equal(matches('frontend/src/unit.test.ts'), false);
+  assert.equal(matches('frontend/keep.test.ts'), true);
+  assert.equal(matches('frontend/src/unit.ts'), true);
+});
+
+test('one PR plan covers all required callers, including when the diff cannot be read', () => {
+  const workflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  const orchestrator = workflow('pr-ci');
+  for (const name of PR_WORKFLOWS) {
+    assert.ok(orchestrator.includes(`uses: ./.github/workflows/${name}.yaml`), name);
+    assert.ok(orchestrator.includes(`test-plan: \${{ toJSON(fromJSON(needs.plan.outputs.plan)['${name}']) }}`), name);
+    assert.match(workflow(name), /test-selection:\n    if: inputs.test-plan == ''/, name);
+  }
+  const change = path => ({ status: 'M', path });
+  const mixed = selectPrPlans([change('frontend/src/components/Button.tsx'), change('backend/tests/apns_test.rs')]);
+  assert.deepEqual(Object.keys(mixed), ['ci-backend', 'ci-frontend']);
+  assert.deepEqual(mixed['ci-backend'].backend.targets, ['apns_test']);
+  assert.equal(mixed['ci-frontend'].frontend.container, false);
+  assert.ok(mixed['ci-frontend'].frontend.browser);
+  assert.deepEqual(selectPrPlans([change('frontend/README.md'), change('frontend-compose/androidApp/App.kt')]), {});
+  assert.deepEqual(Object.keys(selectPrPlans(undefined)), PR_WORKFLOWS);
+});
+
+test('the existing merge gate subscription receives the required PR workflow result', () => {
+  const workflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  const source = workflow('pr-ci');
+  const workflowName = source.match(/^name: (.*)$/m)[1];
+  assert.match(workflow('automerge-gate'), new RegExp(`      - "${workflowName}"`));
+  const expected = expectedWorkflows([], [{ path: 'pr-ci.yaml', source }]);
+  assert.deepEqual(expected, ['pr-ci.yaml']);
+  assert.equal(aggregateChecks([], [], expected).state, 'pending');
+  const run = { id: 1, event: 'pull_request', path: '.github/workflows/pr-ci.yaml', status: 'completed', check_suite_id: 1 };
+  assert.equal(aggregateChecks([], [{ ...run, conclusion: 'failure' }], expected).state, 'failure');
+  assert.equal(aggregateChecks([], [{ ...run, conclusion: 'success' }], expected).state, 'success');
+});
+
+test('dedicated OIDC and E2EE specs still get the Web type check on PRs', () => {
+  for (const path of ['e2e/oidc.spec.ts', 'e2e/e2ee.spec.ts', 'playwright.oidc.config.ts', 'playwright.e2ee.config.ts']) {
+    const change = { status: 'M', path: `frontend/${path}` };
+    assert.equal(selectPrPlans([change])['ci-frontend'].frontendBuild.check, true);
+    assert.deepEqual(workflowChanges('ci-frontend', [change], 'merge_group'), []);
+  }
+});
+
+test('PR runs the shared Rust and cross-stack regression checks without a merge queue', () => {
+  const changed = path => ({ status: 'M', path });
+  const backend = selectPrPlans([changed('backend/src/db.rs')])['ci-backend'].backend;
+  assert.ok(backend.full && backend.run && backend.deploy);
+  assert.ok(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [changed('backend/src/db.rs')]).frontend.auth);
+  assert.ok(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [changed('frontend/src/lib/e2ee/setupController.ts')]).frontend.e2ee);
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [changed('frontend/src/lib/i18n/locales/ja.json')]).frontend.auth, false);
+});
+
+test('visible translation changes reach dedicated E2E jobs before merge', () => {
+  const change = { status: 'M', path: 'frontend/src/lib/i18n/locales/ja.json', translationText: true };
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [change]).frontend.auth, true);
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [change]).frontend.e2ee, true);
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [{ ...change, translationText: false }]).frontend.e2ee, false);
+  assert.deepEqual(workflowChanges('ci-frontend-e2ee-e2e', [change], 'merge_group'), []);
+  const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  assert.equal(selectWorkflows([change.path], readWorkflow)['ci-frontend-e2ee-e2e'], false);
+});
+
+test('the layout fixture is not an input to dedicated auth E2E', () => {
+  const plan = selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [
+    { status: 'M', path: 'frontend/e2e/fixtures/layout.tsx' },
+  ]);
+  assert.equal(plan.frontend.auth, false);
 });

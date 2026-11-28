@@ -57,8 +57,8 @@
           vulkan-loader
           wayland
         ];
-        # デスクトップの画面撮影 (scripts/desktop-screenshot.sh) 用。
-        # 仮想ディスプレイ (Xvfb) と WM (openbox) の上で GPUI を lavapipe (CPU の Vulkan) で描く。
+        # デスクトップの起動時間・メモリの測定 (scripts/desktop-bench.sh) 用。
+        # 仮想ディスプレイ (Xvfb) と WM (openbox) の上で動かす。
         desktopScreenshotTools = with pkgs; [
           xvfb
           openbox
@@ -201,7 +201,7 @@
         # CI Android（.github/workflows/ci-android.yaml）の setup-android と同じ版にそろえる。
         androidNdkVersion = "29.0.14206865";
         androidComposition = androidPkgs.androidenv.composeAndroidPackages {
-          platformVersions = [ "35" ];
+          platformVersions = [ "35" "36" ];
           buildToolsVersions = [ "35.0.0" ];
           includeNDK = true;
           ndkVersions = [ androidNdkVersion ];
@@ -221,6 +221,16 @@
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
           exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"
         '';
+        # iOS（ios/）の zoo-crypto の XCFramework（crates/zoo-crypto-ffi、#685）。
+        # iosRustTargets は ios/Scripts/build-crypto-xcframework.sh の IOS_TARGETS と同じ。
+        # watchOS と x86_64 のシミュレーターは対象外。rust-toolchain.toml には足さない（iOS を触らない人の rustup に std を入れないため）。
+        iosRustTargets = [ "aarch64-apple-ios" "aarch64-apple-ios-sim" ];
+        iosToolchain = fenix.packages.${system}.combine ([ toolchain ] ++ map
+          (target: (fenix.packages.${system}.targets.${target}.fromToolchainName {
+            name = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+            sha256 = "sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=";
+          }).rust-std)
+          iosRustTargets);
       in
       {
         formatter = pkgs.nixpkgs-fmt;
@@ -234,7 +244,8 @@
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           zoo2-desktop-tauri = flake-utils.lib.mkApp { drv = zoo2-desktop-tauri; };
         };
-        devShells.android = pkgs.mkShell {
+        devShells = {
+        android = pkgs.mkShell {
           name = "zoo2-android";
           nativeBuildInputs = with pkgs; [
             androidToolchain
@@ -251,7 +262,7 @@
           ANDROID_HOME = "${androidComposition.androidsdk}/libexec/android-sdk";
           ANDROID_NDK_HOME = "${androidComposition.androidsdk}/libexec/android-sdk/ndk/${androidNdkVersion}";
         };
-        devShells.default = pkgs.stdenv.mkDerivation {
+        default = pkgs.stdenv.mkDerivation {
           name = "rust-env";
           nativeBuildInputs = with pkgs; [
             toolchain
@@ -264,6 +275,9 @@
             rust-analyzer
             atlas
             postgresql_16
+            # 通話の sfu-bridge（docs/calls-sfu.md）。server-sdk-go v2.20 が Go 1.26.8 以上を要る。
+            # Dockerfile の golang イメージも同じ版にそろえる
+            go_1_26
             # Android (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
             jdk21
             # infra/terraform（R2）。CI の TOFU_VERSION はこの版にそろえる
@@ -281,7 +295,7 @@
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ tauriLibs ++ desktopScreenshotTools);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
-          # lavapipe の Vulkan ICD。desktop-screenshot.sh が VK_ICD_FILENAMES に使う。
+          # lavapipe の Vulkan ICD。desktop-bench.sh が VK_ICD_FILENAMES に使う。
           ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
           LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath (linuxDesktopLibs ++ tauriLibs));
@@ -290,6 +304,19 @@
           shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
           '';
+        };
+        # `nix develop .#ios` で iOS 向けの XCFramework を作る（`make crypto-ffi-ios`）。xcodegen は Darwin 専用なので、
+        # Linux には公開しない（`nix flake check` が未対応のプラットフォームで止まらないように）。
+        # Xcode 本体（xcodebuild・xcrun・iOS SDK）は mac に入れたものを使う。
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+          ios = pkgs.mkShell {
+            name = "zoo2-ios";
+            nativeBuildInputs = [
+              iosToolchain
+              pkgs.gnumake
+              pkgs.xcodegen
+            ];
+          };
         };
       }
     );

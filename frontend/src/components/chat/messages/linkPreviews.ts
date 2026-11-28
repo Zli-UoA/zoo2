@@ -1,23 +1,23 @@
 import { parse, type MfmNode } from "mfm-js";
 import { messageTextSegments } from "./messageFormat";
 
+function previewHref(raw: string): string | undefined {
+  if (!raw || raw.length > 4096) return;
+  try {
+    const url = new URL(raw);
+    if (/^https?:$/.test(url.protocol) && !url.username && !url.password) return url.href;
+  } catch {
+    // Incomplete URLs remain text.
+  }
+}
+
 /** Match visible MFM links, excluding code, plain text and silent links. */
 export function previewUrls(content: string, excludeUrl?: string): string[] {
   const urls = new Set<string>();
+  const excluded = previewHref(excludeUrl ?? "");
   function add(raw: string) {
-    try {
-      const url = new URL(raw);
-      if (
-        /^https?:$/.test(url.protocol) &&
-        !url.username &&
-        !url.password &&
-        raw.length <= 4096 &&
-        url.href !== excludeUrl
-      )
-        urls.add(url.href);
-    } catch {
-      /* Incomplete URLs remain text. */
-    }
+    const href = previewHref(raw);
+    if (href && href !== excluded) urls.add(href);
   }
   function walk(nodes: MfmNode[]) {
     for (const node of nodes) {
@@ -32,28 +32,4 @@ export function previewUrls(content: string, excludeUrl?: string): string[] {
   }
   walk(parse(content));
   return [...urls].slice(0, 3);
-}
-
-export function proxyImageUrl(endpoint: string, image: string | null): string | null {
-  if (!endpoint || !image) return null;
-  try {
-    const source = new URL(image);
-    if (!/^https?:$/.test(source.protocol) || source.username || source.password) return null;
-    // Relative endpoints must stay on this origin; protocol-relative URLs are rejected.
-    const relative = endpoint.startsWith("/") && !endpoint.startsWith("//");
-    const proxy = new URL(endpoint, relative ? "https://same-origin.invalid" : undefined);
-    if (
-      proxy.protocol !== "https:" &&
-      !(proxy.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(proxy.hostname))
-    )
-      return null;
-    if (proxy.username || proxy.password) return null;
-    proxy.searchParams.set("url", source.href);
-    // Use the proxy's configured output size instead of its smaller thumbnail presets.
-    proxy.searchParams.delete("preview");
-    proxy.searchParams.delete("static");
-    return relative ? `${proxy.pathname}${proxy.search}` : proxy.href;
-  } catch {
-    return null;
-  }
 }

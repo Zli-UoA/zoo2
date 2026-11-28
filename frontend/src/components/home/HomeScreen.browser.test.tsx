@@ -158,6 +158,31 @@ async function mount() {
 function approachTail() {
   fireEvent.scroll(root, { target: { scrollTop: root.scrollHeight - root.clientHeight - 700 } });
 }
+it("stays on the timeline when dismissing a post media preview", async () => {
+  rows[0].media = [
+    { url: "https://home.test/clip.mp3", name: "clip.mp3", media_type: "audio/mpeg" },
+  ];
+  await mount();
+  const user = userEvent.setup();
+  const preview = screen.getByRole("button", { name: "clip.mp3をプレビュー" });
+
+  await user.click(preview);
+  await screen.findByRole("dialog", { name: "clip.mp3" });
+  const backdrop = document.querySelector<HTMLElement>('[data-slot="dialog-overlay"]')!;
+  await user.click(backdrop);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(router.state.location.pathname).toBe("/home");
+
+  await user.click(preview);
+  const reopened = await screen.findByRole("dialog", { name: "clip.mp3" });
+  await user.click(within(reopened).getByRole("button", { name: "閉じる" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(router.state.location.pathname).toBe("/home");
+
+  await user.click(screen.getByText(/^投稿 0/));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/home/posts/p-0"));
+});
+
 it.each([390, 1440])(
   "virtualizes variable height posts and prefetches before the end at width %s",
   async (width) => {
@@ -336,6 +361,21 @@ it("deletes from the TL menu without navigating or resetting the scroll position
   approachTail();
   await waitFor(() => expect(prefetchDistances).toHaveLength(1));
   await waitFor(() => expect(screen.queryByRole("button", { name: "読み込み中…" })).toBeNull());
+  await document.fonts.ready;
+  const measureRows = () =>
+    Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]"), (node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return { id: node.dataset.homePost, top, bottom };
+    });
+  // ResizeObserver updates can move the rows after the older-page load finishes.
+  await waitFor(async () => {
+    const rowsBeforeFrame = measureRows();
+    expect(rowsBeforeFrame.length).toBeGreaterThan(1);
+    await act(async () => {
+      await new Promise(requestAnimationFrame);
+    });
+    expect(measureRows()).toEqual(rowsBeforeFrame);
+  });
   const visible = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).filter(
     (node) => {
       const rect = node.getBoundingClientRect(),

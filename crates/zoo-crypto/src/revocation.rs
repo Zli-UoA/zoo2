@@ -671,20 +671,28 @@ impl Revocation {
     /// 止まった失効を続ける。`unlocked` は開け直した SSSS（2〜5 では新しい SSSS 鍵のスロットで
     /// 開けたもの）。
     ///
-    /// - [`RevocationStage::Prepared`] で止まった 2〜5 の失効は続けられない
-    ///   （[`CryptoError::RevocationRestart`]。最初からやり直す）。
+    /// - [`RevocationStage::Prepared`] で止まった 2〜5 の失効は、SSSS を保存する前に止まっていれば
+    ///   続けられない（[`CryptoError::RevocationRestart`]。最初からやり直す）。SSSS を保存したあと、
+    ///   記録する前に止まっていれば（開け直した SSSS の既定の鍵がこの失効の新しい鍵なら）、保存した
+    ///   SSSS の秘密を照合して [`RevocationStage::SecretStorageSaved`] から続ける（やり直すと、利用者が
+    ///   控えた新しいリカバリーキーが使えなくなるため）。
     /// - SSSS の鍵や秘密が、記録した鍵と違えば [`CryptoError::ServerKeyMismatch`]（別の端末の失効が
     ///   入り混じった。やり直す）。
     pub fn resume(
-        state: RevocationState,
+        mut state: RevocationState,
         unlocked: &UnlockedSecretStorage,
     ) -> Result<Self, CryptoError> {
         let previous = state.previous_backup_keys()?;
-        if state.stage == RevocationStage::Prepared {
-            // SSSS を保存する前。端末だけの失効は同じ SSSS 鍵で開け直せば続けられる。
-            if state.scope == RevocationScope::Full {
+        if state.stage == RevocationStage::Prepared && state.scope == RevocationScope::Full {
+            if unlocked.key().key_id() != state.key_id {
                 return Err(CryptoError::RevocationRestart);
             }
+            // 新しい SSSS 鍵で開けた。秘密は下で、作った鍵と照合する。
+            state.secrets_revision = unlocked.secrets_revision();
+            state.stage = RevocationStage::SecretStorageSaved;
+        }
+        if state.stage == RevocationStage::Prepared {
+            // SSSS を保存する前。端末だけの失効は同じ SSSS 鍵で開け直せば続けられる。
             if unlocked.key().key_id() != state.expected_default_key_id {
                 return Err(CryptoError::ServerKeyMismatch(
                     "既定の SSSS 鍵が、失効を始めたときと違います".into(),
@@ -952,6 +960,29 @@ impl Revocation {
             }
         }
         (out, dropped)
+    }
+
+    /// 読み直した SSSS（`GET /api/e2ee/secret_storage`）に、この失効の秘密が保存されているか。SSSS の
+    /// 保存で 409 を受けたあと、応答をなくした自分の書き込みが済んでいたかを見る。端末だけの失効は既定の
+    /// 鍵 ID が変わらないので、鍵 ID ではなく、開けた秘密を作った鍵と比べる。
+    pub fn secret_storage_matches(&self, secret_storage: &Value) -> Result<bool, CryptoError> {
+        let Some(storage) = SecretStorage::from_json(&self.state.user_id, secret_storage)? else {
+            return Ok(false);
+        };
+        if storage.default_key_id() != self.ssss.key_id() {
+            return Ok(false);
+        }
+        // 別の書き込みで開けない・読めない秘密は、自分の書き込みではない。
+        let Ok(unlocked) = storage.unlock_with_key(&self.ssss) else {
+            return Ok(false);
+        };
+        let Ok(stored) = OwnSecrets::from_unlocked(&unlocked) else {
+            return Ok(false);
+        };
+        Ok(
+            PublicCrossSigningKeys::of(&stored.cross_signing) == self.state.new_keys
+                && stored.backup_key.public_key() == self.secrets.backup_key.public_key(),
+        )
     }
 
     /// 保存を終えたあとに読み直した値を、自分が作った鍵と比べる（docs/e2ee.md の「失効を行う端末は、

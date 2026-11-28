@@ -13,10 +13,23 @@ import type { FeedMessage as FeedRow } from "../components/chat/messages/message
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
 
-/** 投稿者名の解決に使う全ユーザーを購読する。 */
+/** 投稿者名の解決に使うユーザーのうち、本人と共同チャンネルにいるものを購読する。 */
 export function useUsers() {
   const { users } = useCollections();
   const query = useLiveQuery((q) => q.from({ users }));
+  return {
+    ...query,
+    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+  };
+}
+
+/** 全ユーザーが必要な画面専用。起動時の全件購読を避けるため、ここだけが allUsers Shape を使う。 */
+export function useAllUsers(enabled = true) {
+  const { allUsers } = useCollections();
+  const query = useLiveQuery({
+    query: (q) => (enabled ? q.from({ users: allUsers }) : undefined),
+    queryKey: ["allUsers", enabled, allUsers.id],
+  });
   return {
     ...query,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
@@ -44,6 +57,8 @@ export function useActiveChannels() {
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
+  /** 1ページで取得する件数。キャッチアップでは未読範囲を早く覆うため大きくする。 */
+  pageSize?: number;
 }
 
 /**
@@ -53,27 +68,79 @@ export interface MessageFeedOptions {
  * 端末に同期するのは、画面に出す範囲 (新しい方から `MESSAGE_PAGE_SIZE` 件ずつ) だけ。`loadOlder()` で、
  * 1 ページ分、古い方へ範囲を広げる (Electric の subset snapshot で、そのページだけを取る)。`data` は古い順。
  */
+const ONLINE_CACHE_FALLBACK_MS = 1_500;
+
 export function useMessageFeed(channelId: string, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
   const { isOnline, namespace } = useOfflineStatus();
   const parentId = options.parentId ?? null;
   const query = useLiveInfiniteQuery(
     (q) => messageFeedQuery(q, { messages: messages(channelId), users }, { parentId }),
-    { pageSize: MESSAGE_PAGE_SIZE },
+    { pageSize: options.pageSize ?? MESSAGE_PAGE_SIZE },
   );
   // クエリは新しい順。画面は古い順に並べる。
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
 
   // オフラインで再読み込みすると、on-demand のコレクションは保存済みの行を使えない。
-  // 最新ページの控え (IndexedDB) を、読み込めた間だけ、代わりに表示する。
+  // 最新ページの控え (IndexedDB) を、オフライン・失敗時、またはオンライン接続が長引いたときだけ代わりに表示する。
+  // オンラインの通常切替で即座に控えを出すと、古い履歴から最新への跳ね返りが見えるため少し待つ。
+  // すでに控えを表示している間のオンライン復帰・再試行では、ライブの行（または空の確定）が届くまで維持する。
   const cacheable = parentId === null;
   const live = oldestFirst as FeedRow[];
   const liveReady = !query.isLoading && live.length > 0;
+  // 正常に取得できた結果が空 (全件が削除された) なら、控えも消す。読み込み中の空やエラーとは区別する。
+  const loadedEmpty =
+    isOnline && !query.isError && query.isReady && !query.isLoading && live.length === 0;
   const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
-  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
-  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
+  const [fallbackChannelId, setFallbackChannelId] = useState<string | null>(null);
+  const showingCache = cached?.channelId === channelId && cached.rows !== null;
+  const immediateCache =
+    cacheable && !loadedEmpty && live.length === 0 && (!isOnline || query.isError);
+  const waitingOnline =
+    cacheable &&
+    !loadedEmpty &&
+    isOnline &&
+    live.length === 0 &&
+    query.isLoading &&
+    !query.isError &&
+    !showingCache &&
+    fallbackChannelId !== channelId;
+  useEffect(() => {
+    if (!cacheable || live.length > 0 || loadedEmpty) {
+      setFallbackChannelId(null);
+      setCached((prev) => (prev?.channelId === channelId ? null : prev));
+      return;
+    }
+    if (immediateCache) {
+      setFallbackChannelId(channelId);
+      return;
+    }
+    if (!waitingOnline) {
+      if (fallbackChannelId !== channelId) {
+        setFallbackChannelId(null);
+      }
+      return;
+    }
+    const timer = setTimeout(() => setFallbackChannelId(channelId), ONLINE_CACHE_FALLBACK_MS);
+    return () => clearTimeout(timer);
+  }, [
+    cacheable,
+    live.length,
+    loadedEmpty,
+    immediateCache,
+    waitingOnline,
+    fallbackChannelId,
+    channelId,
+  ]);
+  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフライン・失敗時だけでなく、
+  // オンラインでも応答が返らないまま待機が続いたときは控えを表示する。
+  // オフライン・失敗で一度控えを表示したら、オンライン復帰中・再試行中も結果が届くまで維持する。
   const wantCache =
-    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
+    cacheable &&
+    live.length === 0 &&
+    !loadedEmpty &&
+    (immediateCache ||
+      ((query.isLoading || !query.isReady) && (fallbackChannelId === channelId || showingCache)));
   useEffect(() => {
     if (!wantCache) return;
     let cancelled = false;
@@ -98,13 +165,11 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => clearTimeout(timer);
   }, [cacheable, isOnline, liveReady, namespace, channelId, query.data]);
 
-  // 正常に取得できた結果が空 (全件が削除された) なら、控えも消す。読み込み中の空とは区別する。
-  const loadedEmpty = query.isReady && !query.isLoading && live.length === 0;
   useEffect(() => {
-    if (!cacheable || !isOnline || !loadedEmpty) return;
+    if (!cacheable || !loadedEmpty) return;
     const timer = setTimeout(() => void clearFeedCache(namespace, channelId), 1_000);
     return () => clearTimeout(timer);
-  }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
+  }, [cacheable, loadedEmpty, namespace, channelId]);
 
   const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
   const fromCache = cachedRows !== null;
@@ -200,6 +265,8 @@ export interface MyChannelMemberships {
   isInitialSyncLoading: boolean;
   /** 現在ユーザーが参加している channel_user 行。 */
   memberships: ChannelUserRow[];
+  /** 全チャンネルの channel_user 行（グループ DM 転送先の表示名解決に使用する）。 */
+  allMemberships: ChannelUserRow[];
   /** 参加中チャンネル ID の集合（一覧の参加バッジ判定用）。 */
   joinedChannelIds: ReadonlySet<string>;
   /** 現在ユーザーが解決できているか。false なら参加状態を表示しない。 */
@@ -221,9 +288,10 @@ export function useMyChannelMemberships(): MyChannelMemberships {
   const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
   const membershipsQuery = useLiveQuery((q) => q.from({ channelUsers }));
+  const allMemberships = useMemo(() => membershipsQuery.data ?? [], [membershipsQuery.data]);
   const memberships = useMemo(
-    () => (membershipsQuery.data ?? []).filter((row) => row.user_id === currentUserId),
-    [membershipsQuery.data, currentUserId],
+    () => allMemberships.filter((row) => row.user_id === currentUserId),
+    [allMemberships, currentUserId],
   );
   const joinedChannelIds = useMemo(
     () => new Set(memberships.map((row) => row.channel_id)),
@@ -231,6 +299,7 @@ export function useMyChannelMemberships(): MyChannelMemberships {
   );
   return {
     memberships,
+    allMemberships,
     joinedChannelIds,
     hasCurrentUser: currentUserId !== null,
     isInitialSyncLoading: membershipsQuery.isLoading,
@@ -263,6 +332,8 @@ export interface ChannelAccess {
    * 揃うまで保留する。解決前に「非公開です」を出すのを避ける。
    */
   isMembershipPending: boolean;
+  /** 本人IDとメンバー購読の初回同期が揃うまで参加判定を保留するか。 */
+  isSyncing: boolean;
   /** メンバー購読の失敗。 */
   isError: boolean;
 }
@@ -304,6 +375,7 @@ export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
     isMembershipPending:
       !!channel?.is_private &&
       (currentUserLoading || (!isMember && membersQuery.isInitialSyncLoading)),
+    isSyncing: currentUserLoading || membersQuery.isInitialSyncLoading,
     isError: membersQuery.isError,
   };
 }

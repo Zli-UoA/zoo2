@@ -23,6 +23,28 @@ use crate::{
 /// 入室まで時間がかかっても、別の人に席を取られないようにする。
 pub const ACCEPTED_SEAT_HOLD_SECONDS: u32 = 60;
 
+pub(crate) const PENDING_INVITATION_SQL: &str = "SELECT i.id::text FROM call_invites i
+ JOIN users u ON u.id=i.invitee_id AND NOT u.is_deactivated
+ JOIN channels c ON c.id=i.channel_id AND c.deleted_at IS NULL AND c.archive_at IS NULL
+ WHERE i.id=$1::uuid AND i.invitee_id=$2 AND i.status='pending' AND i.expires_at>clock_timestamp()
+   AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
+       SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))";
+
+// Pushと初回Shapeの順序が逆転した場合だけ、宛先本人が有効な招待かを照合する。
+pub async fn pending(
+    State(state): State<AppState>,
+    actor: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut db = state.db.clone();
+    let rows = toasty::sql::query(PENDING_INVITATION_SQL)
+        .bind(id.to_string())
+        .bind(actor.id)
+        .exec(&mut db)
+        .await?;
+    Ok(Json(serde_json::json!({"pending": !rows.is_empty()})))
+}
+
 /// 席を予約している招待の条件（招待の別名は `i`）。呼び出し中、または応答してから日が浅くて、
 /// まだ入室していない人。入室済みの人は、在室の人数に数えるので、ここでは数えない。
 pub fn reserved_seat_condition() -> String {
@@ -64,6 +86,7 @@ fn parse_rows<T: DeserializeOwned>(rows: Vec<toasty::stmt::Value>) -> Vec<T> {
 /// グループ DM でも、通話の空きの数までしか呼ばない。
 pub async fn create_dm_invites(
     db: &mut toasty::Db,
+    sfu: Option<&crate::call_sfu::CallSfu>,
     channel_id: &str,
     inviter_id: &str,
 ) -> Result<Vec<CallInvitePush>, AppError> {
@@ -87,7 +110,7 @@ pub async fn create_dm_invites(
     if members.is_empty() {
         return Ok(Vec::new());
     }
-    insert_invites(db, channel_id, inviter_id, &members).await
+    insert_invites(db, sfu, channel_id, inviter_id, &members).await
 }
 
 /// 招待を作る。空きの数（定員 - 在室 - 呼び出し中）までしか作らず、1 回の要求の中でも累積させる。
@@ -97,6 +120,7 @@ pub async fn create_dm_invites(
 /// 呼べないユーザー（bot・無効化）、すでに入室している人、すでに呼び出し中の人は、数える前に除く。
 async fn insert_invites(
     db: &mut toasty::Db,
+    sfu: Option<&crate::call_sfu::CallSfu>,
     channel_id: &str,
     inviter_id: &str,
     invitee_ids: &[String],
@@ -108,9 +132,11 @@ async fn insert_invites(
         .exec(&mut tx)
         .await?;
     let reserved = reserved_seat_condition();
+    // SFU モードの部屋は定員が大きい（docs/calls-sfu.md）。
+    let capacity = crate::routes::calls::room_capacity_sql(sfu);
     let rows = toasty::sql::query(format!(
         "WITH slots AS (
-             SELECT greatest(0, {MAX_CALL_PARTICIPANTS}
+             SELECT greatest(0, {capacity}
                - (SELECT count(*) FROM call_presence
                   WHERE channel_id = $1 AND expires_at > statement_timestamp())
                - (SELECT count(*) FROM call_invites i
@@ -424,8 +450,15 @@ pub async fn create(
         }
     }
 
-    let created = insert_invites(&mut db, &channel_id, &user.id, &ids).await?;
-    push::dispatch_call_invites(state.db.clone(), created.clone());
+    let created = insert_invites(
+        &mut db,
+        state.call_sfu.as_ref(),
+        &channel_id,
+        &user.id,
+        &ids,
+    )
+    .await?;
+    push::dispatch_call_invites(state.db.clone(), created.clone(), state.call_sfu.is_some());
 
     Ok(Json(serde_json::json!({
         "invites": created

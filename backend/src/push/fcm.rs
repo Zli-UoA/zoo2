@@ -130,14 +130,11 @@ impl FcmConfig {
         endpoint: &str,
         user: &str,
         payload: &NotificationPayload,
+        ttl: u32,
     ) -> anyhow::Result<bool> {
         let (token, binding) = registration(endpoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid Android registration"))?;
-        let body = message(token, binding, user, payload);
-        anyhow::ensure!(
-            serde_json::to_vec(&body["message"]["data"])?.len() <= 4096,
-            "FCM data payload too large"
-        );
+        let body = fitting_message(token, binding, user, payload, ttl)?;
         let access = self.access_token(client).await?;
         post_message(
             client,
@@ -150,6 +147,33 @@ impl FcmConfig {
         )
         .await
     }
+}
+
+/// FCM の data の上限（バイト）。
+const MAX_FCM_DATA_BYTES: usize = 4096;
+
+fn data_len(body: &Value) -> anyhow::Result<usize> {
+    Ok(serde_json::to_vec(&body["message"]["data"])?.len())
+}
+
+/// 送る FCM のメッセージ。暗号文を入れると data の上限を超えるなら、暗号文を外す（Web Push の `encrypt_fitting`
+/// と同じ。Android は「新しいメッセージ」のまま出す）。外しても超えるならエラー。
+fn fitting_message(
+    token: &str,
+    binding: &str,
+    user: &str,
+    payload: &NotificationPayload,
+    ttl: u32,
+) -> anyhow::Result<Value> {
+    let mut body = message(token, binding, user, payload, ttl);
+    if payload.e2ee.is_some() && data_len(&body)? > MAX_FCM_DATA_BYTES {
+        body = message(token, binding, user, &payload.without_ciphertext(), ttl);
+    }
+    anyhow::ensure!(
+        data_len(&body)? <= MAX_FCM_DATA_BYTES,
+        "FCM data payload too large"
+    );
+    Ok(body)
 }
 
 async fn post_message(
@@ -176,7 +200,22 @@ async fn post_message(
 }
 
 /// A binding changes on logout/account switch, so delayed pushes cannot cross sessions.
+const DM_CALLS_SUFFIX: &str = ":dm-calls";
+
+pub(super) fn accepts_notification(endpoint: &str, kind: &str) -> bool {
+    match kind {
+        "missed_call" => false,
+        "call_invite" | "call_invite_end" => {
+            endpoint.ends_with(DM_CALLS_SUFFIX) && registration(endpoint).is_some()
+        }
+        // `all` 設定で届く通常投稿 (#620)。ほかの通常通知と同じく、通常の購読へ送る。
+        "channel_message" => true,
+        _ => true,
+    }
+}
+
 pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
+    let endpoint = endpoint.strip_suffix(DM_CALLS_SUFFIX).unwrap_or(endpoint);
     let (token, binding) = endpoint.strip_prefix("fcm:")?.rsplit_once(':')?;
     if token.is_empty()
         || token.len() > 4096
@@ -190,12 +229,48 @@ pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
     Some((token, binding))
 }
 
-fn message(token: &str, binding: &str, user: &str, payload: &NotificationPayload) -> Value {
+fn message(
+    token: &str,
+    binding: &str,
+    user: &str,
+    payload: &NotificationPayload,
+    ttl: u32,
+) -> Value {
     // Data-only messages reach FirebaseMessagingService in the foreground and after process death.
-    // Never attach E2EE ciphertext: Android displays the existing generic encrypted-message body.
-    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": "300s"},
-        "data": {"binding": binding, "userId": user, "title": payload.title, "body": payload.body,
-            "url": payload.url, "tag": payload.tag, "notificationType": payload.notification_type}}})
+    // 暗号化チャンネルの通知には、Web Push と同じ `e2ee`（Megolm の暗号文と照合に使う行の値）を JSON の文字列で
+    // 入れる（FCM の data の値は文字列だけ）。端末が自分の暗号ストアで復号して本文を出す（#510）。どれもサーバーが
+    // 元から持つ値で、平文は入らない。
+    let mut data = json!({"binding": binding, "userId": user, "title": payload.title,
+        "body": payload.body, "url": payload.url, "tag": payload.tag,
+        "notificationType": payload.notification_type});
+    if let Some(id) = &payload.invite_id {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        data["inviteId"] = json!(id);
+        data["expiresAt"] = json!((now + u64::from(ttl)).to_string());
+    }
+    if let Some(e2ee) = &payload.e2ee {
+        data["e2ee"] = json!(serde_json::to_string(e2ee).unwrap_or_default());
+    }
+    if let Some(preview) = &payload.android_preview {
+        data["actor"] = json!(preview.actor);
+        data["channelName"] = json!(preview.channel);
+        if let Some(avatar) = &preview.avatar_url {
+            data["avatarUrl"] = json!(avatar);
+        }
+        if let Some(image) = &preview.image_id {
+            data["imageId"] = json!(image);
+        }
+    }
+    let priority = if payload.notification_type == "call_invite_end" {
+        "NORMAL"
+    } else {
+        "HIGH"
+    };
+    json!({"message": {"token": token, "android": {"priority": priority, "ttl": format!("{ttl}s")},
+        "data": data}})
 }
 
 fn is_unregistered(error: &Value) -> bool {
@@ -252,6 +327,21 @@ mod tests {
     }
 
     #[test]
+    fn only_opted_in_subscriptions_receive_dm_invites_and_ends() {
+        let endpoint = format!("fcm:test:{}", uuid::Uuid::new_v4());
+        let opted_in = format!("{endpoint}{DM_CALLS_SUFFIX}");
+        assert_eq!(registration(&endpoint), registration(&opted_in));
+        for kind in ["call_invite", "call_invite_end"] {
+            assert!(!accepts_notification(&endpoint, kind));
+            assert!(accepts_notification(&opted_in, kind));
+            assert!(!accepts_notification("fcm:invalid:dm-calls", kind));
+        }
+        assert!(accepts_notification(&endpoint, "mention"));
+        assert!(accepts_notification(&endpoint, "channel_message"));
+        assert!(!accepts_notification(&opted_in, "missed_call"));
+    }
+
+    #[test]
     fn only_unregistered_tokens_are_removed() {
         assert!(!is_unregistered(&json!({"error":{"status":"NOT_FOUND"}})));
         assert!(!is_unregistered(
@@ -260,6 +350,55 @@ mod tests {
         assert!(is_unregistered(
             &json!({"error":{"details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}})
         ));
+    }
+
+    fn encrypted_payload(ciphertext_len: usize) -> NotificationPayload {
+        NotificationPayload {
+            title: "Actor".into(),
+            body: "新しいメッセージ".into(),
+            url: "/channels/channel?message=message".into(),
+            tag: "zoo-notification".into(),
+            notification_type: "dm".into(),
+            e2ee: Some(super::super::EncryptedPush {
+                recipient_id: "00000000-0000-4000-8000-000000000001".into(),
+                message: super::super::EncryptedRow {
+                    channel_id: "00000000-0000-4000-8000-000000000002".into(),
+                    message_id: "00000000-0000-4000-8000-000000000003".into(),
+                    parent_id: None,
+                    user_id: "00000000-0000-4000-8000-000000000004".into(),
+                    message_kind: "message".into(),
+                    epoch: 3,
+                    revision: 1,
+                    ciphertext: json!({"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "A".repeat(ciphertext_len)}),
+                },
+            }),
+            invite_id: None,
+            android_preview: None,
+        }
+    }
+
+    /// 暗号化チャンネルの通知は、Web Push と同じ `e2ee` を JSON の文字列で入れる（#510）。本文は「新しいメッセージ」のまま。
+    #[test]
+    fn encrypted_notifications_carry_the_ciphertext_for_the_device() {
+        let body =
+            fitting_message("token", "binding", "user", &encrypted_payload(64), 300).unwrap();
+        let data = &body["message"]["data"];
+        assert_eq!(data["body"], "新しいメッセージ");
+        let e2ee: Value = serde_json::from_str(data["e2ee"].as_str().unwrap()).unwrap();
+        assert_eq!(e2ee["recipient_id"], "00000000-0000-4000-8000-000000000001");
+        assert_eq!(e2ee["message"]["epoch"], 3);
+        assert_eq!(e2ee["message"]["revision"], 1);
+        assert_eq!(e2ee["message"]["ciphertext"]["ciphertext"], "A".repeat(64));
+    }
+
+    /// 暗号文を入れると data の上限を超えるなら、暗号文を外して送る。
+    #[test]
+    fn oversized_ciphertext_is_dropped_to_fit_the_data_limit() {
+        let body =
+            fitting_message("token", "binding", "user", &encrypted_payload(5000), 300).unwrap();
+        assert!(body["message"]["data"].get("e2ee").is_none());
+        assert_eq!(body["message"]["data"]["body"], "新しいメッセージ");
+        assert!(data_len(&body).unwrap() <= MAX_FCM_DATA_BYTES);
     }
 
     #[test]
@@ -272,14 +411,68 @@ mod tests {
             notification_type: "dm".into(),
             e2ee: None,
             invite_id: None,
+            android_preview: Some(super::super::AndroidPreview {
+                actor: "Actor".into(),
+                channel: "General".into(),
+                avatar_url: Some("https://zoo.example/avatar.png".into()),
+                image_id: Some("attachment-id".into()),
+            }),
         };
-        let body = message("token", "binding", "user", &payload);
+        let body = message("token", "binding", "user", &payload, 300);
         assert_eq!(body["message"]["android"]["priority"], "HIGH");
         assert_eq!(body["message"]["data"]["binding"], "binding");
         assert_eq!(body["message"]["data"]["userId"], "user");
         assert!(body["message"].get("notification").is_none());
         assert!(body["message"]["data"].get("e2ee").is_none());
+        assert_eq!(body["message"]["data"]["actor"], "Actor");
+        assert_eq!(body["message"]["data"]["imageId"], "attachment-id");
+        assert!(
+            serde_json::to_value(&payload)
+                .unwrap()
+                .get("android_preview")
+                .is_none()
+        );
     }
+    #[test]
+    fn call_invite_carries_its_short_ttl_and_identifier() {
+        let payload = NotificationPayload {
+            title: "Caller".into(),
+            body: "Incoming call".into(),
+            url: "/channels/dm?call_invite=invite".into(),
+            tag: "zoo-call-invite".into(),
+            notification_type: "call_invite".into(),
+            e2ee: None,
+            invite_id: Some("invite".into()),
+            android_preview: None,
+        };
+        let body = message("token", "binding", "user", &payload, 17);
+        assert_eq!(body["message"]["android"]["ttl"], "17s");
+        assert_eq!(body["message"]["data"]["inviteId"], "invite");
+        assert!(
+            body["message"]["data"]["expiresAt"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn call_end_is_normal_priority() {
+        let payload = NotificationPayload {
+            title: String::new(),
+            body: String::new(),
+            url: "/channels/dm".into(),
+            tag: "zoo-call-invite".into(),
+            notification_type: "call_invite_end".into(),
+            e2ee: None,
+            invite_id: Some("invite".into()),
+            android_preview: None,
+        };
+        let body = message("token", "binding", "user", &payload, 60);
+        assert_eq!(body["message"]["android"]["priority"], "NORMAL");
+    }
+
     #[tokio::test]
     async fn http_delivery_authenticates_and_preserves_devices_on_project_errors() {
         use wiremock::{

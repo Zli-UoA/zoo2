@@ -13,7 +13,10 @@ internal expect fun connectHomeSocket(
 ): () -> Unit
 
 /** Authenticated Home invalidations shared by timelines, unread badges and notification screens. */
-class HomeLive(private val app: Session) {
+class HomeLive internal constructor(
+    private val app: Session,
+    private val connect: (String, String, () -> Unit, () -> Unit) -> () -> Unit = ::connectHomeSocket,
+) {
     private val listeners = linkedMapOf<Int, () -> Unit>()
     private var serial = 0
     private var connection: Job? = null
@@ -46,8 +49,8 @@ class HomeLive(private val app: Session) {
             app.scope.launch {
                 coroutineScope {
                     launch {
-                        snapshotFlow { app.env.online }
-                            .collectLatest { online ->
+                        snapshotFlow { app.env.online to app.networkRevision }
+                            .collectLatest { (online) ->
                                 if (online) {
                                     while (isActive) {
                                         try {
@@ -72,7 +75,7 @@ class HomeLive(private val app: Session) {
                                                     .replaceFirst(Regex("^http:"), "ws:")
                                             val done = CompletableDeferred<Unit>()
                                             val dispose =
-                                                connectHomeSocket(url, auth, ::invalidate) {
+                                                connect(url, auth, ::invalidate) {
                                                     done.complete(Unit)
                                                 }
                                             try {
@@ -95,7 +98,7 @@ class HomeLive(private val app: Session) {
                             }
                     }
                     launch {
-                        snapshotFlow { app.env.visible to app.env.online }
+                        snapshotFlow { Triple(app.env.visible, app.env.online, app.networkRevision) }
                             .drop(1)
                             .collect { (visible, online) -> if (visible && online) invalidate() }
                     }
@@ -116,3 +119,5 @@ class HomeLive(private val app: Session) {
         listeners.clear()
     }
 }
+
+internal expect fun nativeAbsoluteUrl(url: String): String

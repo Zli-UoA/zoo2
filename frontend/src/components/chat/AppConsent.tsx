@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
-import { useUsers } from "../../hooks/useRealtime";
+import { useAllUsers } from "../../hooks/useRealtime";
 import { Button, buttonVariants } from "../ui/button";
 import { AppAvatar } from "./AppIdentity";
 
@@ -13,7 +13,7 @@ export function AppConsent() {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
-  const people = useUsers().data ?? [];
+  const people = useAllUsers().data ?? [];
   const id = params.get("app_id");
   const requested = useMemo(() => (params.get("scope") ?? "").split(" ").filter(Boolean), [params]);
   const [app, setApp] = useState<{

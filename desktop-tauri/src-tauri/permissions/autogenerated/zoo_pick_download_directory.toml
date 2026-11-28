@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-pick-download-directory"
+description = "Enables the zoo_pick_download_directory command without any pre-configured scope."
+commands.allow = ["zoo_pick_download_directory"]
+
+[[permission]]
+identifier = "deny-zoo-pick-download-directory"
+description = "Denies the zoo_pick_download_directory command without any pre-configured scope."
+commands.deny = ["zoo_pick_download_directory"]

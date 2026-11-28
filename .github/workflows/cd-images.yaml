@@ -168,6 +168,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
           build-args: |
             VITE_API_BASE_URL=
+            ZOO_BUILD_SHA=${{ needs.plan.outputs.sha }}
             VITE_PREVIEW_AUTH=${{ github.event_name == 'pull_request' && 'true' || 'false' }}
             VITE_OIDC_ISSUER=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_ISSUER || '' }}
             VITE_OIDC_CLIENT_ID=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_CLIENT_ID || '' }}
@@ -209,6 +210,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend-preview
           build-args: |
             VITE_API_BASE_URL=
+            ZOO_BUILD_SHA=${{ needs.plan.outputs.sha }}
             VITE_PREVIEW_AUTH=true
             VITE_OIDC_ISSUER=
             VITE_OIDC_CLIENT_ID=
@@ -217,8 +219,8 @@ jobs:
             VITE_OIDC_RESOURCE=
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=
   # Promote all components together, only after every build succeeded, so aliases never mix commits.
-  # The shared release tag goes on last, migrate last of all: zoo2-infra's ResourceSet deploys all three
-  # images at the newest release tag it sees on migrate, so the other two must already carry it.
+  # The shared release tag goes on last, migrate last of all: zoo2-infra's ResourceSet deploys all
+  # images at the newest release tag it sees on migrate, so the others must already carry it.
   promote:
     needs: [plan, build]
     # The release tags Flux follows are written only by runs of main.
@@ -341,7 +343,7 @@ jobs:
               return;
             }
             const aliases = Object.fromEntries(JSON.parse(process.env.ALIASES).map(({component, source}) => [component, source]));
-            for (const component of ['frontend', 'backend', 'migrate']) {
+            for (const component of ['frontend', 'backend', 'sfu-bridge', 'migrate']) {
               const image = `ghcr.io/zli-uoa/zoo2-${component}`;
               const target = `${image}:${tag}`;
               // Immutable tags are never rewritten; a rerun keeps what was already published.

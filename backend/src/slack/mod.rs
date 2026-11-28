@@ -1,5 +1,6 @@
 //! Slack 連携 (#115)。取り込み状態と Slack ID の対応表は Electric の Shape に載せない。
 pub mod api_import;
+pub mod backfill_forwards;
 pub mod convert;
 pub mod crypto;
 pub mod events;
@@ -57,9 +58,79 @@ pub fn is_valid_ts(ts: &str) -> bool {
         && frac.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// 直近の返信の境から引く余裕 (秒)。期間の端の返信は、再Openしても、活動時刻 (Slack の投稿時刻) がすぐ期間を
+/// 外れ、アーカイブの処理 (60 秒ごと、1 回に最大 1,000 件) に閉じ直される。再参加だけが残り、スレッドが一瞬
+/// ツリーに出て消えるので、処理の周期と少しの遅れの分だけ、境を内側へ寄せる。
+pub const LIVE_REPLY_MARGIN_SECS: u64 = 10 * 60;
+
+/// Slack の投稿が、スレッドの自動アーカイブの期間 (`THREAD_IDLE_DAYS`) から余裕 (`LIVE_REPLY_MARGIN_SECS`) を
+/// 引いた範囲に収まる、直近のものか。
+///
+/// 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、スレッドを再Openし、
+/// 退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`、フラグ `zoo.thread_live_import`)。
+/// 範囲より古い返信は、再Openしても次のアーカイブの処理が閉じ直すだけなので、履歴として扱う。
+/// 初回の全履歴の取り込みや、止まっていた同期の追いつきが、古いスレッドを開き直さないための境でもある。
+pub fn is_live_reply_ts(ts: &str, now_secs: u64) -> bool {
+    let Some(secs) = ts.split('.').next().and_then(|s| s.parse::<u64>().ok()) else {
+        return false;
+    };
+    let window = (crate::routes::threads::THREAD_IDLE_DAYS as u64 * 24 * 3600)
+        .saturating_sub(LIVE_REPLY_MARGIN_SECS);
+    secs >= now_secs.saturating_sub(window)
+}
+
+/// 未取り込み Slack 転送 ID の予約確認（`POST /api/messages`）と予約登録（Slack 取り込み）を
+/// 同一キー順のトランザクション単位アドバイザリロックで直列化する。
+pub async fn lock_message_id_reservation(
+    tx: &mut toasty::Transaction<'_>,
+    canonical_ids: &[String],
+) -> Result<(), crate::error::AppError> {
+    let mut sorted = canonical_ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    sorted.sort();
+    sorted.dedup();
+    if sorted.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string(&sorted)
+        .map_err(|err| crate::error::AppError::Internal(err.into()))?;
+    toasty::sql::query(
+        "SELECT json_build_object('locked', count(*))::text
+         FROM jsonb_array_elements_text($1::jsonb) AS k(id),
+         LATERAL pg_advisory_xact_lock(hashtextextended('slack_forward_target:' || k.id, 0))",
+    )
+    .bind(json.as_str())
+    .exec(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_reply_ts_is_bounded_by_the_thread_idle_window_minus_a_margin() {
+        let now = 1_800_000_000;
+        let window = crate::routes::threads::THREAD_IDLE_DAYS as u64 * 24 * 3600;
+        let edge = now - (window - LIVE_REPLY_MARGIN_SECS);
+        assert!(is_live_reply_ts("1800000000.000100", now));
+        assert!(is_live_reply_ts(&format!("{edge}.000000"), now));
+        // 期間の端 (24 時間に近い) の返信は、再Openしても閉じ直されるので、直近として扱わない
+        assert!(!is_live_reply_ts(&format!("{}.999999", edge - 1), now));
+        assert!(!is_live_reply_ts(
+            &format!("{}.000000", now - window + 60),
+            now
+        ));
+        assert!(!is_live_reply_ts(&format!("{}.000000", now - window), now));
+        // 少し先の時刻 (時計のずれ) も直近として扱う
+        assert!(is_live_reply_ts(&format!("{}.000000", now + 30), now));
+        assert!(!is_live_reply_ts("", now));
+        assert!(!is_live_reply_ts("abc.def", now));
+    }
 
     #[test]
     fn stable_ids_are_deterministic_and_namespaced() {

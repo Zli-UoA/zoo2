@@ -9,7 +9,7 @@ import { SettingsSection } from "../../ui/control-panel";
 import { inputClassName } from "../../ui/input-styles";
 import { describeApiError } from "../../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { useActiveChannels, useUsers } from "../../../hooks/useRealtime";
+import { useActiveChannels, useAllUsers } from "../../../hooks/useRealtime";
 import { AppCredentials } from "../../chat/AppSettingsSections";
 import { type ChannelWebhook, WebhookItem } from "../../chat/ChannelWebhooksDialog";
 import type { SectionProps } from "./AppConsole";
@@ -482,7 +482,7 @@ type AuditEntry = { id: string; actor_id: string; action: string; created_at: st
 
 export function HistorySection(props: SectionProps) {
   const { t, i18n } = useTranslation();
-  const people = useUsers().data ?? [];
+  const people = useAllUsers().data ?? [];
   const base = `/api/apps/${encodeURIComponent(props.detail.id)}`;
   const versions = useAppResource<Version[]>(props, `${base}/records/versions`, []);
   const audit = useAppResource<AuditEntry[]>(props, `${base}/records/audit`, []);

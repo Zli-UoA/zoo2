@@ -66,7 +66,7 @@ pub fn open(app: &AppHandle) {
     }
     // まだ作っていない (閉じる予約が触るウィンドウもない)。読み込みが終わったときの
     // `on_page_load` が同じロックを取るので、ロックを放してから作る。
-    let result =
+    let builder =
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("updater/index.html".into()))
             .title("zoo2 の更新")
             .inner_size(300.0, 340.0)
@@ -83,8 +83,14 @@ pub fn open(app: &AppHandle) {
                 {
                     let _ = window.eval(script(&json));
                 }
-            })
-            .build();
+            });
+    #[cfg(target_os = "windows")]
+    let builder = if let Ok(dir) = app.path().app_local_data_dir() {
+        builder.data_directory(dir)
+    } else {
+        builder
+    };
+    let result = builder.build();
     if let Err(err) = result {
         eprintln!("更新のウィンドウを開けませんでした: {err}");
     }

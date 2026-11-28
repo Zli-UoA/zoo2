@@ -45,6 +45,9 @@ Electric クライアントが送信する以下のプロトコル用・ペー�
 
 なお、現行スキーマの主キーは `text` 型であり、UUID ではありません。主キーの型（`text` のままか UUID にするか）は「7. 要検討事項」とします。`allow_subqueries` が使える前提では値はプレースホルダで渡すため、リテラル埋め込み時のインジェクション検証は不要です。
 
+### 配る列の制限と本人だけの Shape
+他人にも配る行に個人設定の列が含まれるときは、プロキシ側で `columns` を指定してその列を配らない。配った列だけを `queryable_columns` にも渡し、クライアントの subset 条件で未配列の値を推測できないようにする。必要な列は別の Shape として、`where user_id = $1` のように認証ユーザー自身の行だけを配る経路を用意する（例: メンバー一覧 `channel_users` は `user_id,channel_id,joined_at` に制限し、通知設定は `channel_notification_settings` で `user_id,channel_id,notification_level` を本人だけに配る）。
+
 ### JOIN 不可に伴うクライアント側結合
 Electric の Shape は単一テーブル単位で配信され、テーブル間の JOIN ができません。投稿者名などの関連情報は、`Message` テーブルへ非正規化せず、`User` Shape を別途購読して TanStack DB の live query でクライアント側結合する方針とします。
 
@@ -148,4 +151,4 @@ React・Android・TUI・デスクトップは同じShapeプロキシを使い、
 
 この変更は通知の全メッセージ依存を除くもので、ElectricのOOM解消を保証するものではない。
 反映後はメモリ使用量・再起動回数・初期同期量を監視する。
-リアクションの全履歴同期と、Android・TUI・GPUIの本文ページングは別の改善対象とする。
+リアクションの全履歴同期と、Android・TUIの本文ページングは別の改善対象とする。
