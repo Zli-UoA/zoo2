@@ -61,7 +61,7 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun read(id: String, previewAt: Long? = null, allowStale: Boolean = true): Entry? {
+    fun read(id: String, previewAt: Long? = null): Entry? {
         if (closed || id in blockedKeys) return null
         val file = file(id)
         return try {
@@ -80,7 +80,7 @@ internal class AttachmentImageDiskCache(
                     else storedUrl.removePrefix(StalePreviewPrefix).removePrefix(FreshPreviewPrefix)
                 val expiresAt = input.readLong()
                 if (previewAt != null && expiresAt <= previewAt &&
-                    (!allowStale || previewAt - expiresAt >= (staleMillis ?: 0L))
+                    previewAt - expiresAt >= (staleMillis ?: 0L)
                 ) return null
                 val etag = input.readUTF().ifEmpty { null }
                 val maxAge = input.readLong().takeUnless { it == Long.MIN_VALUE }

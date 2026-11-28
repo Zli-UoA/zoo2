@@ -56,8 +56,8 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
-    suspend fun cachedAttachmentPreview(cacheKey: String, allowStale: Boolean = true): ByteArray? = withContext(Dispatchers.IO) {
-        attachments.read(cacheKey, previewAt = now(), allowStale = allowStale)?.bytes
+    suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        attachments.read(cacheKey, previewAt = now())?.bytes
     }
 
     suspend fun resizeAttachmentCache(bytes: Long) = withContext(Dispatchers.IO) {
@@ -182,7 +182,7 @@ internal class AndroidImageCache(
             (receivedAt - serverDate).coerceAtLeast(0),
             (headers[HttpHeaders.Age]?.toLongOrNull() ?: 0L).coerceIn(0, Int.MAX_VALUE.toLong()) * 1000L,
         )
-        return receivedAt + (lifetime - age).coerceIn(0, 300_000L)
+        return receivedAt + (lifetime - age).coerceAtMost(300_000L)
     }
 
     suspend fun imageIfCached(request: ImageRequest, limit: Int): ByteArray? =
