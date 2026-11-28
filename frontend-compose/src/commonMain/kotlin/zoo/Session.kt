@@ -74,9 +74,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private suspend fun loadActivityPubAvailability() {
         if (!env.online || activityPubAvailable != null) return
         activityPubAvailable = try {
-            withTimeoutOrNull(3_000) {
-                (api.request("/api/activitypub/status") as Row).flag("enabled")
-            }
+            (api.request("/api/activitypub/status") as Row).flag("enabled")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -477,21 +475,23 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     suspend fun start() {
         if (isPublicProfilePath(env.path)) return
-        loadActivityPubAvailability()
+        val initialActivityPubRead = CompletableDeferred<Unit>()
+        scope.launch {
+            snapshotFlow { env.online to env.visible }.first { (online, visible) ->
+                if (online && (!initialActivityPubRead.isCompleted || visible)) {
+                    loadActivityPubAvailability()
+                }
+                initialActivityPubRead.complete(Unit)
+                activityPubAvailable != null
+            }
+        }
+        withTimeoutOrNull(3_000) { initialActivityPubRead.await() }
         scope.launch {
             repo.channels.rows.collect { rows ->
                 try { encryptedChannels.remember(rows.filter { it.flag("encrypted") }.map { it.text("id") }) }
                 catch (failure: CancellationException) { throw failure }
                 catch (_: Exception) { toast = t("common.writeError") }
             }
-        }
-        if (activityPubAvailable == null) scope.launch {
-            snapshotFlow { env.online to env.visible }
-                .drop(1) // Startup already attempted the initial read.
-                .first { (online, visible) ->
-                    if (online && visible) loadActivityPubAvailability()
-                    activityPubAvailable != null
-                }
         }
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()

@@ -251,9 +251,10 @@ internal class AndroidPushRegistration(
             try {
                 if (!app.env.online) continue
                 val config = pushConfig ?: app.api.request("/api/push/config") as? Row ?: continue
-                pushConfig = config
                 val projectId = config.text("fcmProjectId")
-                if (projectId.isEmpty() || !notificationsAllowed(context)) continue
+                if (projectId.isEmpty()) continue
+                pushConfig = config
+                if (!notificationsAllowed(context)) continue
                 val firebase = FirebaseApp.initializeApp(context) ?: continue
                 if (projectId != firebase.options.projectId) continue
                 val messaging = FirebaseMessaging.getInstance()

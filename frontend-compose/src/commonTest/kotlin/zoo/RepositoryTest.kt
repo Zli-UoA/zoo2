@@ -128,7 +128,8 @@ class RepositoryTest {
     @Test
     fun startupReadsActivityPubAvailabilityOncePerSession() = runTest {
         var requests = 0
-        for (expected in listOf(true, false)) {
+        val cases = listOf(true to 0L, false to 0L, true to 4_000L)
+        for ((expected, responseDelay) in cases) {
             val http = HttpClient(MockEngine) {
                 engine {
                     dispatcher = StandardTestDispatcher(testScheduler)
@@ -136,6 +137,7 @@ class RepositoryTest {
                         when (request.url.encodedPath) {
                             "/api/activitypub/status" -> {
                                 requests++
+                                delay(responseDelay)
                                 respond("""{"enabled":$expected}""")
                             }
                             else -> respond("{}", HttpStatusCode.NotFound)
@@ -148,7 +150,14 @@ class RepositoryTest {
             val app = Session(repo, lifetime, Environment())
             try {
                 assertNull(app.activityPubAvailable)
+                val startedAt = currentTime
                 app.start()
+                if (responseDelay > 0) {
+                    assertEquals(3_000L, currentTime - startedAt)
+                    assertNull(app.activityPubAvailable)
+                    advanceTimeBy(responseDelay - 3_000L)
+                    runCurrent()
+                }
                 assertEquals(expected, app.activityPubAvailable)
                 runCurrent()
                 app.update(app.env.copy(visible = false))
@@ -160,7 +169,7 @@ class RepositoryTest {
                 lifetime.cancel()
             }
         }
-        assertEquals(2, requests)
+        assertEquals(cases.size, requests)
     }
 
     @Test

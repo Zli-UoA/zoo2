@@ -59,7 +59,15 @@ private fun dialNumber(value: String) = Regex("\\+?[0-9]{1,32}").matches(value)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row>, back: () -> Unit) {
-    LaunchedEffect(controller) { if (!controller.loaded) controller.refresh() }
+    val online = app.env.online
+    var refreshStarted by remember(controller, online) { mutableStateOf(false) }
+    LaunchedEffect(controller, online) {
+        if (online) {
+            controller.refresh(force = true)
+            refreshStarted = true
+        }
+    }
+    val canManageLines = refreshStarted && !controller.loading && !controller.loadError && !controller.writing
     var draft by remember { mutableStateOf<PhoneDraft?>(null) }
     var editingId by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<Row?>(null) }
@@ -68,12 +76,12 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
     AndroidShell(null, app.env.dark, {}, app.env.locale) { colors ->
         PageHeader(app.t("sip.title"), colors, onBack = back) {
             UiIconButton(UiIcon.Refresh, app.t("sip.refresh"), colors.foreground,
-                { controller.refresh() }, enabled = !controller.loading)
+                { controller.refresh() }, enabled = online && !controller.loading)
             if (controller.enabled) UiIconButton(UiIcon.Add, app.t("sip.addLine"), colors.foreground,
                 {
                     editingId = null
                     draft = PhoneDraft()
-                }, enabled = !controller.writing)
+                }, enabled = canManageLines)
         }
         Column(
             Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -107,11 +115,11 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
                         controller.connectSip(id)
                     }
                     if (line.flag("can_manage")) {
-                        TextAction(app.t("sip.edit"), colors, !controller.writing, TextActionStyle.Plain, icon = UiIcon.Format) {
+                        TextAction(app.t("sip.edit"), colors, canManageLines, TextActionStyle.Plain, icon = UiIcon.Format) {
                             editingId = id
                             draft = PhoneDraft(line)
                         }
-                        TextAction(app.t("sip.delete"), colors, !controller.writing, TextActionStyle.Plain, icon = UiIcon.Delete) {
+                        TextAction(app.t("sip.delete"), colors, canManageLines, TextActionStyle.Plain, icon = UiIcon.Delete) {
                             deleting = line
                         }
                     }
