@@ -94,6 +94,14 @@ body {
   --color-highlight-foreground: var(--highlight-foreground);
   --color-mention: var(--mention);
   --color-message-target: var(--message-target);
+  --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
+  --color-warning: var(--warning);
+  --color-warning-strong: var(--warning-strong);
+  --color-destructive-foreground: #ffffff;
+  --text-3xs: 0.5625rem;
+  --text-2xs: 0.625rem;
+  --text-micro: 0.6875rem;
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -134,6 +142,11 @@ body {
   --mention: #f0b232;
   /* メッセージリンクなどで開いた行の強調（背景と左端のアクセント）。 */
   --message-target: #3b82f6;
+  /* 通話状態・検証状態など、成功と警告を表す状態色。 */
+  --success: #059669;
+  --success-hover: #047857;
+  --warning: #d97706;
+  --warning-strong: #92400e;
   --border: #e5e5e5;
   --input: #d4d4d4;
   /* focus-visible:ring-ring/50 で 50% 透過されるため、白背景でも 3:1 を超えるよう暗くする。 */
@@ -180,6 +193,10 @@ body {
   --highlight-foreground: #ffffff;
   --mention: #f0b232;
   --message-target: #6ea8ff;
+  --success: #34d399;
+  --success-hover: #10b981;
+  --warning: #fbbf24;
+  --warning-strong: #fcd34d;
   --border: #454545;
   --input: #575757;
   --ring: #bdbdbd;
