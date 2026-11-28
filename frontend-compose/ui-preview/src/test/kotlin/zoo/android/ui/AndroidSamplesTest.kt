@@ -205,7 +205,7 @@ class AndroidSamplesTest {
         val illustratedPost = homePosts.first().copy(
             repostedBy = "みずき",
             postAuthor = zoo.obj("id" to "haru"),
-            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "チケットは当日も受付で購入できます。", emptyList(),
+            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "チケットは当日も受付で購入できます。", emptyList(), handle = "@nagi@example.test",
                 postAuthor = zoo.obj("id" to "nagi")),
             media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f),
                 TimelineMedia("post-video", "投稿動画", TimelineMediaKind.Video, sensitive = true)),
@@ -826,12 +826,17 @@ class AndroidSamplesTest {
         val post = TimelineItem("post", "はる", "投稿本文", "12:05", postAuthor = author,
             postHeader = PostHeaderData("@haru", "12:05", PostAudience.Public, null, null),
             quote = TimelineQuote("https://social.example/posts/1", null, "ゆい", "引用本文", emptyList(),
-                postAuthor = quotedAuthor))
+                postAuthor = quotedAuthor, handle = "@yui@social.example"))
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
             AndroidScreens(AndroidScreen.Home(listOf(post), timeline = "home"), false, true,
                 dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
         }
+        val quoteName = ui.onNodeWithText("ゆい", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val handle = ui.onNodeWithText("@yui@social.example", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val body = ui.onNodeWithText("引用本文", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        check(handle.left >= quoteName.right && handle.center.y in quoteName.top..quoteName.bottom)
+        check(body.left < quoteName.left && body.top >= quoteName.bottom)
         ui.onNodeWithText("ローカル").performClick()
         ui.onNodeWithText("ソーシャル").performClick()
         for (authorName in listOf("はる", "ゆい")) {

@@ -147,7 +147,7 @@ internal sealed interface PostPreview {
     data object Loading : PostPreview
     data object Unavailable : PostPreview
     data object Failed : PostPreview
-    data class Loaded(val author: String, val body: String, val avatar: String?, val media: List<TimelineMedia>) : PostPreview
+    data class Loaded(val author: String, val body: String, val avatar: String?, val media: List<TimelineMedia>, val handle: String? = null) : PostPreview
 }
 
 internal interface PostPreviewSource {
@@ -168,7 +168,7 @@ internal fun PostLinkCard(url: String, id: String, colors: AndroidColors, open: 
     }
     when (val preview = source?.read(id) ?: PostPreview.Loading) {
         is PostPreview.Loaded -> TimelineQuoteCard(
-            TimelineQuote(url, id, preview.author, preview.body, preview.media, avatar = preview.avatar, local = true),
+            TimelineQuote(url, id, preview.author, preview.body, preview.media, avatar = preview.avatar, local = true, handle = preview.handle),
             colors, open, openMedia = { open() },
         )
         else -> {

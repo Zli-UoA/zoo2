@@ -10,6 +10,13 @@ import zoo.*
 import zoo.android.ui.*
 
 /** One account-scoped request for the post IDs represented by composed timeline rows. */
+internal fun quoteHandle(userName: String, authorityUrl: String): String? {
+    val name = userName.trim().removePrefix("@").takeIf { it.isNotBlank() } ?: return null
+    if ('@' in name) return "@$name"
+    val host = zoo.publicUrl(authorityUrl)?.host ?: return null
+    return "@$name@$host"
+}
+
 internal class LinkedPostPreviews(private val fetch: suspend (List<String>) -> List<Row>, private val base: String) : PostPreviewSource {
     private val references = mutableStateMapOf<String, Int>()
     private val previews = mutableStateMapOf<String, PostPreview>()
@@ -46,6 +53,7 @@ internal class LinkedPostPreviews(private val fetch: suspend (List<String>) -> L
                     previews[id] = if (row == null || row.present("deleted_at")) PostPreview.Unavailable else PostPreview.Loaded(
                         row.text("display_name").ifBlank { row.text("user_name") }, row.text("content"),
                         timelineAvatarUrl(base, row), row.array("media").rows().mapNotNull { timelinePostMedia(base, it) },
+                        quoteHandle(row.text("user_name"), if (row.flag("remote")) row.text("user_id") else base),
                     )
                 }
             } catch (cancelled: CancellationException) { throw cancelled }

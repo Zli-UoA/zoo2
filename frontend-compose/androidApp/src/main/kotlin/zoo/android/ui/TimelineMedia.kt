@@ -80,6 +80,7 @@ internal data class TimelineQuote(
     val postAuthor: zoo.Row? = null,
     val local: Boolean = false,
     val remotePostAvailable: Boolean = false,
+    val handle: String? = null,
 ) {
     val canOpen: Boolean get() = postId != null || !local
 }
@@ -164,33 +165,20 @@ internal fun TimelineQuoteCard(
         }
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
             .clickable(role = Role.Button) { if (quote.remotePostAvailable) showOriginal = true else open() }
-        val title: @Composable () -> Unit = {
-            Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
-                color = colors.foreground, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
-                fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
-            if (quote.author.isNotBlank()) android.net.Uri.parse(quote.uri).host?.let { host ->
-                Text(host, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        val body: @Composable () -> Unit = {
-            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
-        }
-        if (openProfile != null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TimelineAvatar(quote.author, quote.avatar, colors, 20.dp, openProfile, Alignment.CenterStart)
-                Column(Modifier.weight(1f).then(quoteLink), verticalArrangement = Arrangement.Center) {
-                    title()
-                    body()
-                }
-            }
-        } else {
-            Column(Modifier.fillMaxWidth().then(quoteLink), verticalArrangement = Arrangement.Center) {
+        Column(Modifier.fillMaxWidth().then(quoteLink), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val nameWidth = if (quote.handle == null) maxWidth else maxWidth * .46f
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
-                    title()
+                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp, openProfile)
+                    Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
+                        Modifier.widthIn(max = nameWidth), color = colors.foreground, fontSize = entryTextSize,
+                        fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    quote.handle?.let { handle ->
+                        Text(handle, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
-                body()
             }
+            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
         }
         TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
     }
