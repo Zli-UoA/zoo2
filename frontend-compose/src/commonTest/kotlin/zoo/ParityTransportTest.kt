@@ -97,7 +97,7 @@ class ParityTransportTest {
                 if (fail) error("e2ee.sendNeedsUnlock")
                 sent = body
             }
-            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun edit(message: Row, body: String, mentions: EncryptedMentions?) = error("Unexpected edit")
             override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
         }
         val http = HttpClient(MockEngine { request ->
@@ -133,7 +133,7 @@ class ParityTransportTest {
                 encryptedWrites += parent
                 throw ApiException(403, json.parseToJsonElement(refusal).jsonObject)
             }
-            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun edit(message: Row, body: String, mentions: EncryptedMentions?) = error("Unexpected edit")
             override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
         }
         val http = HttpClient(MockEngine { request ->
@@ -304,10 +304,13 @@ class ParityTransportTest {
                 backgroundScope,
             )
         val app = Session(repo, backgroundScope, Environment())
+        assertNull(app.attachmentLinks.cachedUrl("file"))
         assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file"))
+        assertEquals("https://storage.test/file.png", app.attachmentLinks.cachedUrl("file"))
         app.attachmentLinks.get("file")
         assertEquals(1, calls)
         platform.timestamp = "2026-01-02T09:05:00Z"
+        assertNull(app.attachmentLinks.cachedUrl("file"))
         assertFailsWith<ApiException> { app.attachmentLinks.get("file") }
         assertTrue(app.attachmentLinks.errors["file"] == true)
         assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file", true))

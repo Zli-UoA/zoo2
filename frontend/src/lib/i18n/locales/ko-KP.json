@@ -329,6 +329,11 @@
     "markSensitive": "화상을 민감한 내용으로 표시",
     "showSensitive": "화상 표시",
     "hideSensitive": "화상 숨기기",
+    "showSensitiveVideo": "동영상 표시",
+    "hideSensitiveVideo": "동영상 숨기기",
+    "openOriginal": "원본 파일",
+    "imagePreviewFailed": "화상을 불러올 수 없습니다",
+    "altText": "화상 설명",
     "sensitiveShort": "민감한 화상",
     "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
     "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 내려받아 확인하십시오.",
@@ -386,7 +391,10 @@
     "participantsFilterPartial": "불러온 처음 {{loaded}}명 가운데서만 검색합니다(그밖에 {{count}}명은 검색할수 없습니다).",
     "participantsDescription": "이 스레드에 참가중인 사람입니다.",
     "joinToReply": "스레드에 참가하면 답글을 보낼 수 있습니다.",
-    "reopenAndJoin": "다시 열고 참가하기"
+    "reopenAndJoin": "다시 열고 참가하기",
+    "errors": {
+      "busy": "타래가 바쁩니다. 잠시 기다렸다가 다시 시도해 주십시오."
+    }
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
@@ -422,6 +430,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "그림글자를 불러오는 중…",
     "recent": "최근에 쓴 그림글자",
+    "accountEmojiCategory": "계정",
     "skinTone": "피부색"
   },
   "theme": {
@@ -471,6 +480,9 @@
     "readError": "알림을 읽음으로 하지 못했습니다",
     "mention": "{{actor}} 님이 당신을 지명했습니다",
     "reply": "{{actor}} 님이 회답했습니다",
+    "channelMessage": "{{actor}} 님이 메시지를 보냈습니다",
+    "channel_message": "{{actor}} 님이 메시지를 보냈습니다",
+    "channelMessageContext": "채널 메시지",
     "reaction": "{{actor}} 님이 반응했습니다",
     "openMessage": "통보문 열기",
     "unavailable": "통로를 리용할수 없습니다",
@@ -488,7 +500,24 @@
     "readStatus": "읽음",
     "actors_one": "{{actor}} 님 외 1명",
     "actors_other": "{{actor}} 님 외 {{count}}명",
-    "forwardedPreview": "통보문을 전송했습니다"
+    "forwardedPreview": "통보문을 전송했습니다",
+    "settings": "통보 설정",
+    "settingsDefault": "기본은 지명과 회답 통보입니다.",
+    "settingsHint": "통로별 통보 등급은 통로 머리 또는 직접통보문 메뉴에서 바꿀수 있습니다.",
+    "channelSettings": "통로 통보 설정",
+    "openChannel": "통로 열기",
+    "noChannel": "참가한 통로가 없습니다.",
+    "notMember": "이 통로에 참가하지 않아 통보 설정을 바꿀수 없습니다.",
+    "levelTitle": "통보 등급",
+    "levelLoading": "통보 설정을 불러오는 중…",
+    "levelAll": "모든 통보문",
+    "levelAllHelp": "보통 글도 통보합니다. 암호화된 통로에서도 선택할수 있습니다.",
+    "levelMentions": "지명과 회답 (기본)",
+    "levelMentionsHelp": "당신을 지명하거나 회답·DM·반응하면 통보합니다.",
+    "levelMute": "통보 끄기",
+    "levelMuteHelp": "보통 통보는 받지 않습니다. 당신을 지명하거나 @channel·@here를 쓰면 도착합니다.",
+    "levelEncryptedHint": "암호화된 통로에서도 '모든 통보문'을 선택할수 있습니다.",
+    "levelError": "통보 설정을 바꾸지 못했습니다."
   },
   "webhooks": {
     "title": "Webhook 설정",
@@ -889,6 +918,7 @@
     "deleted": "게시물을 삭제했습니다",
     "newPosts": "새 게시물 보기 ({{count}}개)",
     "quotedPost": "인용한 게시물",
+    "postUnavailable": "게시물을 표시할수 없습니다",
     "quoteUnavailable": "인용한 게시물을 표시할 수 없습니다",
     "openQuotedPost": "인용한 게시물 열기",
     "image": "화상",
@@ -919,6 +949,7 @@
       "unlisted": "홈",
       "followers": "팔로워 한정"
     },
+    "followersAudience": "팔로워",
     "audienceHint": {
       "local": "Zoo 안에서만 표시합니다. 외부로는 전달하지 않습니다.",
       "public": "누구나 볼수 있으며 외부의 팔로워에게도 전달합니다.",
@@ -952,6 +983,7 @@
     "userSearch": "사용자 검색",
     "search": "검색",
     "noUsers": "사용자를 찾을수 없습니다",
+    "openAuthorProfile": "{{author}}의 프로필 열기",
     "userDetails": "사용자 상세",
     "joinedAt": "등록일: {{date}}",
     "pullRefresh": "당겨서 갱신",
@@ -1803,6 +1835,16 @@
   },
   "androidUpdate": {
     "title": "앱 갱신"
+  },
+  "androidAttachmentCache": {
+    "title": "화상 캐시",
+    "description": "이 계정의 화상을 기기에 보관합니다. 한도를 낮추면 가장 오래 사용하지 않은 화상부터 삭제합니다. 끄면 보관된 화상을 삭제합니다."
+  },
+  "androidNavigationCache": {
+    "title": "화면 전환 캐시",
+    "description": "홈, 게시물 상세 및 프로필과 통로에 각각 적용되는 메모리 보관 항목 수입니다.",
+    "off": "끔",
+    "entries": "{{count}}개"
   },
   "androidNotifications": {
     "enable": "알림 사용",

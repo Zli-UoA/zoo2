@@ -8,17 +8,19 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import zoo.android.ui.rankEmojiChoices
 import zoo.obj
 
 class AndroidEmojiCatalogTest {
     @Test fun bundledCatalogsProvideUnicodeAndKitchenChoices() = runTest {
-        val catalog = AndroidEmojiCatalog { name ->
-            File("../src/commonMain/composeResources/files", name).readText()
-        }
+        val catalog = AndroidEmojiCatalog(readAsset = ::readBundledAsset)
         val unicode = catalog.unicode()
         assertTrue(unicode.size > 1_000)
         assertEquals(unicode.size, unicode.distinctBy { it.value }.size)
-        assertTrue(unicode.any { it.glyph == "🐱" && "cat" in it.keywords })
+        val catChoice = unicode.single { it.glyph == "🐱" }
+        assertTrue("cat" in catChoice.keywords)
+        assertEquals("動物と自然", catChoice.category)
+        assertEquals("スマイリーと感情", unicode.single { it.glyph == "😀" }.category)
 
         val kitchen = catalog.kitchen()
         val cat = kitchen.components.first { it.value == "1f431" }
@@ -27,6 +29,24 @@ class AndroidEmojiCatalogTest {
         val combination = kitchen.combinations(cat).first { it.value == value }
         assertTrue(assertNotNull(combination.image).startsWith("https://www.gstatic.com/android/keyboard/emojikitchen/"))
         assertEquals(combination.image, kitchen.combinations(smile).first { it.value == value }.image)
+    }
+
+    @Test fun standardCategoriesFollowTheAppLocale() = runTest {
+        val catalog = AndroidEmojiCatalog("en", "Uncategorized", ::readBundledAsset)
+        assertEquals("animals & nature", catalog.unicode().single { it.glyph == "🐱" }.category)
+    }
+
+    @Test fun japaneseNameMatchRanksBeforeTagMatch() = runTest {
+        val catalog = AndroidEmojiCatalog("ja", "未分類", ::readBundledAsset)
+        val candidates = catalog.unicode().filter { it.glyph in setOf("😵", "🥴") }
+        assertEquals(listOf("🥴", "😵"), candidates.map { it.glyph })
+        assertEquals(listOf("😵", "🥴"), rankEmojiChoices(candidates, "めまい").map { it.glyph })
+    }
+
+    private fun readBundledAsset(name: String): String {
+        val directory = if ('/' in name) "../../frontend/public/emojibase-data"
+            else "../src/commonMain/composeResources/files"
+        return File(directory, name).readText()
     }
 
     @Test fun kitchenLookupNormalizesVariationSelectorsAndOrder() = runTest {
@@ -41,8 +61,9 @@ class AndroidEmojiCatalogTest {
     @Test fun workspaceChoicesInsertTheShortcodeAndSearchAliases() {
         val custom = workspaceEmojiChoices(listOf(obj(
             "name" to "party", "aliases" to JsonArray(listOf(JsonPrimitive("celebration"))), "category" to "events",
-        ))).single()
+        )), uncategorized = "Uncategorized").single()
         assertEquals(":party:", custom.value)
+        assertEquals("events", custom.category)
         assertTrue("celebration" in custom.keywords)
     }
 }

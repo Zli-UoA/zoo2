@@ -1,0 +1,202 @@
+import Foundation
+import Testing
+import UserNotifications
+@testable import Zoo
+
+@MainActor @Suite("Watchへ転送する着信通知", .timeLimit(.minutes(1)))
+struct IncomingCallNotificationTests {
+    private func call(expiresAt: Date = .now.addingTimeInterval(60)) throws -> IncomingCall {
+        try #require(IncomingCall(payload: [
+            "type": "call_invite", "invite_id": UUID().uuidString, "user_id": UUID().uuidString,
+            "channel_id": UUID().uuidString, "inviter_id": UUID().uuidString,
+            "caller_name": "発信者", "expires_at": expiresAt.ISO8601Format()
+        ]))
+    }
+
+    @MainActor private final class Probe {
+        var requests: [UNNotificationRequest] = []
+        var removed: [String] = []
+        var hold = false
+        var completions: [UUID: (request: UNNotificationRequest, completion: CheckedContinuation<Void, Error>)] = [:]
+        var existing: @MainActor () async -> [String] = { [] }
+        let added = AsyncStream<String>.makeStream()
+        let removals = AsyncStream<[String]>.makeStream()
+
+        func controller() -> IncomingCallNotifications {
+            IncomingCallNotifications(add: { request in
+                self.requests.append(request)
+                if self.hold {
+                    try await withCheckedThrowingContinuation { continuation in
+                        self.completions[UUID()] = (request, continuation)
+                        self.added.continuation.yield(request.identifier)
+                    }
+                } else {
+                    self.added.continuation.yield(request.identifier)
+                }
+            }, remove: { identifiers in
+                self.removed += identifiers
+                self.removals.continuation.yield(identifiers)
+            }, existing: { await self.existing() })
+        }
+
+        func finish(_ request: UNNotificationRequest) {
+            if let id = completions.first(where: { $0.value.request === request })?.key {
+                completions.removeValue(forKey: id)?.completion.resume()
+            }
+        }
+
+        func close() {
+            let pending = completions.values
+            completions = [:]
+            for item in pending { item.completion.resume(throwing: CancellationError()) }
+            added.continuation.finish()
+            removals.continuation.finish()
+        }
+    }
+
+    @Test("応答と拒否をiPhoneのバックグラウンドで処理するボタンとして登録する")
+    func backgroundActions() throws {
+        let category = IncomingCallNotifications.category
+        #expect(category.actions.map(\.identifier) == [IncomingCallNotifications.answerID, IncomingCallNotifications.declineID])
+        #expect(category.actions.map(\.title) == ["iPhoneで応答", "拒否"])
+        #expect(category.actions.allSatisfy { !$0.options.contains(.foreground) && !$0.options.contains(.authenticationRequired) })
+        let decline = try #require(category.actions.first { $0.identifier == IncomingCallNotifications.declineID })
+        #expect(decline.options.contains(.destructive))
+    }
+
+    @Test("一時的な通知登録失敗は同じ識別子で再試行する")
+    func retriesTransientFailure() async throws {
+        let call = try call()
+        var identifiers: [String] = []
+        let controller = IncomingCallNotifications(add: { request in
+            identifiers.append(request.identifier)
+            if identifiers.count == 1 { throw URLError(.networkConnectionLost) }
+        }, remove: { _ in }, existing: { [] }, retryDelay: { _ in })
+        await controller.update(call, enabled: true)?.value
+        #expect(identifiers.count == 2)
+        #expect(Set(identifiers).count == 1)
+    }
+
+    @Test("再試行の待機中に無効化した着信は再登録しない")
+    func cancelsRetryWhenDisabled() async throws {
+        let call = try call()
+        let waiting = AsyncStream<Void>.makeStream()
+        defer { waiting.continuation.finish() }
+        var attempts = 0
+        let controller = IncomingCallNotifications(add: { _ in
+            attempts += 1
+            throw URLError(.networkConnectionLost)
+        }, remove: { _ in }, existing: { [] }, retryDelay: { _ in
+            waiting.continuation.yield(())
+            try await Task.sleep(for: .seconds(60))
+        })
+        let delivery = controller.update(call, enabled: true)
+        var iterator = waiting.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        controller.update(call, enabled: false)
+        await delivery?.value
+        #expect(attempts == 1)
+    }
+
+    @Test("同じ着信は一度だけ通知し、応答や取消で削除する")
+    func deduplicatesAndRemoves() async throws {
+        let probe = Probe(), call = try call()
+        let notifications = probe.controller()
+        var added = probe.added.stream.makeAsyncIterator()
+        notifications.update(call, enabled: true)
+        let identifier = try #require(await added.next())
+        let request = try #require(probe.requests.first { $0.identifier == identifier })
+        await notifications.update(call, enabled: true)?.value
+        #expect(probe.requests.count == 1)
+        #expect(request.trigger == nil && request.content.sound != nil)
+        #expect(request.content.body == "発信者からの着信です。")
+        let response = try #require(IncomingCallNotificationAction(request: request, actionIdentifier: IncomingCallNotifications.answerID))
+        #expect(response.callID == call.id && response.userID == call.userID && response.action == .answer)
+        notifications.update(nil, enabled: true)
+        #expect(probe.removed == [request.identifier])
+    }
+
+    @Test("通知が無効な場合や期限切れの着信では登録しない", arguments: [false, true])
+    func doesNotScheduleUnavailable(expired: Bool) async throws {
+        let probe = Probe(), notifications = probe.controller()
+        await notifications.update(try call(expiresAt: .now.addingTimeInterval(expired ? -60 : 60)), enabled: expired)?.value
+        #expect(probe.requests.isEmpty)
+    }
+
+    @Test("通知を無効にしたら配信済みの着信を消す")
+    func removesWhenDisabled() async throws {
+        let probe = Probe(), call = try call()
+        let notifications = probe.controller()
+        var added = probe.added.stream.makeAsyncIterator()
+        notifications.update(call, enabled: true)
+        let identifier = try #require(await added.next())
+        let request = try #require(probe.requests.first { $0.identifier == identifier })
+        notifications.update(call, enabled: false)
+        #expect(probe.removed == [request.identifier])
+    }
+
+    @Test("登録完了が取消より遅れても、再表示した新しい通知を消さない")
+    func handlesLateDelivery() async throws {
+        let probe = Probe(), call = try call()
+        probe.hold = true
+        defer { probe.close() }
+        let notifications = probe.controller()
+        var added = probe.added.stream.makeAsyncIterator()
+        var removed = probe.removals.stream.makeAsyncIterator()
+        notifications.update(call, enabled: true)
+        let oldID = try #require(await added.next())
+        let old = try #require(probe.requests.first { $0.identifier == oldID })
+        notifications.update(nil, enabled: true)
+        #expect(await removed.next() == [old.identifier])
+        notifications.update(call, enabled: true)
+        let newID = try #require(await added.next())
+        try #require(old.identifier != newID)
+        let new = try #require(probe.requests.last { $0.identifier == newID })
+        probe.finish(old)
+        #expect(await removed.next() == [old.identifier])
+        probe.finish(new)
+        notifications.update(nil, enabled: true)
+        #expect(probe.removed.contains(new.identifier))
+    }
+
+    @Test("既定タップ・不正なカテゴリ・不正な識別子を通話操作に変換しない")
+    func rejectsUnrelatedResponses() {
+        let content = UNMutableNotificationContent()
+        content.categoryIdentifier = IncomingCallNotifications.categoryID
+        content.userInfo = ["invite_id": UUID().uuidString, "user_id": UUID().uuidString]
+        let identifier = IncomingCallNotifications.identifierPrefix + UUID().uuidString
+        func response(_ action: String, identifier: String) -> IncomingCallNotificationAction? {
+            IncomingCallNotificationAction(request: UNNotificationRequest(identifier: identifier, content: content, trigger: nil),
+                                           actionIdentifier: action)
+        }
+        #expect(response(UNNotificationDefaultActionIdentifier, identifier: identifier) == nil)
+        #expect(response(IncomingCallNotifications.answerID, identifier: "別の通知") == nil)
+        content.categoryIdentifier = "別のカテゴリ"
+        #expect(response(IncomingCallNotifications.answerID, identifier: identifier) == nil)
+        content.categoryIdentifier = IncomingCallNotifications.categoryID
+        content.userInfo["invite_id"] = "不正"
+        #expect(response(IncomingCallNotifications.answerID, identifier: identifier) == nil)
+    }
+
+    @Test("再起動前の着信を回収し、取得中に届いた新着信と通常通知を残す")
+    func removesStaleNotificationsAfterRestart() async throws {
+        let probe = Probe(), notifications = probe.controller()
+        let started = AsyncStream<Void>.makeStream()
+        var continuation: CheckedContinuation<[String], Never>?
+        probe.existing = {
+            await withCheckedContinuation { pending in
+                continuation = pending
+                started.continuation.yield(())
+            }
+        }
+        let cleanup = Task { await notifications.removePreviousNotifications() }
+        for await _ in started.stream { break }
+        var added = probe.added.stream.makeAsyncIterator()
+        notifications.update(try call(), enabled: true)
+        let newID = try #require(await added.next())
+        let oldID = IncomingCallNotifications.identifierPrefix + UUID().uuidString
+        continuation?.resume(returning: [oldID, newID, "メッセージ通知"])
+        await cleanup.value
+        #expect(probe.removed == [oldID])
+    }
+}

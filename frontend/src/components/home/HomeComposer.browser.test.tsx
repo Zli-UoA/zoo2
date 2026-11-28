@@ -138,6 +138,7 @@ it("preserves a per-image label selected during upload and submits only that ima
     name: "second.png: センシティブ",
   });
   await user.click(second);
+  await user.type(screen.getByRole("textbox", { name: "second.png: 画像の説明" }), "会場の地図");
   expect(screen.getByRole("checkbox", { name: "first.png: センシティブ" })).not.toBeChecked();
   completeUpload();
   await waitFor(() => expect(screen.getByRole("button", { name: "投稿" })).toBeEnabled());
@@ -147,6 +148,7 @@ it("preserves a per-image label selected during upload and submits only that ima
       expect.objectContaining({
         image_ids: ["first.png", "second.png"],
         sensitive_image_ids: ["second.png"],
+        image_descriptions: { "second.png": "会場の地図" },
       }),
     ),
   );

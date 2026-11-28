@@ -133,6 +133,7 @@ data class LinkedMessageState(
     val hasCiphertext: Boolean = false,
     /** 取得を始めてから [LINK_LOAD_TIMEOUT] たっても終わらない。 */
     val stalled: Boolean = false,
+    val accessRejected: Boolean = false,
 )
 
 /** リンク先のメッセージを取る、1 チャンネル分の購読。 */
@@ -152,6 +153,8 @@ interface LinkedChannelSource {
 
     /** [messageId] の 1 件を取る。同じ ID の 2 回目以降は何もしない。 */
     fun request(messageId: String)
+
+    fun refresh() {}
 
     fun close()
 }
@@ -179,8 +182,6 @@ class LinkedChannelTable(
     private val values = MutableStateFlow(LinkedChannelSource.State())
     override val state: StateFlow<LinkedChannelSource.State> = values.asStateFlow()
     private val requested = mutableSetOf<String>()
-    /** 最初の up-to-date（`changes_only` では空）を受け取ったか。subset はそのあとに取る。 */
-    private val synced = MutableStateFlow(false)
     /** 受け取った up-to-date の数。 */
     private val caughtUp = MutableStateFlow(0)
     /** 待っても live が追いつかなかった時刻。追いつけば消す。 */
@@ -189,6 +190,7 @@ class LinkedChannelTable(
     private var refetching = false
     /** subset の取得は 1 件ずつ。[sent] は、いまの取得で送った要求の数。 */
     private val fetching = Mutex()
+    private val subsetRequests = ShapeSubsetRequests()
     private val sent = MutableStateFlow(0)
     private val requests = http.config {
         install(createClientPlugin("ZooLinkedSubset") {
@@ -228,7 +230,6 @@ class LinkedChannelTable(
             kept.clear()
             generation++
             refetching = true
-            synced.value = false
             values.value = LinkedChannelSource.State(hasCiphertext = values.value.hasCiphertext)
         }
         batch.forEach(::keep)
@@ -236,7 +237,6 @@ class LinkedChannelTable(
         val ciphertext = batch.any { (it.jsonObject["value"] as? JsonObject)?.present("ciphertext") == true }
         val upToDate = batch.any { control(it) == "up-to-date" }
         if (upToDate) {
-            synced.value = true
             liveStuck = null
             caughtUp.update { it + 1 }
         }
@@ -272,17 +272,22 @@ class LinkedChannelTable(
         val startedAt = generation
         tableScope.launch {
             try {
-                combine(synced, values) { ready, current -> ready || current.failure != null }.first { it }
+                // Electric can suppress a replayed up-to-date message while updating the stream status.
+                combine(stream.status, values) { status, current ->
+                    status.isUpToDate || current.failure != null
+                }.first { it }
                 var wait = LINK_SUBSET_RETRY
                 // 取り直し（must-refetch）になったら、そちらの取得に任せる。
                 while (startedAt == generation && values.value.failure == null) {
                     val done = fetching.withLock {
-                        sent.value = 0
                         val before = caughtUp.value
                         try {
-                            stream.requestSnapshot(
-                                SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
-                            )
+                            subsetRequests.request {
+                                sent.value = 0
+                                stream.requestSnapshot(
+                                    SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
+                                )
+                            }
                             true
                         } catch (_: SubsetYield) {
                             awaitLive(before)
@@ -314,6 +319,23 @@ class LinkedChannelTable(
         if (liveStuck?.let { it.elapsedNow() < LINK_LIVE_RECHECK } == true) return
         if (withTimeoutOrNull(LINK_LIVE_WINDOW) { caughtUp.first { it > before } } == null) {
             liveStuck = clock.markNow()
+        }
+    }
+
+    private var refreshJob: Job? = null
+
+    override fun refresh() {
+        refreshJob?.cancel()
+        refreshJob = tableScope.launch {
+            if (subsetRequests.reconnect()) return@launch
+            if (stream.isPaused() || stream.error != null) return@launch
+            try {
+                stream.forceDisconnectAndRefresh()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The subscriber reports stream failures. A subset fetch may also pause live.
+            }
         }
     }
 
@@ -376,7 +398,7 @@ class LinkedMessages(
         val open = rows?.firstOrNull { it.text("id") == messageId }
         if (open != null) return LinkedMessageState(LinkedRow.Found(open), ciphertext)
         // 拒否された取得は、画面に戻っても読み込み中に戻さない。
-        if (source?.rejects(messageId) == true) return LinkedMessageState(LinkedRow.Failed, ciphertext)
+        if (source?.rejects(messageId) == true) return LinkedMessageState(LinkedRow.Failed, ciphertext, accessRejected = true)
         val key = Key(channelId, messageId)
         // 購読の上限で取得できないリンクも、読み込み中に戻さない。
         val row = results[key] ?: if (isFull(channelId)) LinkedRow.Failed else LinkedRow.Loading
@@ -451,6 +473,7 @@ class LinkedMessages(
             shown ?: LinkedRow.Loading,
             sawCiphertext(key.channelId, source = state),
             stalled = late && current == null,
+            accessRejected = current == LinkedRow.Failed,
         )
     }
 
@@ -523,6 +546,10 @@ class LinkedMessages(
         sawCiphertext(channelId, source = entry.source.state.value)
         discardRejected(channelId, entry.source.state.value)
         entry.source.close()
+    }
+
+    fun refresh() {
+        entries.values.toList().forEach { it.source.refresh() }
     }
 
     fun close() {

@@ -1,3 +1,5 @@
+import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
+
 // Publish images（cd-images.yaml）の plan ジョブから呼ぶ。ビルドするコンポーネントと、付けるイメージタグを決める。
 // sfu-bridge は通話の SFU の中継（docs/calls-sfu.md）。ほかと同じリリースタグで Flux が配る。
 export const components = ['frontend', 'backend', 'migrate', 'sfu-bridge'];
@@ -38,27 +40,35 @@ export function changedComponents(files) {
 // infra/Dockerfile-frontend-deploy が frontend/ のほかに COPY するファイル。
 const frontendInfraFiles = ['infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh'];
 
+// Migration image COPY inputs from infra/Dockerfile-migrate-deploy.
+const migrationFiles = ['infra/db/atlas.hcl', 'infra/db/schema.sql', 'infra/db/migrate.sh'];
+
 // コンポーネント自身のソースと Dockerfile のファイルか。ビルド用の共有ファイルは含まない。
 function componentFile(c, f) {
+  if (c === 'frontend' && (isAndroidFrontendOnly(f) || f.startsWith('frontend/e2e/') ||
+      /^frontend\/playwright\..+\.config\.ts$/.test(f) ||
+      /^frontend\/(?:src|scripts)\/.+\.test\.(?:ts|tsx|mjs)$/.test(f))) return false;
+  if (c === 'backend' && f.startsWith('backend/tests/')) return false;
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
-    (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
+    (c === 'migrate' ? (f.startsWith('infra/db/migrations/') || migrationFiles.includes(f)) : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
     (c === 'frontend' && (f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-crypto-wasm/') || f === 'rust-toolchain.toml')) ||
     (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f === 'frontend/src/lib/emoji/emoji-kitchen.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
 }
 
 const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
+const previewInputs = files => fileNames(files).filter(path => path !== 'frontend/README.md');
 
 // listFiles が返す PR 全体の差分から、ビルドが必要なコンポーネントを返す。
 // GitHub の変更ファイル一覧は3000件で打ち切られる。変更を見落とさないよう、3000件以上ならすべてビルドする。
 export function pullRequestComponents(files) {
-  return files.length >= 3000 ? components : changedComponents(fileNames(files));
+  return files.length >= 3000 ? components : changedComponents(previewInputs(files));
 }
 
 // Preview label ワークフローが使う。Preview は画面を確かめるためのものなので、frontend 自身の変更がある PR だけに付ける。
 // backend・migrate だけ、またはビルド用の共有ファイルだけの変更では付けない。3000件以上は見落としを避けて付ける。
 export function wantsPreview(files) {
-  return files.length >= 3000 || fileNames(files).some(f => componentFile('frontend', f));
+  return files.length >= 3000 || previewInputs(files).some(f => componentFile('frontend', f));
 }
 
 // push 前の head が、すでに Preview の対象だったか。Compare API の差分から判定する。

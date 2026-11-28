@@ -6,12 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,16 +21,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +50,10 @@ internal data class SearchResultItem(
     val fileSize: String? = null,
     /** Custom emoji in the snippet, drawn as in conversations. */
     val emoji: Map<String, TimelineMedia> = emptyMap(),
+    val needsWorkspaceEmoji: Boolean = false,
+    val avatar: String? = null,
+    val media: TimelineMedia? = null,
+    val linkCard: EntryCard? = null,
 )
 
 /**
@@ -150,10 +146,12 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                 LazyColumn(
                     Modifier.fillMaxSize().testTag("global-search-results"),
                     scroll,
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
                     items(state.results, key = { it.key }) { item ->
-                        SearchResult(item, colors, highlight) { dispatch(AndroidUiAction.OpenSearchResult(item.key)) }
+                        SearchResult(item, colors, highlight,
+                            open = { dispatch(AndroidUiAction.OpenSearchResult(item.key)) },
+                            openMedia = { dispatch(AndroidUiAction.OpenSearchMedia(item.key, revealedSensitive = item.media?.sensitive == true)) })
                     }
                     item("search-footer") { SearchFooter(state, colors, dispatch) }
                 }
@@ -169,51 +167,28 @@ private fun SearchField(text: String, colors: AndroidColors, submit: () -> Unit,
     val focusOnOpen = remember { text.isEmpty() }
     LaunchedEffect(Unit) { if (focusOnOpen) runCatching { focus.requestFocus() } }
     val placeholder = androidLabel("globalSearch.placeholder", "メッセージとファイルを検索")
-    BasicTextField(
-        text, change,
-        Modifier.fillMaxWidth().focusRequester(focus).testTag("global-search-field")
-            .semantics { contentDescription = placeholder },
-        singleLine = true,
-        textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-        cursorBrush = SolidColor(colors.inputText),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(onSearch = { submit() }),
-        decorationBox = { field ->
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                    .background(colors.inputSurface, CircleShape).padding(horizontal = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                UiGlyph(UiIcon.Search, colors.inputHint, iconSize = AndroidControlSize.inlineIcon)
-                Box(Modifier.weight(1f)) {
-                    if (text.isEmpty()) Text(placeholder, color = colors.inputHint, fontSize = 16.sp, maxLines = 1)
-                    field()
-                }
-            }
-        },
-    )
+    SearchInput(text, change, placeholder, colors, Modifier.focusRequester(focus).testTag("global-search-field"), submit)
 }
 
 @Composable
-private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highlight: EntryHighlight, open: () -> Unit) {
+private fun SearchResult(
+    item: SearchResultItem, colors: AndroidColors, highlight: EntryHighlight, open: () -> Unit, openMedia: () -> Unit,
+) {
     val thread = androidLabel("globalSearch.inThread", "スレッドの返信")
     val destination = listOfNotNull(item.destination, thread.takeIf { item.inThread }).joinToString(" · ")
     Row(
         Modifier.fillMaxWidth().testTag("global-search-result")
             .clickable(role = Role.Button, onClick = open)
             .semantics(mergeDescendants = true) {}
-            .padding(vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(Modifier.size(36.dp).background(colors.quietSurface, CircleShape), contentAlignment = Alignment.Center) {
-            Text(item.author.take(1), color = colors.secondary, fontSize = 13.sp)
-        }
+        TimelineAvatar(item.author, item.avatar, colors)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(item.author, Modifier.weight(1f, fill = false), color = colors.foreground,
                     fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(item.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
+                Text(item.time, color = colors.secondary, fontSize = metadataTextSize, maxLines = 1)
             }
             if (item.file) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(UiIcon.Attach, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
@@ -225,8 +200,10 @@ private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highligh
                 // The snippet is MFM like Web's result row; only its text parts are marked.
                 // Links in the snippet stay text: a tap anywhere on the row opens the result, not the link.
                 EntryBody(item.body, colors.foreground, entryTextSize, item.emoji, maxLines = 3, highlight = highlight,
-                    lineHeight = 23.sp, links = false)
+                    lineHeight = 23.sp, links = false, mentionColors = colors)
             }
+            item.media?.let { media -> TimelineMediaGroup(listOf(media), colors, apub = false, showSensitiveToggle = false) { openMedia() } }
+            item.linkCard?.let { EntryCards(listOf(it.copy(url = null)), colors) }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,
                     iconSize = AndroidControlSize.metadataIcon)

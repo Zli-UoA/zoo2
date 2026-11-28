@@ -10,6 +10,7 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { resolveConfig } from "../config";
 import { getCollections } from "./collections";
 import { CollectionsProvider } from "./collections-context";
+import { PinnedChannelsProvider, usePinnedChannels } from "../../hooks/usePinnedChannels";
 import {
   useActiveChannels,
   useChannelMembers,
@@ -35,10 +36,17 @@ it.each([true, false])(
     const user = { id: "dev-user", user_name: "alice", display_name: "Alice" };
     const channel = { id: message.channel_id, channel_name: "Saved channel", deleted_at: null };
     const membership = { user_id: user.id, channel_id: channel.id, joined_at: message.created_at };
+    const pin = {
+      ...membership,
+      position: 0,
+      created_at: message.created_at,
+      updated_at: message.created_at,
+    };
     const snapshots: Record<string, { key: string; value: Record<string, unknown> }[]> = {
-      users: [{ key: user.id, value: user }],
+      sharedUsers: [{ key: user.id, value: user }],
       channels: [{ key: channel.id, value: channel }],
       channel_user: [{ key: `${user.id}:${channel.id}`, value: membership }],
+      [`user_pinned_channels:${user.id}`]: [{ key: `${user.id}:${channel.id}`, value: pin }],
       [`messages:${channel.id}`]: [{ key: message.id, value: message }],
     };
     const cachedRows = (target: PersistedStorageTarget) => {
@@ -81,10 +89,14 @@ it.each([true, false])(
         channels: useActiveChannels(),
         users: useUsers(),
         members: useChannelMembers(message.channel_id),
+        pins: usePinnedChannels(),
       }),
       {
         wrapper: ({ children }: { children: ReactNode }) =>
-          createElement(CollectionsProvider, { value: bundle, children }),
+          createElement(CollectionsProvider, {
+            value: bundle,
+            children: createElement(PinnedChannelsProvider, { children }),
+          }),
       },
     );
     try {
@@ -94,12 +106,17 @@ it.each([true, false])(
       expect(messages.config.syncMode).toBe("on-demand");
       await waitFor(
         () => {
-          for (const [name, query] of Object.entries(result.current)) {
-            if (name === "feed") continue;
+          for (const query of [
+            result.current.channels,
+            result.current.users,
+            result.current.members,
+          ]) {
             expect(query.isPersistedReady).toBe(true);
             expect(query.isLoading).toBe(!cached);
           }
           expect(result.current.channels.isInitialSyncLoading).toBe(true);
+          expect(result.current.pins.loading).toBe(!cached);
+          expect(result.current.pins.isPinned(channel.id)).toBe(cached);
         },
         { timeout: 1_000 },
       );
@@ -110,6 +127,7 @@ it.each([true, false])(
         bundle.channels.cleanup(),
         bundle.users.cleanup(),
         bundle.channelUsers.cleanup(),
+        bundle.userPinnedChannels(user.id).cleanup(),
         bundle.reactions(message.channel_id).cleanup(),
       ]);
     }

@@ -1,5 +1,7 @@
 package zoo
 
+import androidx.compose.runtime.snapshots.Snapshot
+
 import electric4k.RuntimeVisibilityAdapter
 import electric4k.ShapeStreamOptions
 import io.ktor.client.*
@@ -7,6 +9,7 @@ import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import kotlin.test.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
@@ -46,6 +49,53 @@ private class FakePlatform : Platform {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RepositoryTest {
+    @Test
+    fun freshNotificationContextRestoresLinkDespiteAnEmptyCachedPreview() = runTest {
+        val pendingWrite = CompletableDeferred<Unit>()
+        var contextResponse = """{"message":{"id":"message"},"reactions":[]}"""
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath.endsWith("/context")) respond(contextResponse)
+                    else {
+                        pendingWrite.await()
+                        respond("{}")
+                    }
+                }
+            }
+        }
+        val repo = Repository(Config("https://zoo.test", "/shapes", "me", false),
+            FakePlatform(), http, backgroundScope, synchronize = false)
+        val app = Session(repo, backgroundScope, Environment())
+        try {
+            backgroundScope.launch {
+                repo.notifications.write(repo.api, "/pending-notification", "POST", row = obj(
+                    "id" to "notice", "user_id" to "me", "actor_id" to "alice",
+                    "channel_id" to "channel", "message_id" to "message", "notification_type" to "reaction",
+                    "created_at" to "2026-11-01T00:00:00Z", "display_data" to obj("message" to null),
+                ))
+            }
+            runCurrent()
+            val inbox = NotificationInbox(app)
+            val item = inbox.snapshot().single()
+            assertNull(item.target)
+            val context = assertNotNull(item.reactionContext)
+            inbox.loadReactions(context)
+            assertEquals("/channels/channel?message=message", inbox.snapshot().single().target)
+
+            contextResponse = """{"message":null,"reactions":[]}"""
+            inbox.loadReactions(context)
+            assertNull(inbox.snapshot().single().target)
+
+            pendingWrite.complete(Unit)
+            runCurrent()
+            assertTrue(inbox.snapshot().isEmpty(), "A row removed by sync must not remain in the inbox")
+            inbox.loadReactions(context)
+            assertTrue(inbox.snapshot().isEmpty())
+        } finally { app.close() }
+    }
+
     private val config = Config("https://zoo.test", "/api/shapes", "alice", false)
     private val options =
         ShapeStreamOptions(
@@ -73,6 +123,278 @@ class RepositoryTest {
         app.close()
         runCurrent()
         assertEquals(0, requests)
+    }
+
+    @Test
+    fun startupReadsActivityPubAvailabilityOncePerSession() = runTest {
+        var requests = 0
+        val cases = listOf(true to 0L, false to 0L, true to 4_000L)
+        for ((expected, responseDelay) in cases) {
+            val http = HttpClient(MockEngine) {
+                engine {
+                    dispatcher = StandardTestDispatcher(testScheduler)
+                    addHandler { request ->
+                        when (request.url.encodedPath) {
+                            "/api/activitypub/status" -> {
+                                requests++
+                                delay(responseDelay)
+                                respond("""{"enabled":$expected}""")
+                            }
+                            else -> respond("{}", HttpStatusCode.NotFound)
+                        }
+                    }
+                }
+            }
+            val lifetime = CoroutineScope(backgroundScope.coroutineContext + SupervisorJob(backgroundScope.coroutineContext[Job]))
+            val repo = Repository(config, FakePlatform(), http, lifetime, synchronize = false)
+            val app = Session(repo, lifetime, Environment())
+            try {
+                assertNull(app.activityPubAvailable)
+                val startedAt = currentTime
+                app.start()
+                if (responseDelay > 0) {
+                    assertEquals(3_000L, currentTime - startedAt)
+                    assertNull(app.activityPubAvailable)
+                    advanceTimeBy(responseDelay - 3_000L)
+                    runCurrent()
+                }
+                assertEquals(expected, app.activityPubAvailable)
+                runCurrent()
+                app.update(app.env.copy(visible = false))
+                runCurrent()
+                app.update(app.env.copy(visible = true))
+                runCurrent()
+            } finally {
+                app.close()
+                lifetime.cancel()
+            }
+        }
+        assertEquals(cases.size, requests)
+    }
+
+    @Test
+    fun channelReadUsesTheServerUnreadFlagAndSkipsOldOrHiddenMessages() = runTest {
+        val first = "2026-11-01T01:00:00Z"
+        val second = "2026-11-01T02:00:00Z"
+        val third = "2026-11-01T03:00:00Z"
+        var writes = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    when (request.url.encodedPath) {
+                        "/api/channel-read-states" -> {
+                            val timestamp = listOf(first, second, third)[writes]
+                            respond("""[{"channel_id":"c1","last_read_at":"$timestamp","has_unread":${writes < 2}}]""")
+                        }
+                        "/api/channels/c1/read-state" -> {
+                            assertEquals(HttpMethod.Post, request.method)
+                            writes++
+                            val timestamp = if (writes == 1) second else third
+                            respond("""{"data":{"last_read_at":"$timestamp","has_unread":${writes == 1}}}""")
+                        }
+                        else -> respond("", HttpStatusCode.NotFound)
+                    }
+                }
+            }
+        }
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val app = Session(repo, backgroundScope, Environment(path = "/channels/c1"))
+        try {
+            app.start()
+            runCurrent()
+            assertTrue(app.channelReadPositions.getValue("c1").hasUnread)
+            val secondTime = checkNotNull(timestampMillis(second))
+            val thirdTime = checkNotNull(timestampMillis(third))
+            app.markChannelRead("c1", "second", secondTime)
+            app.markChannelRead("c1", "second", secondTime)
+            assertEquals(1, writes)
+            assertTrue(app.channelReadPositions.getValue("c1").hasUnread)
+
+            app.update(app.env.copy(visible = false))
+            app.markChannelRead("c1", "third", thirdTime)
+            assertEquals(1, writes)
+            app.update(app.env.copy(visible = true))
+            app.markChannelRead("c1", "third", thirdTime)
+            assertEquals(2, writes)
+            assertFalse(app.channelReadPositions.getValue("c1").hasUnread)
+        } finally { app.close() }
+    }
+
+    @Test
+    fun timedOutReadPositionsStopBlockingTheConversationAfterForegroundRecovery() = runTest {
+        var reads = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/channel-read-states") {
+                        respond("", HttpStatusCode.NotFound)
+                    } else {
+                        if (++reads <= 2) awaitCancellation()
+                        respond("""[{"channel_id":"c1","has_unread":false}]""")
+                    }
+                }
+            }
+        }
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val foreground = Environment(path = "/channels/c1", visible = true, online = true)
+        val app = Session(repo, backgroundScope, foreground)
+        try {
+            app.start()
+            runCurrent()
+            assertEquals(1, reads)
+            assertFalse(app.channelReadPositionsChecked)
+
+            app.update(foreground.copy(visible = false))
+            Snapshot.sendApplyNotifications()
+            advanceTimeBy(20_000)
+            assertEquals(1, reads)
+            assertFalse(app.channelReadPositionsChecked)
+
+            app.update(foreground)
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertEquals(2, reads)
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(app.channelReadPositionsChecked)
+            assertTrue(app.channelReadPositions.isEmpty())
+
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals(3, reads)
+            assertTrue("c1" in app.channelReadPositions)
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
+    fun returningToForegroundRefreshesAnExistingShapeEvenWhenStillOnline() =
+        assertShapeReconnect("https://foreground.zoo.test") { app, foreground ->
+            app.update(foreground.copy(visible = false))
+            runCurrent()
+            app.update(foreground)
+        }
+
+    @Test
+    fun replacingTheDefaultNetworkRefreshesShapesEvenWhenStillOnline() =
+        assertShapeReconnect("https://network-change.zoo.test") { app, foreground ->
+            app.update(foreground, reconnect = true)
+        }
+
+    @Test
+    fun replacingTheDefaultNetworkReconnectsTheSharedHomeSocket() = runTest {
+        val http = HttpClient(MockEngine { error("No Shape or REST request expected") })
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repo, backgroundScope, foreground)
+        val events = mutableListOf<String>()
+        val home = HomeLive(app) { _, _, _, _ ->
+            val dispose = { events += "disconnect" }
+            events += "connect"
+            dispose
+        }
+        try {
+            home.subscribe {}
+            home.subscribe {}
+            runCurrent()
+            assertEquals(listOf("connect"), events)
+
+            app.update(foreground, reconnect = true)
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertEquals(listOf("connect", "disconnect", "connect"), events)
+
+            app.update(foreground)
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertEquals(listOf("connect", "disconnect", "connect"), events)
+        } finally {
+            home.close()
+            app.close()
+        }
+    }
+
+    private fun assertShapeReconnect(
+        base: String,
+        reconnect: TestScope.(Session, Environment) -> Unit,
+    ) = runTest {
+        val requests = Channel<Url>(Channel.UNLIMITED)
+        val platform = FakePlatform()
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/shapes/channels") awaitCancellation()
+                    requests.send(request.url)
+                    if (request.url.parameters["offset"] != "-1") awaitCancellation()
+                    respond(
+                        """[{"headers":{"control":"up-to-date"}}]""",
+                        headers = headersOf(
+                            "electric-handle" to listOf("test-handle"),
+                            "electric-offset" to listOf("1_0"),
+                            "electric-cursor" to listOf("1"),
+                            "electric-schema" to listOf("{}"),
+                            "content-type" to listOf("application/json"),
+                        ),
+                    )
+                }
+            }
+        }
+        val repo = Repository(config.copy(apiBaseUrl = base), platform, http, backgroundScope)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repo, backgroundScope, foreground)
+        try {
+            assertEquals("-1", requests.receive().parameters["offset"])
+            assertEquals("true", requests.receive().parameters["live"])
+
+            app.update(foreground)
+            runCurrent()
+            assertTrue(requests.tryReceive().isFailure)
+
+            reconnect(app, foreground)
+            val resumed = requests.receive().parameters
+            assertEquals("test-handle", resumed["handle"])
+            assertEquals("1_0", resumed["offset"])
+            assertNotEquals("true", resumed["live"])
+
+            app.update(foreground)
+            runCurrent()
+            assertTrue(requests.tryReceive().isFailure)
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
+    fun foregroundRecoveryRestartsAStalledInitialShapeRequest() = runTest {
+        val requests = Channel<Url>(Channel.UNLIMITED)
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    requests.send(request.url)
+                    awaitCancellation()
+                }
+            }
+        }
+        val table = SyncedTable("channels", config, FakePlatform(), http, backgroundScope, streamOptions = options)
+        try {
+            runCurrent()
+            val initial = requests.tryReceive().getOrThrow()
+            assertEquals("-1", initial.parameters["offset"])
+            assertTrue(table.loading.value)
+
+            table.refresh(reconnect = true)
+            runCurrent()
+            assertEquals(initial, requests.tryReceive().getOrThrow())
+            assertTrue(requests.tryReceive().isFailure)
+        } finally {
+            table.close()
+            http.close()
+        }
     }
 
     @Test
@@ -476,6 +798,55 @@ class RepositoryTest {
     }
 
     @Test
+    fun foregroundRecoveryRetriesThePendingFirstMessagePage() = runTest {
+        val subsets = Channel<Url>(Channel.UNLIMITED)
+        val cancelled = CompletableDeferred<Unit>()
+        var attempts = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["subset__where"] != null -> {
+                            subsets.send(request.url)
+                            if (++attempts == 1) {
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    cancelled.complete(Unit)
+                                }
+                            }
+                            assertTrue(cancelled.isCompleted)
+                            respond(snapshot(listOf(message(1))), headers = protocolHeaders())
+                        }
+                        parameters["offset"] == "now" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
+                    }
+                }
+            }
+        }
+        val table = SyncedTable("messages", config, FakePlatform(), http, backgroundScope,
+            mapOf("channel_id" to "resume-first-page"), options, onDemand = true)
+        try {
+            val pending = subsets.receive()
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).loading)
+
+            table.refresh(reconnect = true)
+
+            assertEquals(pending, subsets.receive())
+            val rows = table.rows.first { it.isNotEmpty() }
+            table.pageStates.first { it[PageScope.Main]?.loaded == true }
+            assertEquals(listOf("m001"), rows.map { it.text("id") })
+            assertEquals(2, attempts)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
     fun onDemandOlderPageContinuesFromTheOldestRowAndStopsWhenItIsNotFull() = runTest {
         val platform = FakePlatform()
         val subsets = mutableListOf<Map<String, String>>()
@@ -583,6 +954,28 @@ class RepositoryTest {
     }
 
     @Test
+    fun messageCachePreservesConfirmedCoverageAndReadsLegacyArrays() {
+        val rows = (1..60).map { id ->
+            obj("id" to id.toString(), "created_at" to "2026-11-01T00:00:${(id - 1).toString().padStart(2, '0')}Z")
+        }
+        fun cursor(row: Row) = row.text("created_at") to row.text("id")
+        val complete = cacheFeed(rows.take(10), PageState(loaded = true, oldest = cursor(rows.first())))
+        val restored = CachedFeed.decode(json.parseToJsonElement(complete.encode()))
+        assertEquals(complete, restored)
+        assertFalse(restored.page!!.hasOlder)
+        assertNull(CachedFeed.decode(JsonArray(complete.rows)).page)
+
+        val trimmed = cacheFeed(rows, PageState(loaded = true, oldest = cursor(rows.first())))
+        assertEquals(50, trimmed.rows.size)
+        assertEquals(cursor(rows[10]), trimmed.page!!.oldest)
+        assertTrue(trimmed.page.hasOlder)
+
+        val sparse = cacheFeed(listOf(rows.first()) + rows.takeLast(10),
+            PageState(loaded = true, hasOlder = true, oldest = cursor(rows[50])))
+        assertEquals(cursor(rows[50]), sparse.page!!.oldest)
+    }
+
+    @Test
     fun newestFirstOrdersRowsOfTheSameTimeById() {
         val a = obj("id" to "a", "created_at" to "t")
         val b = obj("id" to "b", "created_at" to "t")
@@ -624,6 +1017,237 @@ class RepositoryTest {
     }
 
     @Test
+    fun invalidationBeforeTheFirstPageDoesNotFetchAnExtraPage() = runTest {
+        var subsetCalls = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["handle"] == null ->
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle", "new"))
+                        parameters["subset__where"] != null -> {
+                            subsetCalls++
+                            respond(snapshot((1..50).reversed().map(::message)), headers = protocolHeaders("new"))
+                        }
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("", HttpStatusCode.NoContent, protocolHeaders("new"))
+                    }
+                }
+            }
+        }
+        val table = SyncedTable("messages", config, FakePlatform(), http, backgroundScope,
+            mapOf("channel_id" to "invalidated-before-first-page"), options, onDemand = true)
+        try {
+            runCurrent()
+            assertEquals(1, subsetCalls)
+            assertEquals(50, table.rows.value.size)
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).hasOlder)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun foregroundRecoveryKeepsPartialNotificationCatchUpPrivate() = runTest {
+        val finishCatchUp = CompletableDeferred<Unit>()
+        var waitingForReadUpdate = false
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["handle"] == null ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        parameters["live"] == "true" -> awaitCancellation()
+                        parameters["offset"] == "1_0" -> respond(
+                            """[{"key":"notice","value":{"id":"notice","is_read":false},"headers":{"operation":"insert"}}]""",
+                            headers = protocolHeaders(offset = "2_0"),
+                        )
+                        parameters["offset"] == "2_0" -> {
+                            waitingForReadUpdate = true
+                            finishCatchUp.await()
+                            respond(
+                                """[{"key":"notice","value":{"is_read":true},"headers":{"operation":"update"}},{"headers":{"control":"up-to-date"}}]""",
+                                headers = protocolHeaders(offset = "3_0", cursor = "2"),
+                            )
+                        }
+                        else -> awaitCancellation()
+                    }
+                }
+            }
+        }
+        val table = SyncedTable("notifications", config, FakePlatform(), http, backgroundScope, streamOptions = options)
+        try {
+            runCurrent()
+            assertEquals(emptyList(), table.synchronizedRows.value)
+
+            table.refresh(reconnect = true)
+            runCurrent()
+            assertTrue(waitingForReadUpdate)
+            assertEquals(emptyList(), table.synchronizedRows.value)
+
+            finishCatchUp.complete(Unit)
+            runCurrent()
+            val notification = assertNotNull(table.synchronizedRows.value).single()
+            assertTrue(notification.flag("is_read"))
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun foregroundRecoveryPublishesSharedRowsWhenElectricSuppressesACachedControlMessage() = runTest {
+        var invalidate = false
+        val liveUpdate = CompletableDeferred<Unit>()
+        var sentUpdate = false
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/shapes/channels") awaitCancellation()
+                    val parameters = request.url.parameters
+                    val handle = parameters["handle"]
+                    when {
+                        parameters["live"] == "true" -> {
+                            if (handle != "new" || sentUpdate) awaitCancellation()
+                            liveUpdate.await()
+                            sentUpdate = true
+                            respond(
+                                """
+                                data: {"key":"live-channel","value":{"id":"live-channel"},"headers":{"operation":"insert"}}
+
+                                data: {"headers":{"control":"up-to-date"}}
+
+                                """.trimIndent() + "\n",
+                                headers = headersOf(
+                                    "content-type" to listOf("text/event-stream"),
+                                    "electric-handle" to listOf("new"),
+                                    "electric-offset" to listOf("3_0"),
+                                    "electric-cursor" to listOf("live-cursor"),
+                                ),
+                            )
+                        }
+                        invalidate && handle == "old" -> {
+                            invalidate = false
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle", "new"))
+                        }
+                        else -> {
+                            val id = if (handle == "new") "new-channel" else "old-channel"
+                            respond(
+                                """[{"key":"$id","value":{"id":"$id"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]""",
+                                headers = protocolHeaders(handle ?: "old", cursor = "same-cursor"),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        val repo = Repository(config.copy(apiBaseUrl = "https://resume-shared.zoo.test"), FakePlatform(), http, backgroundScope)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repo, backgroundScope, foreground)
+        try {
+            runCurrent()
+            assertEquals("old-channel", repo.channels.rows.value.single().text("id"))
+
+            app.update(foreground.copy(visible = false))
+            invalidate = true
+            app.update(foreground)
+            runCurrent()
+
+            assertEquals(listOf("new-channel"), repo.channels.rows.value.map { it.text("id") })
+            assertFalse(repo.channels.loading.value)
+
+            liveUpdate.complete(Unit)
+            runCurrent()
+            assertEquals(setOf("new-channel", "live-channel"), repo.channels.rows.value.map { it.text("id") }.toSet())
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
+    fun foregroundRecoveryRefetchesWhenElectricSuppressesAReplayedControlMessage() =
+        assertForegroundRecoveryAfterInvalidation("resume-replayed-cursor", HttpStatusCode.OK)
+
+    @Test
+    fun foregroundRecoveryRefetchesWhenElectricCatchesUpWithNoContent() =
+        assertForegroundRecoveryAfterInvalidation("resume-no-content", HttpStatusCode.NoContent)
+
+    private fun assertForegroundRecoveryAfterInvalidation(channelId: String, catchUpStatus: HttpStatusCode) = runTest {
+        var invalidate = false
+        var subsetCalls = 0
+        var activeReplacementLiveCalls = 0
+        var maximumReplacementLiveCalls = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/shapes/messages") awaitCancellation()
+                    val parameters = request.url.parameters
+                    assertEquals(channelId, parameters["channel_id"])
+                    val handle = parameters["handle"]
+                    val live = parameters["live"] == "true"
+                    val ready = """[{"headers":{"control":"up-to-date"}}]"""
+                    when {
+                        parameters["subset__where"] != null -> {
+                            subsetCalls++
+                            assertEquals("50", parameters["subset__limit"])
+                            assertEquals(if (subsetCalls == 1) "old" else "new", handle)
+                            val index = if (subsetCalls == 1) 1 else 2
+                            respond(snapshot(listOf(message(index))), headers = protocolHeaders(handle!!, "${index}_0"))
+                        }
+                        live -> {
+                            if (handle != "new") awaitCancellation()
+                            activeReplacementLiveCalls++
+                            maximumReplacementLiveCalls = maxOf(maximumReplacementLiveCalls, activeReplacementLiveCalls)
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                activeReplacementLiveCalls--
+                            }
+                        }
+                        invalidate && handle == "old" -> {
+                            invalidate = false
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle", "new"))
+                        }
+                        handle == "new" ->
+                            respond(if (catchUpStatus == HttpStatusCode.NoContent) "" else ready,
+                                catchUpStatus, protocolHeaders("new", "2_0", "same-cursor"))
+                        else -> respond(ready, headers = protocolHeaders("old", cursor = "same-cursor"))
+                    }
+                }
+            }
+        }
+        val repository = Repository(config, FakePlatform(), http, backgroundScope)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repository, backgroundScope, foreground)
+        val table = repository.messages(channelId)
+        try {
+            runCurrent()
+            assertEquals(1, subsetCalls)
+            assertEquals(listOf("m001"), table.rows.value.map { it.text("id") })
+
+            app.update(foreground.copy(visible = false))
+            invalidate = true
+            app.update(foreground)
+            runCurrent()
+
+            assertEquals(2, subsetCalls, "A caught-up replacement Shape must reload the first page")
+            assertEquals(listOf("m002"), table.rows.value.map { it.text("id") })
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
+            assertEquals(1, activeReplacementLiveCalls)
+            assertEquals(1, maximumReplacementLiveCalls)
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
     fun onDemandConsecutiveMustRefetchCancelsTheOldRefetchAndPagingResumes() = runTest {
         val platform = FakePlatform()
         var subsetCalls = 0
@@ -651,7 +1275,12 @@ class RepositoryTest {
                                     secondSubsetStarted.complete(Unit)
                                     respond("{}", HttpStatusCode.BadRequest)
                                 }
-                                else -> respond(snapshot(listOf(message(10))), headers = protocolHeaders(handle))
+                                else -> {
+                                    // The replacement page belongs to the second generation. A timer retry
+                                    // from the first generation must not serve the second snapshot early.
+                                    if (p["handle"] != "h2") respond("{}", HttpStatusCode.BadRequest)
+                                    else respond(snapshot(listOf(message(10))), headers = protocolHeaders(handle))
+                                }
                             }
                         }
                         p["live"] == "true" || p["live_sse"] == "true" -> {
@@ -684,6 +1313,7 @@ class RepositoryTest {
             }
         try {
             step("first page") { table.rows.first { rows -> rows.any { it.text("id") == "m001" } } }
+            val initialGeneration = table.pageGeneration.value
             // must-refetch その 1: 取り直しの最初の取得が失敗して、再試行を待つ。
             invalidations.value = 1
             step("second subset request") { secondSubsetStarted.await() }
@@ -691,6 +1321,7 @@ class RepositoryTest {
             invalidations.value = 1
             step("rows after the second refetch") { table.rows.first { rows -> rows.any { it.text("id") == "m010" } } }
             assertEquals(listOf("m010"), table.rows.value.map { it.text("id") })
+            assertTrue(table.pageGeneration.value > initialGeneration)
             assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
             // 取り直しが済んでいれば、loadOlder は待たずに終わる（古いジョブが解除できなくても、新しいジョブが解除する）。
             val result = step("loadOlder after the refetch") { table.loadOlder(PageScope.Main) }

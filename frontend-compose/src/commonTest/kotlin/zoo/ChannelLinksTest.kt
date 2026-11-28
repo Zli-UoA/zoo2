@@ -14,6 +14,22 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 class ChannelLinksTest {
+    @Test
+    fun localPostsStayInTheAppAndNeverBecomeExternalPreviews() {
+        val base = "https://zoo.example"
+        val post = "$base/home/posts/42"
+        val note = "$base/api/activitypub/notes/42"
+        val external = "https://elsewhere.example/home/posts/42"
+        val parsed = messageLinks("$post $note $external", base)
+        assertEquals(listOf(post to "42"), parsed.posts)
+        assertEquals(external, parsed.external)
+        assertNull(localPostLink("https://zoo.example:8000/home/posts/42", base))
+        assertNull(localPostLink("$base/home/posts/%2Ffoo", base))
+        val remote = "https%3A%2F%2Fremote.example%2Fnotes%2F42"
+        assertEquals("https://remote.example/notes/42", localPostLink("$base/home/posts/$remote", base))
+        assertNull(localPostLink("$base/api/activitypub/notes/$remote", base))
+    }
+
     private val app = "https://zoo.test"
     private val message = ChannelLinkTarget("general", messageId = "m1")
     private val channelRow = obj("id" to "general", "channel_name" to "general", "description" to "雑談")
@@ -35,8 +51,9 @@ class ChannelLinksTest {
         stalled: Boolean = false,
         records: EncryptionRecords = EncryptionRecords.Loaded,
         hidesContent: Boolean = false,
+        customEmojis: (Row) -> Set<String> = { emptySet() },
     ) = resolveChannelLink(
-        target, channel, ready, LinkedMessageState(row, ciphertext, stalled), recorded, records, users,
+        target, channel, ready, LinkedMessageState(row, ciphertext, stalled), recorded, records, users, customEmojis,
     ) { hidesContent }
 
     private fun shown(info: ChannelLinkInfo) = assertIs<ChannelLinkInfo.Message>(info).message
@@ -178,6 +195,13 @@ class ChannelLinksTest {
             putJsonArray("attachments") { repeat(2) { add(buildJsonObject { put("id", "a$it") }) } }
         }))))
         assertEquals(2, files.attachmentCount)
+    }
+
+    @Test
+    fun linkExcerptRetainsRegisteredEmojiInTheRubyBase() {
+        val content = "\$[ruby **星**:猫:ねこ]"
+        val linked = resolve(LinkedRow.Found(row("content" to content)), customEmojis = { setOf(":猫:") })
+        assertEquals("星:猫:", shown(linked).excerpt)
     }
 
     @Test

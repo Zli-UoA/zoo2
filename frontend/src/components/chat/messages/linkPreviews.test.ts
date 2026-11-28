@@ -34,6 +34,11 @@ describe("link previews", () => {
     expect(previewUrls(content, quote)).toEqual(links);
     expect(previewUrls(content)).toEqual([quote, ...links.slice(0, 2)]);
   });
+  it("normalizes both the quote ID and visible links before excluding previews", () => {
+    const quote = "https://Remote.example:443/notes/42";
+    const content = `<${quote}> https://remote.example/notes/42 https://other.example/page`;
+    expect(previewUrls(content, quote)).toEqual(["https://other.example/page"]);
+  });
   it("sends images only to the configured proxy without smaller thumbnail presets", () => {
     const image = "https://images.example/a.png?x=1&y=2";
     const proxy = new URL(proxyImageUrl("https://media.example/", image)!);

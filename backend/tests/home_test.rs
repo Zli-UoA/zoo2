@@ -1203,7 +1203,7 @@ async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::
     );
     let rows = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE id=$1",
         &[draft_id],
     )
     .await?;
@@ -1211,7 +1211,7 @@ async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::
     backend::routes::home_images::collect_garbage(&state).await?;
     let remaining = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE id=$1",
         &[draft_id],
     )
     .await?;
@@ -1495,11 +1495,17 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     let _gc_test = HOME_IMAGE_GC_TESTS.lock().await;
     let storage = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .and(wiremock::matchers::header("if-none-match", "*"))
         .respond_with(wiremock::ResponseTemplate::new(403))
         .mount(&storage)
         .await;
     wiremock::Mock::given(wiremock::matchers::method("DELETE"))
         .respond_with(wiremock::ResponseTemplate::new(204))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .and(wiremock::matchers::body_bytes(Vec::new()))
+        .respond_with(wiremock::ResponseTemplate::new(200))
         .mount(&storage)
         .await;
     let mut config = Config::from_env();
@@ -1531,15 +1537,37 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     );
     let queued = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        "SELECT json_build_object('id',id,'pending',original_write_pending,'file_size',file_size)::text FROM home_image_deletion_queue WHERE uploader_id=$1",
         &[&owner],
     )
     .await?;
     assert_eq!(queued.len(), 1, "even a failed PUT must be durably queued");
+    assert_eq!(queued[0]["pending"], true);
+    let legacy_quota = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text",
+        &[&owner],
+    )
+    .await?;
+    assert_eq!(legacy_quota[0]["bytes"], queued[0]["file_size"]);
+    let mut old_worker = db.transaction().await?;
+    let old_candidates = backend::apps::query(
+        &mut old_worker,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED",
+        &[],
+    )
+    .await?;
+    assert!(
+        !old_candidates
+            .iter()
+            .any(|row| row["id"] == queued[0]["id"])
+    );
+    old_worker.commit().await?;
+    let failed_id = queued[0]["id"].as_str().unwrap().to_owned();
     backend::routes::home_images::collect_garbage(&state).await?;
     let queued = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE uploader_id=$1",
         &[&owner],
     )
     .await?;
@@ -1599,13 +1627,24 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     .await?;
     backend::routes::home_images::collect_garbage(&state).await?;
     let requests = storage.received_requests().await.unwrap();
+    reserved.push(failed_id);
     for id in reserved {
         assert!(
             requests
                 .iter()
-                .any(|r| r.method == "DELETE" && r.url.path().ends_with(&id))
+                .any(|r| r.method == "PUT" && r.body.is_empty() && r.url.path().ends_with(&id))
         );
     }
+    let remaining = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE uploader_id=$1",
+        &[&owner],
+    )
+    .await?;
+    assert!(
+        remaining.is_empty(),
+        "successful fencing must clear the queue"
+    );
     Ok(())
 }
 
@@ -2053,7 +2092,7 @@ async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
-        let (status, post) = request(&app, "POST", Some(&owner), "/api/home", Some(json!({"content":"mixed images","image_ids":images,"sensitive_image_ids":[images[1]],"channel_id":channel,"apub":true,"visibility":"public"}))).await?;
+        let (status, post) = request(&app, "POST", Some(&owner), "/api/home", Some(json!({"content":"mixed images","image_ids":images,"sensitive_image_ids":[images[1]],"image_descriptions":{(images[1].clone()):"北口の地図"},"channel_id":channel,"apub":true,"visibility":"public"}))).await?;
         assert_eq!(status, StatusCode::CREATED);
         let id = post["id"].as_str().unwrap();
         let (_, detail) =
@@ -2070,6 +2109,10 @@ async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
             None,
         )
         .await?;
+        assert_eq!(detail["media"][1]["name"], "photo.png");
+        assert_eq!(detail["media"][1]["description"], "北口の地図");
+        assert_eq!(note["attachment"][0]["name"], "photo.png");
+        assert_eq!(note["attachment"][1]["name"], "北口の地図");
         assert_eq!(note["sensitive"], true);
         assert_eq!(note["attachment"][0]["sensitive"], nsfw);
         assert_eq!(note["attachment"][1]["sensitive"], true);
@@ -2392,5 +2435,214 @@ async fn remote_thread_scope_preserves_audiences_previews_and_cycles() -> anyhow
     let (status, cycle) = request(&app, "GET", Some(&user), &path(5, "/thread"), None).await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(cycle.as_array().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn quote_renote_roundtrips_home_and_federated_note() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    let publish = |content: &str, visibility: &str| json!({"content":content,"apub":true,"visibility":visibility});
+    let (status, original) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish("展示のお知らせ", "public")),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut body = publish("行きます！", "public");
+    body["quote_post_id"] = original["id"].clone();
+    let (status, quoted) =
+        request(&app, "POST", Some(&user), "/api/home", Some(body.clone())).await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, timeline) = request(&app, "GET", Some(&user), "/api/home?timeline=home", None).await?;
+    let post = timeline
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == quoted["id"])
+        .unwrap();
+    assert_eq!(post["quote"]["post"]["id"], original["id"]);
+    let (_, note) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{}", quoted["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(note["quoteUrl"], post["quote"]["uri"]);
+    assert_eq!(note["_misskey_quote"], note["quoteUrl"]);
+    let uri = post["quote"]["uri"].as_str().unwrap();
+    assert!(
+        note["content"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("href=\"{uri}\""))
+    );
+    assert_eq!(
+        note["source"]["content"],
+        format!("行きます！\n\nRE: <{uri}>")
+    );
+    let (status, profile) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{user}/profile"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let public_quote = profile["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == quoted["id"])
+        .unwrap();
+    assert_eq!(public_quote["content"], note["source"]["content"]);
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(json!({"content":"コメント","apub":true,"visibility":"public","quote_post_id":""})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let quoted_id = quoted["id"].as_str().unwrap();
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        Some(&user),
+        &format!("/api/home/{quoted_id}"),
+        Some(json!({"content":"編集したコメント"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, edited) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{quoted_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(edited["quote"]["post"]["id"], original["id"]);
+    assert_eq!(edited["content"], "編集したコメント");
+    let (_, literal) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish(
+            &format!("RE: <{}>", note["quoteUrl"].as_str().unwrap()),
+            "public",
+        )),
+    )
+    .await?;
+    let (_, literal_note) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{}", literal["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert!(literal_note.get("quoteUrl").is_none());
+    let (_, unlisted) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish("未収載", "unlisted")),
+    )
+    .await?;
+    let other = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(other.as_str())
+        .exec(&mut db)
+        .await?;
+    let (status, linked) = request(
+        &app,
+        "POST",
+        Some(&other),
+        "/api/home/entries",
+        Some(json!({"entries":[unlisted["id"]],"timeline":"social","linked_posts":true})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(linked[0]["id"], unlisted["id"]);
+    let quote = |visibility| json!({"content":"引用","quote_post_id":unlisted["id"],"visibility":visibility,"apub":visibility!="local"});
+    for visibility in ["local", "public"] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                Some(&other),
+                "/api/home",
+                Some(quote(visibility))
+            )
+            .await?
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&other),
+            "/api/home",
+            Some(quote("unlisted"))
+        )
+        .await?
+        .0,
+        StatusCode::CREATED
+    );
+    // Guests cannot read this author's original by ID, even inside an otherwise visible card.
+    toasty::sql::statement("UPDATE users SET is_guest=true WHERE id=$1")
+        .bind(other.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("UPDATE home_posts SET reply_user_id=$1 WHERE id=$2")
+        .bind(other.as_str())
+        .bind(quoted_id)
+        .exec(&mut db)
+        .await?;
+    let (status, card) = request(
+        &app,
+        "GET",
+        Some(&other),
+        &format!("/api/home/{quoted_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(card["quote"]["uri"], note["quoteUrl"]);
+    assert!(card["quote"]["post"].is_null());
+    let (_, private) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish("限定", "followers")),
+    )
+    .await?;
+    body["quote_post_id"] = private["id"].clone();
+    assert_eq!(
+        request(&app, "POST", Some(&user), "/api/home", Some(body))
+            .await?
+            .0,
+        StatusCode::FORBIDDEN
+    );
     Ok(())
 }

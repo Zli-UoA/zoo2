@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.env
+.env.*
+*.pem
+*.key
+*.p8
+.autodev/
+ZooCrypto/

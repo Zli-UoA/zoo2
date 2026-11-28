@@ -319,7 +319,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
             "SELECT json_build_object('id', m.id, 'channel_id', m.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'parent_id', m.parent_id, 'user_id', m.user_id, \
                'author', m.display_data->'author', 'emojis', COALESCE(m.display_data->'emojis', '{{}}'::jsonb), \
-               {text}, 'created_at', m.created_at)::text \
+               {text}, 'created_at', m.created_at, 'updated_at', m.updated_at)::text \
              FROM (SELECT m.* FROM messages m WHERE m.deleted_at IS NULL AND m.content <> ''{likes} \
                AND ($9 = '' OR NOT COALESCE((m.display_data->'author'->>'is_bot')::boolean, false)) AND {common}) m \
              JOIN channels c ON c.id = m.channel_id ORDER BY m.created_at DESC, m.id DESC",
@@ -332,7 +332,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
                'channel_name', c.channel_name, 'is_dm', c.is_dm, 'parent_id', m.parent_id, \
                'user_id', a.uploader_id, 'author', m.display_data->'author', \
                'file_name', a.file_name, 'content_type', a.content_type, 'file_size', a.file_size, \
-               'width', a.width, 'height', a.height, 'is_sensitive', a.is_sensitive, \
+               'width', a.width, 'height', a.height, 'blurhash', a.blurhash, 'is_sensitive', a.is_sensitive, \
                {text}, 'created_at', a.created_at)::text \
              FROM (SELECT a.* FROM attachments a WHERE a.message_id IS NOT NULL{likes} \
                AND EXISTS (SELECT 1 FROM messages live WHERE live.id = a.message_id AND live.deleted_at IS NULL \

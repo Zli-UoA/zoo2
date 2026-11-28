@@ -3,8 +3,10 @@ use serde_json::Value;
 use tokio_postgres::{NoTls, Transaction};
 
 async fn selected(tx: &Transaction<'_>, wake: bool) -> anyhow::Result<Option<Value>> {
+    let token = uuid::Uuid::new_v4().to_string();
+    let no_team = String::new();
     Ok(tx
-        .query(&claim_sql(wake), &[&uuid::Uuid::new_v4().to_string()])
+        .query(&claim_sql(wake, false), &[&token, &no_team])
         .await?
         .first()
         .map(|r| serde_json::from_str(&r.get::<_, String>(0)).unwrap()))
@@ -120,6 +122,44 @@ async fn split_claims_preserve_wake_priority_backoff_leases_and_eligibility() ->
         "wake",
         "file fetching does not block channel sync"
     );
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn team_scoped_claims_do_not_take_another_workspaces_due_row() -> anyhow::Result<()> {
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let mine = format!("TEAM{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let other = format!("TEAM{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    for team in [&mine, &other] {
+        tx.execute(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+            &[team],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$1,false)",
+            &[team],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$1,'1')",
+            &[team],
+        )
+        .await?;
+    }
+    tx.execute(
+        "INSERT INTO slack_channel_syncs(team_id,slack_channel_id,available_at) VALUES($1,'C1','2019-01-01'),($2,'C1','2020-01-01')",
+        &[&other, &mine],
+    )
+    .await?;
+    let token = uuid::Uuid::new_v4().to_string();
+    let rows = tx.query(&claim_sql(false, true), &[&token, &mine]).await?;
+    let claimed: Value = serde_json::from_str(&rows[0].get::<_, String>(0))?;
+    assert_eq!(claimed["team_id"], mine);
     tx.rollback().await?;
     Ok(())
 }

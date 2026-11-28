@@ -1928,7 +1928,11 @@ async fn emoji_image(
             .map_err(|_| AppError::Internal(anyhow::anyhow!("Emoji image read failed")))?
             .into_bytes()
             .to_vec();
-        Ok(emoji_cache::Image { mime, bytes })
+        Ok(emoji_cache::Image {
+            mime,
+            bytes,
+            blurhash: None,
+        })
     })
     .await?;
     Ok((

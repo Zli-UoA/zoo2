@@ -1,0 +1,7 @@
+<resources>
+    <string name="channel_mentions">Mentions</string>
+    <string name="channel_replies">Replies</string>
+    <string name="channel_dm">Direct messages</string>
+    <string name="channel_messages">Channel messages</string>
+    <string name="channel_reactions">Reactions</string>
+</resources>

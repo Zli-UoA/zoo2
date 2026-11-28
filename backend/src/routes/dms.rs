@@ -26,7 +26,68 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/dms", post(create_or_get_dm))
 }
 
+async fn ensure_guest_can_dm(
+    tx: &mut toasty::Transaction<'_>,
+    auth_user_id: &str,
+    target_ids: &[&str],
+) -> Result<(), AppError> {
+    if crate::apps::events::guest(tx, auth_user_id).await? {
+        for target in target_ids {
+            crate::apps::one(
+                tx,
+                "SELECT '{}'::text FROM channel_user me \
+                 JOIN channel_user other ON other.channel_id=me.channel_id \
+                 JOIN channels c ON c.id=me.channel_id \
+                 WHERE me.user_id=$1 AND other.user_id=$2 AND c.deleted_at IS NULL LIMIT 1",
+                &[auth_user_id, target],
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 1 対 1 DM の作成・復帰を最大 2 回試す。PostgreSQL のデッドロック
+/// (`deadlock_detected`, SQLSTATE 40P01) だけを 1 回再試行し、既存の UNIQUE
+/// 制約違反による `Ok(None)` (呼び出し側の再試行) はそのまま保つ。
 async fn try_create_or_get_1on1_dm(
+    db: &mut toasty::Db,
+    auth_user_id: &str,
+    target_id: &str,
+    channel_name: &str,
+    custom_id: Option<String>,
+    encrypted: bool,
+) -> Result<Option<ApiResponse<ChannelResponse>>, AppError> {
+    let mut deadlock_retried = false;
+    loop {
+        match try_create_or_get_1on1_dm_once(
+            db,
+            auth_user_id,
+            target_id,
+            channel_name,
+            custom_id.clone(),
+            encrypted,
+        )
+        .await
+        {
+            Ok(result) => return Ok(result),
+            Err(AppError::Database(err))
+                if !deadlock_retried && AppError::is_deadlock_detected(&err) =>
+            {
+                // `try_create_or_get_1on1_dm_once` returns after dropping its
+                // transaction; toasty rolls back an unfinalized transaction on
+                // drop, so the retry starts from a clean connection.
+                tracing::warn!(
+                    "Concurrent 1-on-1 DM transaction deadlocked (SQLSTATE 40P01), retrying once: {err}"
+                );
+                deadlock_retried = true;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn try_create_or_get_1on1_dm_once(
     db: &mut toasty::Db,
     auth_user_id: &str,
     target_id: &str,
@@ -38,7 +99,16 @@ async fn try_create_or_get_1on1_dm(
     if encrypted {
         // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
         e2ee_channels::lock_members(&mut tx, &[auth_user_id, target_id]).await?;
+    } else {
+        // 平文 DM の再開で channel_user を追加する場合、DB トリガーが users をロックする。
+        // E2EE 切替は users → channels の順にロックするため、先に両ユーザーを ID 順で
+        // ロックし、channel KEY SHARE を取った後で users を待つ逆順を作らない。
+        e2ee_channels::lock_membership_users(&mut tx, &[auth_user_id, target_id]).await?;
     }
+    // users 行をロックした後に、待機中にゲストへ変更されていないか再確認する（ロック順は users → 読み取り専用 SELECT）。
+    // 無効化も同様に、ロック待ちの間に確定していたら 403 にする。
+    e2ee_channels::ensure_actor_not_deactivated(&mut tx, auth_user_id).await?;
+    ensure_guest_can_dm(&mut tx, auth_user_id, &[target_id]).await?;
 
     let existing = Channel::filter(
         Channel::fields()
@@ -62,10 +132,22 @@ async fn try_create_or_get_1on1_dm(
             let _ = tx.rollback().await;
             return Ok(None);
         }
+        // 暗号化 DM の復帰も、並行する退出（leave_channel の channels FOR UPDATE）と直列にする。
+        // メンバー単位のロック（users FOR NO KEY UPDATE → advisory）を取ったあと、所属の読み取りの
+        // 前にチャンネルの行を FOR NO KEY UPDATE で固定する。退出側があとで必要とする users の
+        // ロックは FK 検査の FOR KEY SHARE だけなので、この順序は退出側とデッドロックしない
+        // （暗号化への切り替えも同じ users → channels の順でロックを取る）。
+        if encrypted {
+            toasty::sql::query("SELECT id FROM channels WHERE id = $1 FOR NO KEY UPDATE")
+                .bind(existing_channel.id.as_str())
+                .exec(&mut tx)
+                .await?;
+        }
         let mut added_any = false;
         let now = crate::models::now_utc_millis();
 
-        // 1対1 DM の両者について membership を確認し、退出済みのユーザーをすべて復帰させる
+        // 先に退出済みメンバーを特定する。users は上でロック済み。
+        let mut missing_members = Vec::with_capacity(2);
         for uid in [auth_user_id, target_id] {
             let membership = ChannelUser::filter(
                 ChannelUser::fields()
@@ -78,27 +160,32 @@ async fn try_create_or_get_1on1_dm(
             .await?;
 
             if membership.is_none() {
-                let res = toasty::create!(ChannelUser {
-                    user_id: uid,
-                    channel_id: existing_channel.id.as_str(),
-                    joined_at: now,
-                })
-                .exec(&mut tx)
-                .await;
-
-                if let Err(err) = res {
-                    let _ = tx.rollback().await;
-                    // channel_user_pkey 衝突の場合は並行追加による競合なのでリトライ
-                    if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
-                        tracing::warn!(
-                            "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
-                        );
-                        return Ok(None);
-                    }
-                    return Err(AppError::from(err));
-                }
-                added_any = true;
+                missing_members.push(uid);
             }
+        }
+
+        // 1対1 DM の両者について、退出済みなら復帰させる。
+        for uid in missing_members {
+            let res = toasty::create!(ChannelUser {
+                user_id: uid,
+                channel_id: existing_channel.id.as_str(),
+                joined_at: now,
+            })
+            .exec(&mut tx)
+            .await;
+
+            if let Err(err) = res {
+                let _ = tx.rollback().await;
+                // ChannelUser_pkey 衝突の場合は並行追加による競合なのでリトライ
+                if AppError::is_unique_violation(&err, Some("ChannelUser_pkey")) {
+                    tracing::warn!(
+                        "Concurrent channel_user insert conflict (ChannelUser_pkey), retrying: {err}"
+                    );
+                    return Ok(None);
+                }
+                return Err(AppError::from(err));
+            }
+            added_any = true;
         }
 
         // 退出していたメンバーが戻ったときだけ増やす。
@@ -169,9 +256,9 @@ async fn try_create_or_get_1on1_dm(
     .await
     {
         let _ = tx.rollback().await;
-        if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+        if AppError::is_unique_violation(&err, Some("ChannelUser_pkey")) {
             tracing::warn!(
-                "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                "Concurrent channel_user insert conflict (ChannelUser_pkey), retrying: {err}"
             );
             return Ok(None);
         }
@@ -187,9 +274,9 @@ async fn try_create_or_get_1on1_dm(
     .await
     {
         let _ = tx.rollback().await;
-        if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+        if AppError::is_unique_violation(&err, Some("ChannelUser_pkey")) {
             tracing::warn!(
-                "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                "Concurrent channel_user insert conflict (ChannelUser_pkey), retrying: {err}"
             );
             return Ok(None);
         }
@@ -251,11 +338,10 @@ pub(crate) async fn create_or_get_dm(
 
     let mut db = state.db.clone();
 
+    let target_refs: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
     if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let mut tx = db.transaction().await?;
-        for target in &payload.target_user_ids {
-            crate::apps::one(&mut tx,"SELECT '{}'::text FROM channel_user me JOIN channel_user other ON other.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.user_id=$1 AND other.user_id=$2 AND c.deleted_at IS NULL LIMIT 1",&[&auth_user.id,target]).await?;
-        }
+        ensure_guest_can_dm(&mut tx, &auth_user.id, &target_refs).await?;
     }
     // 参加予定ユーザーの存在確認 (リード操作のためトランザクション外で実行)
     for uid in &payload.target_user_ids {
@@ -280,7 +366,7 @@ pub(crate) async fn create_or_get_dm(
     }
 
     // 1対1 DM
-    // 並行作成・並行復帰による UNIQUE 制約違反 (channels_channel_name_key, channel_user_pkey) に備え、
+    // 並行作成・並行復帰による UNIQUE 制約違反 (channels_channel_name_key, ChannelUser_pkey) に備え、
     // 競合時は最大 1 回リトライして既存チャンネルの取得・復帰処理を行う。
     if payload.target_user_ids.len() == 1 {
         let target_id = &payload.target_user_ids[0];
@@ -315,12 +401,18 @@ pub(crate) async fn create_or_get_dm(
 
     // グループ DM の新規作成
     let mut tx = db.transaction().await?;
+    let mut members: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
+    members.push(auth_user.id.as_str());
     if payload.encrypted {
         // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
-        let mut members: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
-        members.push(auth_user.id.as_str());
         e2ee_channels::lock_members(&mut tx, &members).await?;
+    } else {
+        e2ee_channels::lock_membership_users(&mut tx, &members).await?;
     }
+    // users 行をロックした後に、待機中にゲストへ変更されていないか再確認する（ロック順は users → 読み取り専用 SELECT）。
+    // 無効化も同様に、ロック待ちの間に確定していたら 403 にする。
+    e2ee_channels::ensure_actor_not_deactivated(&mut tx, &auth_user.id).await?;
+    ensure_guest_can_dm(&mut tx, &auth_user.id, &target_refs).await?;
     let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let group_uuid = Uuid::new_v4().to_string();
     let channel_name = format!("dm:group:{group_uuid}");

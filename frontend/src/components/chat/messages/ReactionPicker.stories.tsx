@@ -127,6 +127,8 @@ export const ManyCustomEmojis: Story = {
     await userEvent.click(within(dialog).getByRole("tab", { name: "カスタム絵文字" }));
     const last = await within(dialog).findByRole("button", { name: ":scroll_199:" });
     const viewport = within(dialog).getByRole("region", { name: "カスタム絵文字" });
+    // 画像の寸法で折り返しと高さが変わるため、読み込み完了後にスクロールする。
+    await Promise.all(Array.from(viewport.querySelectorAll("img"), (image) => image.decode()));
     await expect(viewport.clientHeight).toBeGreaterThan(0);
     await expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
     await expect(viewport.getBoundingClientRect().bottom).toBeLessThanOrEqual(
@@ -177,9 +179,11 @@ export const SearchExactFirst: Story = {
     );
     // カーソルを載せると、登録名をツールチップで表示する。
     await userEvent.hover(within(region).getByRole("button", { name: ":kusa:" }));
-    await expect(
-      await screen.findByText(":kusa:", { selector: '[data-slot="tooltip-content"]' }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByText(":kusa:", { selector: '[data-slot="tooltip-content"]' }),
+      ).toBeVisible(),
+    );
   }),
 };
 

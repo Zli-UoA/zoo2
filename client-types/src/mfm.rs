@@ -283,6 +283,8 @@ pub fn parse_with_accounts(
     let mut in_code = false;
     for raw in content.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
+        // 制御文字を含む行は、記法を解析する前に置き換える。端末に出力されるのを防ぐ。
+        let line = &*crate::text::sanitize_display(line);
         if line.trim_start().starts_with("```") {
             in_code = !in_code;
             continue;
@@ -485,11 +487,11 @@ impl Inline<'_> {
                 Span::styled(
                     format!(
                         " {}",
-                        if profile.display_name.is_empty() {
+                        crate::text::sanitize_display(if profile.display_name.is_empty() {
                             &profile.username
                         } else {
                             &profile.display_name
-                        }
+                        })
                     ),
                     style,
                 ),
@@ -507,6 +509,7 @@ fn account_initial(profile: &crate::accounts::AccountProfile) -> String {
     } else {
         &profile.display_name
     };
+    let label = crate::text::sanitize_display(label);
     label.chars().next().unwrap_or('?').to_string()
 }
 
@@ -684,8 +687,16 @@ fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>
     {
         return None;
     }
+    // 辞書の値も、サーバーから届いた文字列として無害化する。
     let emoji = unicode_shortcode(name)?;
-    Some((name.len() + 2, vec![Span::styled(emoji, base)]))
+    Some((name.len() + 2, shortcode_spans(&emoji, base)))
+}
+
+fn shortcode_spans(emoji: &str, base: Style) -> Vec<Span> {
+    vec![Span::styled(
+        crate::text::sanitize_display(emoji).into_owned(),
+        base,
+    )]
 }
 
 fn unixtime(body: &str, base: Style) -> Vec<Span> {
@@ -721,6 +732,36 @@ mod tests {
             .iter()
             .map(|line| line.to_string())
             .collect()
+    }
+
+    #[test]
+    fn shortcode_values_are_sanitized() {
+        // 共有の辞書は変えず、辞書の値から Span を作る部分だけを確かめる。
+        let spans = shortcode_spans("a\tb\u{1b}", Style::new());
+        let text: String = spans.iter().map(|span| span.content.as_str()).collect();
+        assert_eq!(text, "a    b\u{FFFD}");
+        assert_eq!(shortcode_spans("👍", Style::new())[0].content, "👍");
+    }
+
+    #[test]
+    fn control_characters_are_replaced_in_every_span() {
+        let esc = "\u{1b}]52;c;AAAA\u{7}";
+        for content in [
+            format!("```\n{esc}\n```"),
+            format!("本文{esc}"),
+            format!("> 引用{esc}"),
+            format!("**太字{esc}**"),
+        ] {
+            for line in parse(&content, None) {
+                for span in line.spans {
+                    assert!(
+                        !span.content.chars().any(char::is_control),
+                        "{content:?} -> {:?}",
+                        span.content
+                    );
+                }
+            }
+        }
     }
 
     #[test]

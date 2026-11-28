@@ -17,6 +17,7 @@ export interface HomeMedia extends ImageMetadata {
   url: string;
   name: string;
   media_type: string;
+  description?: string;
   image_id?: string;
   is_sensitive?: boolean;
 }
@@ -123,6 +124,7 @@ export const HomePostContent = memo(function HomePostContent({
   attachments = [],
   quote,
   previewLinks = true,
+  excludePreviewUrl,
 }: {
   content: string;
   emojis?: CustomEmoji[];
@@ -130,24 +132,32 @@ export const HomePostContent = memo(function HomePostContent({
   attachments?: AttachmentMetadata[];
   quote?: HomeQuote | null;
   previewLinks?: boolean;
+  excludePreviewUrl?: string;
 }) {
   const { t } = useTranslation();
   const apiBaseUrl =
     useOptionalCollections()?.config.apiBaseUrl ?? resolvePublicConfig().apiBaseUrl;
   // Remove only the standalone link appended by the receiver, not links in the comment.
   const body =
-    quote && content.endsWith(`<${quote.uri}>`)
-      ? content === `<${quote.uri}>`
-        ? ""
-        : content.endsWith(`\n\n<${quote.uri}>`)
-          ? content.slice(0, -`\n\n<${quote.uri}>`.length)
-          : content
-      : content;
+    quote && content.endsWith(`\n\nRE: <${quote.uri}>`)
+      ? content.slice(0, -`\n\nRE: <${quote.uri}>`.length)
+      : quote && content.endsWith(`<${quote.uri}>`)
+        ? content === `<${quote.uri}>`
+          ? ""
+          : content.endsWith(`\n\n<${quote.uri}>`)
+            ? content.slice(0, -`\n\n<${quote.uri}>`.length)
+            : content
+        : content;
   return (
     <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
       {body.trim() ? <ActivityPubContent text={body} emojis={emojis} /> : null}
       {previewLinks ? (
-        <LinkPreviews content={body} excludeUrl={quote?.uri} defer showFallback={false} />
+        <LinkPreviews
+          content={body}
+          excludeUrl={quote?.uri ?? excludePreviewUrl}
+          defer
+          showFallback={false}
+        />
       ) : null}
       {quote ? <QuoteCard quote={quote} /> : null}
       <MessageAttachments attachments={attachments} />
@@ -173,6 +183,10 @@ export const HomePostContent = memo(function HomePostContent({
                 <MediaPreview
                   {...image}
                   src={url}
+                  thumbnailSrc={
+                    path?.startsWith("/api/home/images/") ? `${url}?thumbnail=true` : undefined
+                  }
+                  alt={image.description}
                   name={image.name || t("home.image")}
                   contentType={image.media_type}
                   saveId={image.image_id ? `home:${image.image_id}` : `home:${url}`}

@@ -338,7 +338,10 @@ pub fn channel_name(channel: &Channel) -> String {
     if channel.is_dm {
         "ダイレクトメッセージ".to_owned()
     } else {
-        format!("#{}", channel.channel_name)
+        format!(
+            "#{}",
+            zoo2_client_core::text::sanitize_display(&channel.channel_name)
+        )
     }
 }
 

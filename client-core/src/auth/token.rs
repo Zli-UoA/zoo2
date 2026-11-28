@@ -653,6 +653,8 @@ pub enum DeleteOutcome {
 }
 
 const LOGOUT_REVOCATION_TIMEOUT: Duration = Duration::from_secs(2);
+/// ログアウトが、進行中の token の更新を待つ上限。
+const LOGOUT_IN_FLIGHT_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Lock the current session, revoke its latest refresh token, then remove only
 /// that session. Concurrent refreshes and logins using this protocol wait for
@@ -1136,6 +1138,66 @@ impl TokenManager {
             report_logout_cleanup_failure(cleanup_error, outcome)?,
             DeleteOutcome::Deleted
         ))
+    }
+
+    /// ログアウトする。以後この manager は token を保存せず、保存済みの session の
+    /// refresh token は、IdP に失効を要求してから `token.json` を消す。
+    /// 失効の要求は期限付きで、IdP に届かなくてもローカルのログアウトは進む。
+    pub async fn sign_out_and_revoke(&self) -> Result<bool> {
+        *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        // この manager が持つ session だけを対象にする。保存先が別のログインに
+        // 置き換わっていたら、失効も削除もしない。
+        // 進行中の更新が終わるのを待ち、その結果（保存できなかった新しい refresh token を含む）を
+        // 反映した状態で、失効の対象を決める。以後の更新は始まらない。
+        let _ = tokio::time::timeout(
+            LOGOUT_IN_FLIGHT_REFRESH_TIMEOUT,
+            self.task_tracker.shutdown_and_wait(),
+        )
+        .await;
+        let (expected, unsaved) = {
+            let state = self.state.lock().await;
+            // 更新には成功したが保存できなかった refresh token は、ファイルにない。
+            let unsaved = state
+                .pending_persist
+                .as_ref()
+                .and(state.tokens.refresh_token.clone());
+            (state.tokens.clone(), unsaved)
+        };
+        let result = async {
+            let Some(lock) = token_file_lock_async(&self.path, false).await? else {
+                return Ok(DeleteOutcome::Missing);
+            };
+            let (lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
+            logout_with_cleanup_result(
+                &self.path,
+                &self.oidc,
+                &self.http,
+                Some(expected),
+                lock,
+                cleanup_error,
+            )
+            .await
+        }
+        .await;
+        // 保存できなかった最新の refresh token は、この manager の session のものなので、
+        // ファイル側の結果（保存先がない、ロックを取れない、別のログインに置き換わった、
+        // 一時ファイルの回収に失敗した）にかかわらず失効を要求する。
+        if let Some(refresh_token) = unsaved {
+            let revoke = async {
+                let discovery = discover(&self.http, &self.oidc.issuer).await?;
+                if let Some(endpoint) = discovery.revocation_endpoint {
+                    let form = [
+                        ("token", refresh_token.as_str()),
+                        ("token_type_hint", "refresh_token"),
+                        ("client_id", self.oidc.client_id.as_str()),
+                    ];
+                    let _ = self.http.post(&endpoint).form(&form).send().await;
+                }
+                Ok::<(), anyhow::Error>(())
+            };
+            let _ = tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, revoke).await;
+        }
+        Ok(matches!(result?, DeleteOutcome::Deleted))
     }
 
     fn signed_out(&self) -> bool {
@@ -3209,6 +3271,271 @@ mod tests {
         let err = manager.access_token().await.unwrap_err();
         assert!(err.downcast_ref::<HttpError>().is_none(), "{err}");
         delete(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_revokes_the_refresh_token_and_removes_the_file() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=old-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke");
+        let initial = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &initial).unwrap();
+        let manager = TokenManager::new(reqwest::Client::new(), config, path.clone(), initial);
+
+        assert!(manager.sign_out_and_revoke().await.unwrap());
+        assert!(!path.exists());
+        assert!(manager.access_token().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_keeps_a_newer_login_in_the_same_file() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-newer-login");
+        let old = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &old).unwrap();
+        let manager = TokenManager::new(reqwest::Client::new(), config.clone(), path.clone(), old);
+        let mut newer = tokens(&config, now() + 3600, Some("newer-refresh"));
+        newer.session_id = "newer-session".into();
+        save(&path, &newer).unwrap();
+
+        assert!(!manager.sign_out_and_revoke().await.unwrap());
+        assert_eq!(load(&path, &config, Some(API)).unwrap().unwrap(), newer);
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_also_revokes_a_refresh_token_that_could_not_be_saved() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        for token in ["old-refresh", "unsaved-refresh"] {
+            Mock::given(method("POST"))
+                .and(path("/revoke"))
+                .and(body_string_contains(format!("token={token}")))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-unsaved");
+        let on_disk = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &on_disk).unwrap();
+        let manager = TokenManager::new(
+            reqwest::Client::new(),
+            config.clone(),
+            path.clone(),
+            on_disk.clone(),
+        );
+        {
+            // 更新には成功したが、保存できなかった状態。
+            let mut state = manager.state.lock().await;
+            state.tokens.refresh_token = Some("unsaved-refresh".into());
+            state.pending_persist = Some(on_disk);
+        }
+
+        assert!(manager.sign_out_and_revoke().await.unwrap());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_waits_for_a_refresh_in_flight_and_revokes_its_token() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(400))
+                    .set_body_json(json!({
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "expires_in": 300
+                    })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=rotated-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=old-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-in-flight");
+        let initial = tokens(&config, now() + 30, Some("old-refresh"));
+        save(&path, &initial).unwrap();
+        let manager = std::sync::Arc::new(TokenManager::new(
+            reqwest::Client::new(),
+            config,
+            path.clone(),
+            initial,
+        ));
+        let refreshing = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.access_token().await }
+        });
+        while !server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|request| request.url.path() == "/token")
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        manager.sign_out_and_revoke().await.unwrap();
+        let _ = refreshing.await;
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_revokes_an_unsaved_token_even_without_a_token_file() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=unsaved-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        // 保存先のディレクトリがない。
+        let path = temp_path("sign-out-and-revoke-no-file");
+        let initial = tokens(&config, now() + 3600, Some("old-refresh"));
+        let manager = TokenManager::new(reqwest::Client::new(), config, path, initial.clone());
+        {
+            let mut state = manager.state.lock().await;
+            state.tokens.refresh_token = Some("unsaved-refresh".into());
+            state.pending_persist = Some(initial);
+        }
+        let _ = manager.sign_out_and_revoke().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sign_out_and_revoke_revokes_an_unsaved_token_when_stale_temp_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=unsaved-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=old-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-stale-temp");
+        let on_disk = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &on_disk).unwrap();
+        let stale = unique_temporary_path(&path);
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let manager = TokenManager::new(
+            reqwest::Client::new(),
+            config,
+            path.clone(),
+            on_disk.clone(),
+        );
+        {
+            let mut state = manager.state.lock().await;
+            state.tokens.refresh_token = Some("unsaved-refresh".into());
+            state.pending_persist = Some(on_disk);
+        }
+
+        // 一時ファイルを回収できないので、結果はエラーだが、token.json は消え、失効は要求される。
+        assert!(manager.sign_out_and_revoke().await.is_err());
+        assert!(!path.exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

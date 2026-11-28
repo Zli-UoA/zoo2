@@ -330,6 +330,11 @@
     "markSensitive": "Mark images as sensitive",
     "showSensitive": "Show image",
     "hideSensitive": "Hide image",
+    "showSensitiveVideo": "Show video",
+    "hideSensitiveVideo": "Hide video",
+    "openOriginal": "Original file",
+    "imagePreviewFailed": "Could not load the image",
+    "altText": "Image description",
     "sensitiveShort": "Sensitive",
     "documentSummary": "Simplified text and cell preview. Formatting and layout may differ from the original.",
     "previewLimit": "This preview exceeds the size, file count or processing time limit. Download the file to view it.",
@@ -386,7 +391,10 @@
     "participantsFilterPartial": "Searching only the first {{loaded}} people loaded ({{count}} more can't be searched).",
     "participantsDescription": "People who have joined this thread.",
     "joinToReply": "Join the thread to reply.",
-    "reopenAndJoin": "Reopen and join"
+    "reopenAndJoin": "Reopen and join",
+    "errors": {
+      "busy": "This thread is busy. Wait a moment and try again."
+    }
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",
@@ -422,6 +430,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "Loading emojis…",
     "recent": "Recent emojis",
+    "accountEmojiCategory": "Accounts",
     "skinTone": "Skin tone"
   },
   "theme": {
@@ -471,6 +480,9 @@
     "readError": "Could not mark notifications as read",
     "mention": "{{actor}} mentioned you",
     "reply": "{{actor}} replied to you",
+    "channelMessage": "{{actor}} posted a message",
+    "channel_message": "{{actor}} posted a message",
+    "channelMessageContext": "Channel message",
     "reaction": "{{actor}} reacted to your message",
     "openMessage": "Open message",
     "unavailable": "Channel unavailable",
@@ -488,7 +500,24 @@
     "readStatus": "Read",
     "actors_one": "{{actor}} and 1 other",
     "actors_other": "{{actor}} and {{count}} others",
-    "forwardedPreview": "Forwarded a message"
+    "forwardedPreview": "Forwarded a message",
+    "settings": "Notification settings",
+    "settingsDefault": "Mentions and replies are the default.",
+    "settingsHint": "Set the notification level per channel from the channel header or the DM menu.",
+    "channelSettings": "Channel notification settings",
+    "openChannel": "Open channel",
+    "noChannel": "You have not joined any channels yet.",
+    "notMember": "Join this channel to change its notification settings.",
+    "levelTitle": "Notification level",
+    "levelLoading": "Loading notification settings…",
+    "levelAll": "All messages",
+    "levelAllHelp": "Get notified about regular posts too. Available in encrypted channels as well.",
+    "levelMentions": "Mentions and replies (default)",
+    "levelMentionsHelp": "Get notified about mentions, replies, DMs and reactions.",
+    "levelMute": "Mute",
+    "levelMuteHelp": "No regular notifications. Mentions of you and @channel / @here still reach you.",
+    "levelEncryptedHint": "You can choose “All messages” even in encrypted channels.",
+    "levelError": "Could not update the notification setting."
   },
   "webhooks": {
     "title": "Webhook settings",
@@ -889,6 +918,7 @@
     "deleted": "Post deleted",
     "newPosts": "View new posts ({{count}})",
     "quotedPost": "Quoted post",
+    "postUnavailable": "This post can’t be displayed",
     "quoteUnavailable": "This quoted post is unavailable",
     "openQuotedPost": "Open quoted post",
     "image": "Image",
@@ -919,6 +949,7 @@
       "unlisted": "Home",
       "followers": "Followers only"
     },
+    "followersAudience": "Followers",
     "audienceHint": {
       "local": "Visible inside Zoo only. Not delivered to other servers.",
       "public": "Anyone can read this. Delivered to remote followers.",
@@ -952,6 +983,7 @@
     "userSearch": "Search users",
     "search": "Search",
     "noUsers": "No users found",
+    "openAuthorProfile": "Open profile for {{author}}",
     "userDetails": "User details",
     "joinedAt": "Joined: {{date}}",
     "pullRefresh": "Pull to refresh",
@@ -1803,6 +1835,16 @@
   },
   "androidUpdate": {
     "title": "App updates"
+  },
+  "androidAttachmentCache": {
+    "title": "Image cache",
+    "description": "Stores images for this account on this device. Lowering the limit removes the least recently used images first. Turning it off clears saved images."
+  },
+  "androidNavigationCache": {
+    "title": "Navigation cache",
+    "description": "Sets the number of entries kept in memory for Home, post details and profiles, and separately for channels.",
+    "off": "Off",
+    "entries": "{{count}} entries"
   },
   "androidNotifications": {
     "enable": "Enable notifications",

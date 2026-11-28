@@ -2,30 +2,47 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { escapePattern, readChangedCases } from './browser-test-selection.mjs';
-import { readChanges } from './test-selection-diff.mjs';
+import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
+import { isStorybookVitestInput } from './frontend-test-selection-paths.mjs';
 import { selectSourceCases } from './vitest-test-selection.mjs';
 export { readChanges } from './test-selection-diff.mjs';
 
 const frontend = fileURLToPath(new URL('../../frontend/', import.meta.url));
-const shaPattern = /^[a-f0-9]{40}$/;
+
+export function isRelatedFrontendModule(path, eventName) {
+  return /^frontend\/src\/.+\.(ts|tsx)$/.test(path) && !path.endsWith('.d.ts') &&
+    (!/^frontend\/src\/(test|routes|sw)\//.test(path) || /\.vrt\.test\.tsx$/.test(path)) &&
+    !/^frontend\/src\/lib\/(i18n|pwa|oidc)\//.test(path) &&
+    (!path.startsWith('frontend/src/lib/e2ee/') ||
+      (eventName === 'pull_request' && !/(?:worker|wasm|runtime)/i.test(path))) &&
+    !/(?:^|\/)(?:routeTree\.gen|router|main)\.[^/]+$/.test(path);
+}
+
+export function isVitestInput(path) {
+  if (path === 'frontend/e2e/mock-idp.ts') return true;
+  return path.startsWith('frontend/') && !/^frontend\/(e2e\/|playwright[^/]*\.config\.ts$|scripts\/(?:pwa|avatar-cache|offline-csp)\.test\.mjs$)/.test(path);
+}
+
+function isPrVitestInput(change, project) {
+  if (['unit', 'browser'].includes(project) && change.path.startsWith('frontend/.storybook/') &&
+      !isStorybookVitestInput(change.path, project)) return false;
+  return !isLightweightChange(change) && isFrontendTestInput(change.path) &&
+    (isVitestInput(change.path) || !/^(frontend\/|infra\/)/.test(change.path));
+}
 
 // Vitest follows imports. Changes outside that graph need the complete suite.
-export function selectTests(eventName, event, changes) {
+export function selectTests(eventName, event, changes, project) {
   const full = reason => ({ mode: 'full', reason });
-  if (eventName !== 'pull_request') return full('main, merge queue and manual runs use the full suite');
-  const base = event?.pull_request?.base?.sha;
-  if (!shaPattern.test(base ?? '')) return full('missing or invalid pull request base');
+  if (!usesSelectiveTests(eventName)) return full('push and manual runs use the full suite');
+  if (!testBaseSha(eventName, event)) return full('missing or invalid event base');
   if (!changes?.length) return full('diff unavailable or empty');
+  if (eventName === 'pull_request') {
+    changes = changes.filter(change => isPrVitestInput(change, project));
+  }
+  if (!changes.length) return full('no applicable source diff');
   for (const { status, path } of changes) {
     if (!['A', 'M'].includes(status)) return full('deleted, renamed or unrecognized change');
-    if (!/^frontend\/src\/.+\.(ts|tsx)$/.test(path) || path.endsWith('.d.ts')) {
-      return full('configuration, dependencies or non-module resources changed');
-    }
-    if ((/^frontend\/src\/(test|routes|sw)\//.test(path) && !/\.vrt\.test\.tsx$/.test(path)) ||
-        /^frontend\/src\/lib\/(i18n|pwa|e2ee|oidc)\//.test(path) ||
-        /(?:^|\/)(?:routeTree\.gen|router|main)\.[^/]+$/.test(path)) {
-      return full('shared setup, workers, routes or runtime resources changed');
-    }
+    if (!isRelatedFrontendModule(path, eventName)) return full('configuration, shared setup or non-module resources changed');
   }
   return { mode: 'related', files: changes.map(({ path }) => path.slice('frontend/'.length)), reason: 'select tests through Vitest import dependencies' };
 }
@@ -38,6 +55,7 @@ export function testArguments(project, selection) {
   if (selection.mode === 'related') args.push('related', ...selection.files);
   args.push('--project', project, '--run');
   if (selection.mode === 'related') args.push('--passWithNoTests');
+  for (const file of selection.fullFiles ?? []) args.push('--exclude', file);
   if (selection.patterns) args.push('--testNamePattern', selection.patterns.join('|') || '(?!)');
   else if (selection.titles?.length) args.push('--testNamePattern', selection.titles.map(title => `(?:^| )${escapePattern(title)}$`).join('|'));
   if (project === 'storybook') args.push('--maxWorkers=1', '--fileParallelism=false');
@@ -67,19 +85,31 @@ export function selectCaseTitles(project, selection, changes, base, { git = exec
 
 export function runTests({ project, eventName, event, git = execFileSync, run = spawnSync, compiler, log = console.log }) {
   let changes;
-  if (eventName === 'pull_request') {
+  const base = testBaseSha(eventName, event);
+  if (usesSelectiveTests(eventName)) {
     try {
-      changes = readChanges(event?.pull_request?.base?.sha, git);
+      changes = workflowChanges('ci-frontend', readChanges(base, git));
     } catch {
       log('Test Selection: cannot read diff; running the full suite');
     }
   }
-  const base = event?.pull_request?.base?.sha;
-  const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes), changes, base, { git, compiler }), changes, base, { git, compiler, log });
+  if (eventName === 'pull_request' && changes) {
+    changes = classifyTranslationChanges(base, changes, { git })
+      .filter(change => isPrVitestInput(change, project));
+  }
+  const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes, project), changes, base, { git, compiler }), changes, base, { git, compiler, log });
   log(`Test Selection (${project}): ${selection.mode}; ${selection.reason}${selection.titles ? `; ${selection.titles.length} case titles` : ''}${selection.patterns ? `; ${selection.patterns.length} cases affected by source dependencies` : ''}`);
   // A real test failure is propagated; it is never retried as a full run.
-  const result = run('pnpm', testArguments(project, selection), { cwd: frontend, stdio: 'inherit' });
-  return result.status ?? 1;
+  const options = { cwd: frontend, stdio: 'inherit' };
+  if (!selection.fullFiles?.length || selection.patterns?.length) {
+    const result = run('pnpm', testArguments(project, selection), options);
+    if (result.status !== 0) return result.status ?? 1;
+  }
+  if (selection.fullFiles?.length) {
+    const args = [...testArguments(project, { mode: 'full' }), ...selection.fullFiles];
+    return run('pnpm', args, options).status ?? 1;
+  }
+  return 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

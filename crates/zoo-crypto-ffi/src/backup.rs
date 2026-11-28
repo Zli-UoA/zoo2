@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use zoo_crypto as core;
 
 use crate::{
-    CrossSigningKeyPair, InboundSessionStore, Result, SessionRef, ZooCryptoError, bytes32,
-    ed25519_from_base64, lock, parse_json,
+    CrossSigningKeyPair, InboundSessionStore, Result, SessionRef, bytes32, ed25519_from_base64,
+    lock, parse_json,
 };
 
 /// バックアップ鍵の秘密鍵（[`core::BackupDecryptionKey`]）。
@@ -77,20 +77,56 @@ impl BackupDecryptionKey {
     }
 
     /// `GET /api/e2ee/key_backup/keys` の行（`BackupRow` の JSON の一覧）を復号し、`store` に取り込む。
-    /// 復号できない行は飛ばす。返すのは捨てた行の数（取り込んだ数ではない。コアの `import_rows` と同じ）。
+    /// 復号できない行は飛ばす。返すのは、復号・検証に失敗して捨てた行の数（取り込んだ数ではない。コアの `import_rows` と同じ）。
+    /// 送信者が保存済みの鍵と違うなどの理由で保持されなかった行は数えないので、0 は、すべての行が復元されたことを意味しない。
     pub fn import_rows(&self, store: &InboundSessionStore, rows: Vec<String>) -> Result<u64> {
-        let rows = rows
-            .iter()
-            .map(|row| {
-                serde_json::from_str::<core::BackupRow>(row).map_err(|e| {
-                    ZooCryptoError::InvalidPayload {
-                        reason: format!("rows を読めません: {e}"),
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(self.inner.import_rows(&mut lock(&store.inner), &rows) as u64)
+        Ok(self.import_rows_with_changes(store, rows)?.discarded)
     }
+
+    /// 不正な行を個別に除外し、追加・置換したセッションだけを返す。
+    pub fn import_rows_with_changes(
+        &self,
+        store: &InboundSessionStore,
+        rows: Vec<String>,
+    ) -> Result<BackupImportResult> {
+        let mut changed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut discarded = 0;
+        let mut store = lock(&store.inner);
+        for row in rows {
+            let Ok(row) = serde_json::from_str::<core::BackupRow>(&row) else {
+                discarded += 1;
+                continue;
+            };
+            let result = self.inner.decrypt_row(&row).and_then(|session| {
+                let key = core::SessionRef {
+                    channel_id: session.channel_id.clone(),
+                    sender_key: session.sender_key.to_base64(),
+                    session_id: session.session_id.clone(),
+                };
+                store
+                    .import_backup_session(session)
+                    .map(|outcome| (key, outcome))
+            });
+            match result {
+                Ok((key, outcome)) if outcome != core::AddOutcome::Kept => {
+                    if seen.insert(key.clone()) {
+                        changed.push(key.into());
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => discarded += 1,
+            }
+        }
+        Ok(BackupImportResult { discarded, changed })
+    }
+}
+
+/// バックアップの取込結果。保存が必要な参照を、乱数を含むpickleの比較で判定しない。
+#[derive(Debug, uniffi::Record)]
+pub struct BackupImportResult {
+    pub discarded: u64,
+    pub changed: Vec<SessionRef>,
 }
 
 /// アップロードの証明を入れるヘッダーの名前（`X-Zoo-Backup-Proof`）。
@@ -138,7 +174,7 @@ pub fn next_backup_version(versions: String) -> Result<u64> {
     Ok(core::next_backup_version(&parse_versions(&versions)?))
 }
 
-fn parse_versions(versions: &str) -> Result<Vec<core::BackupVersionInfo>> {
+pub(crate) fn parse_versions(versions: &str) -> Result<Vec<core::BackupVersionInfo>> {
     Ok(core::BackupVersionInfo::list_from_json(&parse_json(
         "versions", versions,
     )?)?)

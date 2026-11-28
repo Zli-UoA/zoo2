@@ -1,7 +1,11 @@
-name: CI
+name: CI Backend
 on:
   # merge-queue.yaml がマージキューで呼び出す。
   workflow_call:
+    inputs:
+      test-plan:
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
@@ -11,29 +15,16 @@ on:
       - "docs/slack-event-coverage.json"
       - "frontend/src/lib/emoji/emoji-kitchen.json"
       - "infra/db/**"
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
       - "infra/compose.stack*.yaml"
       - "rust-toolchain.toml"
       - ".github/scripts/*test-selection*.mjs"
       - ".github/scripts/backend-e2e-selection.mjs"
-      - ".github/workflows/select-tests.yaml"
-      - ".github/workflows/ci-backend.yaml"
-      - ".github/workflows/select-runner.yaml"
-  pull_request:
-    paths:
-      - "backend/**"
-      - "crates/zoo-crypto/**"
-      - "crates/zoo-components/**"
-      - "docs/slack-event-coverage.json"
-      - "frontend/src/lib/emoji/emoji-kitchen.json"
-      - "infra/db/**"
-      - "infra/Dockerfile-backend-deploy*"
-      - "infra/Dockerfile-migrate-deploy*"
-      - "infra/compose.stack*.yaml"
-      - "rust-toolchain.toml"
-      - ".github/scripts/*test-selection*.mjs"
-      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/scripts/rust-test-selection/**"
       - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -48,6 +39,7 @@ concurrency:
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   test-selection:
+    if: inputs.test-plan == ''
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-backend
@@ -64,7 +56,10 @@ jobs:
   # The binary itself is built and linked by e2e (integration tests) and deploy-image (release),
   # so a separate `cargo build` here would only recompile what clippy already checked.
   check:
-    if: fromJSON(needs.test-selection.outputs.backend).check
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.check)
     needs: [runner, test-selection]
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
@@ -95,17 +90,23 @@ jobs:
           # Not shared with oidc-e2e (backend-debug): cache keys are immutable, and
           # its build-only save would keep clippy and test artifacts out of this one.
           shared-key: backend-check
+      - name: Rust test selector regression tests
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.verifyCaseSelector
+        run: cargo test --locked --manifest-path ../.github/scripts/rust-test-selection/Cargo.toml
       - name: format check
         run: cargo fmt --check
       - name: lint check
-        if: fromJSON(needs.test-selection.outputs.backend).full
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.full || fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.source
         run: cargo clippy
       - name: unit test
-        if: fromJSON(needs.test-selection.outputs.backend).full
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.full || fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.source
         run: cargo test --lib
 
   deploy-image:
-    if: fromJSON(needs.test-selection.outputs.backend).deploy
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.deploy)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.
@@ -253,7 +254,7 @@ jobs:
         # テストバイナリーは 1 つの DB を共有し、プロセス内の Mutex で共有行を守っているので、
         # バイナリー同士は並列に動かせない。そこで、DB ごと分けた 2 つの job に振り分ける。
         # backend-e2e-selection.mjs と同じ区分で、選ばれたテストがある側だけ実行する。
-        leg: ${{ fromJSON(needs.test-selection.outputs.backend).legs }}
+        leg: ${{ fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.legs }}
     env:
       COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PORT: "0"
@@ -264,7 +265,10 @@ jobs:
       # 34 個のテストバイナリーをそれぞれリンクするので、デバッグ情報を行番号だけにしてリンクを軽くする。
       # panic のバックトレースの行番号は残る。
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    if: fromJSON(needs.test-selection.outputs.backend).run
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.run)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
@@ -318,12 +322,15 @@ jobs:
           psql_exec() {
             docker compose -f infra/db/compose.yml exec -T postgres psql -q -X -v ON_ERROR_STOP=1 -U root "$@"
           }
-          for db in atlas_dev from_migrations from_schema; do
+          for db in from_migrations from_schema; do
             psql_exec -d postgres -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db"
           done
 
-          atlas migrate validate --dir file://infra/db/migrations \
-            --dev-url "${DATABASE_URL%/*}/atlas_dev?search_path=public&sslmode=disable"
+          # `migrate validate --dev-url` replays statements without preserving
+          # the per-file transaction required by `-- atlas:txmode file` (for
+          # example, LOCK TABLE ... NOWAIT). Validate checksums here; the
+          # PostgreSQL replay below validates SQL with each file's txmode.
+          atlas migrate validate --dir file://infra/db/migrations
 
           # atlas schema diff は未ログインだと関数を含む schema.sql を読めないため、
           # マイグレーションと schema.sql をそれぞれ空のDBに適用し、pg_dump の結果を比較します。
@@ -351,7 +358,7 @@ jobs:
               '
           }
           schema_diff=$(diff -u <(dump_schema from_migrations) <(dump_schema from_schema)) || true
-          for db in atlas_dev from_migrations from_schema; do
+          for db in from_migrations from_schema; do
             psql_exec -d postgres -c "DROP DATABASE $db"
           done
           if [ -n "$schema_diff" ]; then
@@ -376,7 +383,7 @@ jobs:
         env:
           DEV_AUTH_ENABLED: "true"
           LEG: ${{ matrix.leg }}
-          TEST_SELECTION: ${{ needs.test-selection.outputs.backend }}
+          TEST_SELECTION: ${{ toJSON(fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend) }}
         run: node ../.github/scripts/backend-e2e-selection.mjs
 
       - name: Show container logs
@@ -391,7 +398,10 @@ jobs:
 
 
   shared-emoji-projection:
-    if: fromJSON(needs.test-selection.outputs.backend).emoji
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.emoji)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 45

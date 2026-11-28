@@ -33,7 +33,7 @@ use zoo2_client_core::{
     http::{Credentials, HttpError},
 };
 use zoo2_client_types::{
-    api::Me,
+    api::{ChannelNotificationSettings, Me, NotificationLevel},
     ipc::{
         BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginFailed, LoginMethod,
         LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState,
@@ -301,6 +301,32 @@ impl Core {
         Ok(())
     }
 
+    /// チャンネルごとの通知レベル。共有の `ApiClient` で 1 回だけ取得する。
+    pub async fn channel_notification_settings(
+        &self,
+        channel_id: &str,
+    ) -> Result<ChannelNotificationSettings, IpcError> {
+        self.api()
+            .await?
+            .get_channel_notification_settings(channel_id)
+            .await
+            .map_err(to_ipc)
+    }
+
+    /// レベルを変える。Shape でも新しい値が届くが、画面を待たせないため応答で返す。
+    pub async fn set_channel_notification_level(
+        &self,
+        channel_id: &str,
+        level: NotificationLevel,
+    ) -> Result<ChannelNotificationSettings, IpcError> {
+        self.api()
+            .await?
+            .set_channel_notification_level(channel_id, level)
+            .await
+            .map_err(to_ipc)?;
+        Ok(ChannelNotificationSettings { level })
+    }
+
     fn token_path(&self) -> Result<std::path::PathBuf> {
         config_dir_for(APP_NAME)
             .map(|dir| token::token_path(&dir))
@@ -432,6 +458,7 @@ impl Core {
                 ShapeId::Channels,
                 ShapeId::Users,
                 ShapeId::ChannelUsers,
+                ShapeId::ChannelNotificationSettings,
                 ShapeId::Notifications,
             ]);
         }
@@ -1137,7 +1164,7 @@ impl Core {
     }
 
     /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
-    /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
+    /// `sign_out_and_revoke` するので、コマンドが持っている `ApiClient` で進行中だった更新が
     /// 後から終わっても、`token.json` は作り直されない。
     ///
     /// 待っている E2EE の再認証も取り消す (ループバックの待ち受けも閉じる)。ログアウトと 401 の
@@ -1184,7 +1211,8 @@ impl Core {
 
     async fn finish_end_session(&self, ending: EndingSession) -> Result<()> {
         if let Some(tokens) = ending.tokens {
-            tokens.sign_out().await?;
+            // refresh token は IdP に失効を要求してから、保存済みのトークンを消す。
+            tokens.sign_out_and_revoke().await?;
         } else if let Some((path, expected)) = ending.fallback {
             tokio::task::spawn_blocking(move || {
                 token::delete_if_unchanged(&path, expected.as_ref())

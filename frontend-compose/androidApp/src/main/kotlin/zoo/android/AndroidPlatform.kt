@@ -12,14 +12,33 @@ import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import zoo.*
+
+internal val navigationCacheLimits = listOf(0, 4, 8, 16)
+internal val attachmentCacheSizesMiB = listOf(0, 128, 256, 512, 1024, 2048)
+private const val DefaultAttachmentCacheMiB = 512
+internal const val BytesPerMiB = 1024L * 1024
+
+internal fun accountCacheDirectory(context: android.content.Context, base: String, user: String) =
+    context.cacheDir.resolve("accounts/${AttachmentImageDiskCache.digest("$base:$user")}")
+
+internal fun accountImageDirectory(context: android.content.Context, base: String, user: String) =
+    context.noBackupFilesDir.resolve("image-cache/${AttachmentImageDiskCache.digest("$base:$user")}/images")
+
+private fun imageCachePreference(account: String) = "attachment-cache-mib:$account"
+
+internal fun readImageCacheSize(context: android.content.Context, account: String): Int =
+    context.getSharedPreferences("preferences", android.content.Context.MODE_PRIVATE)
+        .getInt(imageCachePreference(account), DefaultAttachmentCacheMiB)
+        .takeIf { it in attachmentCacheSizesMiB } ?: DefaultAttachmentCacheMiB
 
 internal class AndroidPlatform(
     private val activity: Activity,
@@ -36,6 +55,7 @@ internal class AndroidPlatform(
      * 端末の削除」）。`count` が負なら数えられなかった。ログアウトしてよければ真を返す。
      */
     private val confirmUnbackedKeys: suspend (count: Int) -> Boolean,
+    val saveFile: suspend (ByteArray, String, String) -> Unit,
 ) : Platform {
     /** E2EE の端末（#359）。ログインしたあとに設定する。 */
     override var messageEncryption: zoo.MessageEncryption? = null
@@ -46,6 +66,16 @@ internal class AndroidPlatform(
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)
+    var navigationCacheLimit by mutableIntStateOf(prefs.getInt("navigation-cache-limit", 8).takeIf {
+        it in navigationCacheLimits
+    } ?: 8)
+        private set
+
+    fun saveNavigationCacheLimit(limit: Int) {
+        if (limit !in navigationCacheLimits) return
+        navigationCacheLimit = limit
+        prefs.edit().putInt("navigation-cache-limit", limit).apply()
+    }
     private val savedTheme = prefs.getString("theme", "system") ?: "system"
     private fun reducedMotion() = android.provider.Settings.Global.getFloat(
         activity.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
@@ -61,19 +91,41 @@ internal class AndroidPlatform(
     ))
         private set
 
-    private val history = NavigationHistory(env.path)
-    private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
-    private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
-    private val cache = AccountCache(cacheDirectory)
-    private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${hash("$base:$userId")}"))
-    private val mediaProxy = AndroidMediaProxy(activity, base)
-    private val images = AndroidImageCache(cacheDirectory.resolve("images"))
-    private val dictionaries = mutableMapOf<String, Row>()
+    var onNavigation: ((Environment) -> Unit)? = null
 
-    private fun hash(value: String) =
-        MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
-            "%02x".format(it)
+    private val history = NavigationHistory(env.path)
+    val navigationRevision: Long get() = history.revision
+    private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+    private val cacheDirectory = accountCacheDirectory(activity, base, userId)
+    private val cache = AccountCache(cacheDirectory)
+    private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${cacheDirectory.name}"))
+    private val mediaProxy = AndroidMediaProxy(activity, base)
+    private val attachmentCachePreference = imageCachePreference(cacheDirectory.name)
+    private val imageDirectory = accountImageDirectory(activity, base, userId)
+    var attachmentCacheSizeMiB by mutableIntStateOf(readImageCacheSize(activity, cacheDirectory.name))
+        private set
+    private val attachmentCacheSettingsLock = Mutex()
+    private val images = AndroidImageCache(
+        imageDirectory, maxBytes = attachmentCacheSizeMiB * BytesPerMiB,
+        legacyDirectory = cacheDirectory.resolve("images"),
+    )
+
+    suspend fun enforceAttachmentCacheSize(): Boolean = attachmentCacheSettingsLock.withLock {
+        images.resizeAttachmentCache(attachmentCacheSizeMiB * BytesPerMiB)
+    }
+
+    suspend fun saveAttachmentCacheSize(sizeMiB: Int): Boolean {
+        if (sizeMiB !in attachmentCacheSizesMiB) return false
+        return attachmentCacheSettingsLock.withLock {
+            if (attachmentCacheSizeMiB == 0 && sizeMiB > 0 && !images.resizeAttachmentCache(0)) {
+                return@withLock false
+            }
+            attachmentCacheSizeMiB = sizeMiB
+            prefs.edit().putInt(attachmentCachePreference, sizeMiB).apply()
+            images.resizeAttachmentCache(sizeMiB * BytesPerMiB)
         }
+    }
+    private val dictionaries = mutableMapOf<String, Row>()
 
     override fun imageFrames(bytes: ByteArray): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> =
         kotlinx.coroutines.flow.flow {
@@ -96,7 +148,14 @@ internal class AndroidPlatform(
 
     override suspend fun removeCache(key: String) = withContext(Dispatchers.IO) { cache.delete(key) }
 
-    fun close() { images.close() }
+    fun close() {
+        onNavigation = null
+        images.close()
+    }
+
+    suspend fun clearImageCache() = withContext(NonCancellable + Dispatchers.IO) {
+        AndroidImageCache.clearAccount(imageDirectory)
+    }
 
     private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {
         // logout closes the session scope; deletion must still finish, off the UI thread.
@@ -120,6 +179,7 @@ internal class AndroidPlatform(
 
     private fun applyNavigation(entry: NavigationHistory.Entry) {
         env = env.copy(path = entry.path, historyState = entry.state)
+        onNavigation?.invoke(env)
     }
 
     override fun replace(path: String) {
@@ -202,7 +262,10 @@ internal class AndroidPlatform(
             name == "haptic:threshold" && env.operationHaptics ->
                 activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             name == "toggleSwipeReply" -> updateInteraction("swipe-reply", !env.swipeReply)
-            name == "toggleOperationHaptics" -> updateInteraction("operation-haptics", !env.operationHaptics)
+            name == "toggleOperationHaptics" -> {
+                updateInteraction("operation-haptics", !env.operationHaptics)
+                if (env.operationHaptics) activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            }
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -259,8 +322,23 @@ internal class AndroidPlatform(
     override suspend fun image(url: String): ByteArray =
         mediaProxy.image(url, http, images, env.online)
 
-    override suspend fun attachmentImage(url: String): ByteArray =
-        images.signedImage(url)
+    override suspend fun refreshImage(url: String): ByteArray =
+        mediaProxy.image(url, http, images, env.online, bypassCache = true)
+
+    override suspend fun discardUndecodableImage(url: String, attachmentKey: String?, bytes: ByteArray) {
+        val source = if (attachmentKey != null) url else normalizedImageSource(base, url)?.toString() ?: return
+        images.discardUndecodableImage(source, attachmentKey, bytes)
+    }
+
+    override suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? =
+        images.cachedAttachmentPreview(cacheKey)
+
+    override suspend fun removeAttachmentImages(id: String) = images.removeAttachmentImages(id)
+
+    override suspend fun allowAttachmentImages(id: String) = images.allowAttachmentImages(id)
+
+    override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean): ByteArray =
+        images.signedImage(url, cacheKey, retry)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {
@@ -367,16 +445,12 @@ internal class AndroidPlatform(
         }
         withContext(Dispatchers.Main) {
             val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
-            val share = Intent(Intent.ACTION_SEND).apply {
-                this.type = type.ifEmpty { "application/octet-stream" }
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+            val share = fileShareIntent(activity.contentResolver, uri, name, type)
             activity.startActivity(Intent.createChooser(share, name))
         }
     }
 
-    private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
+    internal suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
         val rows =
             withContext(Dispatchers.IO) {
                 selected.map { uri ->
@@ -461,3 +535,13 @@ internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
 
 /** ログアウトの確認で、終わっていない失効があることを知らせる（鍵の件数の代わりに渡す値）。 */
 internal const val REVOCATION_PENDING_PROMPT = Int.MIN_VALUE
+
+
+internal fun fileShareIntent(resolver: android.content.ContentResolver, uri: Uri, name: String, mime: String): Intent =
+    Intent(Intent.ACTION_SEND).apply {
+        type = mime.ifEmpty { "application/octet-stream" }
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_TITLE, name)
+        clipData = android.content.ClipData.newUri(resolver, name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }

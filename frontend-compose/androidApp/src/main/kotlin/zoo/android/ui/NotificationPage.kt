@@ -6,16 +6,16 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -42,6 +42,7 @@ internal data class InboxItem(
     val kind: String = "", val unreadIds: List<String> = emptyList(), val destination: String? = null,
     val reactions: List<InboxReactionEmoji> = emptyList(),
     val reactionContext: InboxReactionContext? = null,
+    val followResponse: String? = null,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -57,6 +58,7 @@ internal fun NotificationPage(
     onOpen: (String) -> Unit,
     loadMore: () -> Unit,
     loadFailed: Boolean,
+    appendFailed: Boolean = false,
     retry: () -> Unit,
     respond: (String, String, Boolean) -> Unit,
 ) {
@@ -68,6 +70,7 @@ internal fun NotificationPage(
         }
     }
     val scroll = rememberLazyListState()
+    if (items.isEmpty()) return
     val visible by remember {
         derivedStateOf {
             val layout = scroll.layoutInfo
@@ -81,10 +84,10 @@ internal fun NotificationPage(
     val nextPage by rememberUpdatedState(loadMore)
     val lastVisible = items.lastOrNull()?.id?.takeIf { it in visible }
     LaunchedEffect(lastVisible, foreground, nextCursor) {
-        if (foreground && lastVisible != null && nextCursor != null) nextPage()
+        if (foreground && !appendFailed && lastVisible != null && nextCursor != null) nextPage()
     }
     val viewed by rememberUpdatedState(onViewed)
-    LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp)) {
+    LazyColumn(state = scroll, modifier = Modifier.fillMaxSize()) {
         items(items, key = { it.id }) { item ->
             val shouldRead = foreground && item.unread && item.id in visible
             LaunchedEffect(item.id, shouldRead, item.unreadIds) {
@@ -93,11 +96,20 @@ internal fun NotificationPage(
                     viewed(item.id)
                 }
             }
+            val channelReactions by key(item.reactionContext) {
+                produceState(emptyList<InboxReactionEmoji>(), foreground && item.id in visible) {
+                    if (foreground && item.id in visible) {
+                        value = item.reactionContext?.let { loadReactions(it) }.orEmpty()
+                    }
+                }
+            }
             val target = item.target
             Row(
                 Modifier.fillMaxWidth()
-                    .then(if (target != null) Modifier.clickable { onOpen(target) } else Modifier)
-                    .padding(vertical = 12.dp),
+                    .then(if (target != null) Modifier.clickable { viewed(item.id); onOpen(target) } else Modifier)
+                    .background(if (item.unread) colors.suggestionSelected.copy(alpha = .5f)
+                        else Color.Transparent, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Box(Modifier.size(42.dp)) {
@@ -108,62 +120,52 @@ internal fun NotificationPage(
                             .background(colors.background, CircleShape).padding(2.dp)
                             .background(colors.quietSurface, CircleShape),
                         contentAlignment = Alignment.Center,
-                    ) { UiGlyph(item.kind.activityIcon(), colors.foreground, iconSize = 12.dp) }
+                    ) {
+                        val reaction = (item.reactions + channelReactions).firstOrNull()
+                        if (reaction != null) InboxReaction(reaction, colors, loadAvatar)
+                        else UiGlyph(item.kind.activityIcon(), colors.foreground, iconSize = 12.dp)
+                    }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Column {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             val author = item.actors.firstOrNull()?.name.orEmpty()
-                            Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
+                            Text(if (item.actors.size > 1) androidLabel("notifications.actors_other", "$author ほか${item.actors.size - 1}人", "actor" to author, "count" to (item.actors.size - 1).toString()) else author, Modifier.weight(1f),
                                 color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1,
                                 overflow = TextOverflow.Ellipsis)
-                            Text(item.time, color = colors.secondary, fontSize = 12.sp)
+                            Text(item.time, color = colors.secondary, fontSize = metadataTextSize)
                             if (item.unread) Box(
                                 Modifier.size(8.dp).background(colors.accent, CircleShape).border(1.dp, colors.secondary, CircleShape)
                                     .semantics { contentDescription = "未読" },
                             )
                         }
-                        val channelReactions by key(item.reactionContext) {
-                            produceState(emptyList<InboxReactionEmoji>(), foreground && item.id in visible) {
-                                if (foreground && item.id in visible) {
-                                    value = item.reactionContext?.let { loadReactions(it) }.orEmpty()
-                                }
-                            }
-                        }
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            itemVerticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(item.summary, color = colors.secondary, fontSize = 13.sp)
-                            (item.reactions + channelReactions).distinct().forEach { reaction ->
-                                key(reaction) { InboxReaction(reaction, colors, loadAvatar) }
-                            }
-                        }
-                    }
-                    if (item.actors.size > 1) {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            items(item.actors.drop(1), key = { it.id }) { actor ->
-                                InboxAvatar(actor, 24.dp, colors, loadAvatar)
-                            }
-                        }
+                        if (item.detail.isNullOrBlank()) Text(item.summary, color = colors.secondary, fontSize = 13.sp)
                     }
                     item.detail?.let {
                         // 本文と同じく、このアプリのリンクは短くし、アプリ内で移動する。
-                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3)
+                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3, mentionColors = colors)
                     }
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            UiGlyph(if (it.startsWith("#")) UiIcon.Channels else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
+                            UiGlyph(if (it.startsWith("#") && item.kind == "mention") UiIcon.AlternateEmail
+                                else if (it.startsWith("#")) item.kind.activityIcon() else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                             Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
-                    if (item.followActor != null && item.followActivity != null) {
+                    item.followResponse?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
+                    if (item.followActor != null && item.followActivity != null && item.followResponse in listOf(null, "再試行できます")) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextAction("承認", colors, icon = UiIcon.Check) { respond(item.followActor, item.followActivity, true) }
                             TextAction("拒否", colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { respond(item.followActor, item.followActivity, false) }
                         }
                     }
                 }
+            }
+        }
+        if (appendFailed) item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("過去の通知を取得できませんでした", Modifier.weight(1f), color = colors.secondary)
+                TextAction("再試行", colors, icon = UiIcon.Refresh, click = loadMore)
             }
         }
     }
@@ -175,8 +177,11 @@ private fun InboxReaction(
     colors: AndroidColors,
     loadImage: suspend (String) -> ImageBitmap?,
 ) {
-    val bitmap by produceState<ImageBitmap?>(null, reaction.image) {
-        value = reaction.image?.let { loadImage(it) }
+    val bitmap = key(reaction.image, LocalCachedTimelineImage.current) {
+        val initial = cachedTimelineIcon(reaction.image)
+        produceState(initial) {
+            if (initial == null) value = reaction.image?.let { loadImage(it) }
+        }.value
     }
     val image = bitmap
     if (image != null) Image(image, reaction.emoji, Modifier.size(18.dp), contentScale = ContentScale.Fit)
@@ -190,19 +195,20 @@ private fun InboxAvatar(
     colors: AndroidColors,
     loadAvatar: suspend (String) -> ImageBitmap?,
 ) {
-    val bitmap by key(actor.avatar) {
-        produceState<ImageBitmap?>(null) { value = actor.avatar?.let { loadAvatar(it) } }
+    val bitmap by key(actor.avatar, LocalCachedTimelineImage.current) {
+        val initial = cachedTimelineIcon(actor.avatar)
+        produceState(initial) {
+            if (initial == null) value = actor.avatar?.let { loadAvatar(it) }
+        }
     }
-    Box(Modifier.size(size).clip(CircleShape).background(colors.inputSurface)
-        .semantics { contentDescription = actor.name }, contentAlignment = Alignment.Center) {
-        val loaded = bitmap
-        if (loaded != null) Image(loaded, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else Text(actor.name.take(1), color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.userName)
-    }
+    UserAvatar(actor.name, bitmap, Modifier.size(size).semantics { contentDescription = actor.name },
+        colors.inputSurface, colors.foreground, 13.sp, AndroidWeights.userName)
 }
 
 private fun String?.activityIcon(): UiIcon = when (this) {
-    "like" -> UiIcon.Emoji
+    "like" -> UiIcon.AddReaction
+    "missed_call" -> UiIcon.PhoneOff
+    "channel_message" -> UiIcon.Bubble
     "reply", "dm" -> UiIcon.Bubble
     "mention" -> UiIcon.AlternateEmail
     "repost" -> UiIcon.Repost

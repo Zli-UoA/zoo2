@@ -166,9 +166,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 ));
             }
         };
-        let slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
-            .iter()
-            .any(|k| info["channel"][*k] == true);
+        let mut slack_private = super::sync::channel_is_private(&info["channel"]);
         if slack_private && !target.private {
             tracing::warn!(
                 team = %target.team_id,
@@ -191,6 +189,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 .get(&target.team_id)
                 .cloned()
                 .unwrap_or_default(),
+            fallback_names: HashMap::new(),
             files: FilePolicy {
                 token: config.slack.import_bot_token.is_some(),
                 max_size: config.s3.max_file_size,
@@ -224,7 +223,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 slack: &mut slack,
                 ctx: &mut ctx,
                 target: &target,
-                slack_private,
+                slack_private: &mut slack_private,
                 apply: options.apply,
                 oldest,
                 max_pages: options.max_pages,
@@ -290,7 +289,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                         &mut slack,
                         &mut ctx,
                         &target,
-                        slack_private,
+                        &mut slack_private,
                         &filtered_messages,
                         options.apply,
                         &mut report,
@@ -322,7 +321,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 slack: &mut slack,
                 ctx: &mut ctx,
                 target: &target,
-                slack_private,
+                slack_private: &mut slack_private,
                 apply: options.apply,
                 oldest,
                 max_pages: options.max_pages,
@@ -360,7 +359,7 @@ struct ChannelScanCtx<'a> {
     slack: &'a mut Slack,
     ctx: &'a mut Context,
     target: &'a TargetChannel,
-    slack_private: bool,
+    slack_private: &'a mut bool,
     apply: bool,
     oldest: Option<&'a str>,
     max_pages: Option<usize>,
@@ -431,7 +430,7 @@ async fn scan_thread_roots(
                     scan.slack,
                     scan.ctx,
                     scan.target,
-                    scan.slack_private,
+                    &mut *scan.slack_private,
                     &replies,
                     scan.apply,
                     scan.report,
@@ -466,7 +465,7 @@ async fn process_messages(
     slack: &mut Slack,
     ctx: &mut Context,
     target: &TargetChannel,
-    slack_private: bool,
+    slack_private: &mut bool,
     messages: &[SlackMessage],
     apply: bool,
     report: &mut Report,
@@ -485,19 +484,180 @@ async fn process_messages(
     with_forwards.sort_by(|a, b| compare_ts(&a.ts, &b.ts));
 
     if apply {
+        // ページを取った時点の可視性は分からない。書き込む直前に、Slack のチャンネルが今も
+        // 非公開かを確かめ、公開の取り込み先へ非公開の内容を書かない (sync::store と同じ)。
+        refresh_slack_privacy_with_retry(slack, &target.slack_channel_id, slack_private)
+            .await
+            .map_err(|err| anyhow::anyhow!("{}", sync_error_message(&err)))?;
         let owned: Vec<SlackMessage> = with_forwards.iter().map(|m| (*m).clone()).collect();
         lookup_profiles(db, slack, ctx, &owned)
             .await
             .map_err(|err| anyhow::anyhow!("{}", sync_error_message(&err)))?;
     }
 
+    // 失敗したトランザクションの中で作った利用者は DB に残らない。`resolve_users` は
+    // 既存のキャッシュも入れ替えるため、失敗したら丸ごと元に戻す (hints::process /
+    // recheck::run と同じく、存在しない ID を続くページが使わないようにする)。
+    let previous_users = ctx.users.clone();
+    let result = store_forwards(
+        db,
+        ctx,
+        target,
+        *slack_private,
+        &with_forwards,
+        apply,
+        report,
+    )
+    .await;
+    if result.is_err() {
+        ctx.users = previous_users;
+    }
+    result
+}
+
+/// 書き込む直前の可視性の確認も、ほかの Slack Web API の呼び出しと同じ上限付きの
+/// 429 再試行にする。長すぎる `Retry-After` や再試行の上限を超えたら、ページを
+/// 書かずにエラーを返す。
+async fn refresh_slack_privacy_with_retry(
+    slack: &mut Slack,
+    slack_channel: &str,
+    slack_private: &mut bool,
+) -> Result<(), SyncError> {
+    refresh_slack_privacy_with_retry_using(slack, slack_channel, slack_private, tokio::time::sleep)
+        .await
+}
+
+async fn refresh_slack_privacy_with_retry_using<F, Fut>(
+    slack: &mut Slack,
+    slack_channel: &str,
+    slack_private: &mut bool,
+    sleep_fn: F,
+) -> Result<(), SyncError>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    if *slack_private {
+        return Ok(());
+    }
+    let info = slack_get_with_retry_using(
+        slack,
+        "conversations.info",
+        &[("channel", slack_channel)],
+        sleep_fn,
+    )
+    .await?;
+    *slack_private |= super::sync::channel_is_private(&info["channel"]);
+    Ok(())
+}
+
+/// このページで実際に新しく挿入する投稿だけを、読み取り専用の問い合わせで選ぶ。
+///
+/// 転送元が Zoo にない、対応付けた投稿が別チャンネルにある、決定的な ID が別の投稿に
+/// 使われている、解決した転送先が空、といった投稿は、このあとの保存ループで書き込みを
+/// しない。ユーザーのプレースホルダも作らないよう、ここで挿入候補から外す。
+async fn insert_candidates<'m>(
+    tx: &mut toasty::Transaction<'_>,
+    target: &TargetChannel,
+    messages: &[&'m SlackMessage],
+) -> Result<Vec<&'m SlackMessage>, AppError> {
+    let mut candidates = Vec::new();
+    for message in messages.iter().copied() {
+        let own = mapped(tx, &target.team_id, &target.slack_channel_id, &message.ts).await?;
+        if let Some((mapped_id, origin)) = &own {
+            if origin == "zoo" {
+                continue;
+            }
+            let other = query(
+                tx,
+                "SELECT json_build_object('other',channel_id <> $2)::text FROM messages WHERE id = $1",
+                &[mapped_id, &target.channel_id],
+            )
+            .await?;
+            if other.first().is_some_and(|row| row["other"] == true) {
+                continue;
+            }
+        }
+        let derived = own.is_none();
+        let id = own.map(|(id, _)| id).unwrap_or_else(|| {
+            super::message_id(&target.team_id, &target.slack_channel_id, &message.ts)
+        });
+        if derived && id_taken_by_other(tx, &id, &target.channel_id, &message.ts).await? {
+            continue;
+        }
+        // 予約 (`reserve_unmapped`) は保存ループで行う。ここでは読み取りだけにして、
+        // channels の行を取る前に転送先の有無を確かめる。
+        let forwarded_ids = resolve_forwarded_ids(tx, &target.team_id, message, false).await?;
+        if forwarded_ids.is_empty() {
+            continue;
+        }
+        let ts_guard = if derived { message.ts.as_str() } else { "" };
+        let existing = query(
+            tx,
+            "SELECT json_build_object('ok',true)::text FROM messages WHERE id=$1 AND channel_id=$2 \
+             AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+            &[&id, &target.channel_id, ts_guard],
+        )
+        .await?;
+        if existing.is_empty() {
+            candidates.push(message);
+        }
+    }
+    Ok(candidates)
+}
+
+/// 転送・引用を含む投稿を、1 ページ分まとめて保存する。
+///
+/// ロック順は `sync::store` / `hints::apply` / `recheck::apply_chunk` と同じ
+/// (advisory -> users -> slack_channels -> channels)。ユーザーの解決を `channels` の
+/// `FOR SHARE` より先に行い、暗号化への切り替え (users -> channels `FOR UPDATE`) と
+/// ロック順が逆転しないようにする。投稿由来の fallback 名 (`username` / `bot_profile.name`) は
+/// ワークスペース全体の表示名に使わない (`resolve_message_users` に `true` を渡す)。
+#[allow(clippy::too_many_arguments)]
+async fn store_forwards(
+    db: &mut toasty::Db,
+    ctx: &mut Context,
+    target: &TargetChannel,
+    slack_private: bool,
+    messages: &[&SlackMessage],
+    apply: bool,
+    report: &mut Report,
+) -> anyhow::Result<()> {
     let mut tx = db.transaction().await.map_err(AppError::from)?;
+    let mut resolved_insert_ts = HashSet::<&str>::new();
     if apply {
         suppress_app_events(&mut tx).await?;
+        // ZIP 再マッピングと同じ Slack チャンネルの助言ロックを、ユーザーより先に取る
+        super::worker::lock_zip_target_advisory(&mut tx, &target.team_id, &target.slack_channel_id)
+            .await?;
+        // 挿入する投稿が 1 件もないページでは、ユーザーも作らない。users -> channels の
+        // ロック順を保ったまま、実際に書き込む投稿の分だけを先に解決する。
+        let candidates = insert_candidates(&mut tx, target, messages).await?;
+        if !candidates.is_empty() {
+            resolved_insert_ts.extend(candidates.iter().map(|m| m.ts.as_str()));
+            super::worker::resolve_message_users(
+                &mut tx,
+                ctx,
+                &target.slack_channel_id,
+                true,
+                &candidates,
+            )
+            .await?;
+        }
+        super::sync::ensure_target_unchanged(
+            &mut tx,
+            &target.team_id,
+            &target.slack_channel_id,
+            &target.channel_id,
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("{}", sync_error_message(&err)))?;
+        // channels の行は、users のロックのあとで取る
         ensure_target_writable(&mut tx, &target.channel_id, slack_private).await?;
+        super::worker::allow_deleted_thread_parent(&mut tx).await?;
     }
 
-    for message in with_forwards {
+    for message in messages.iter().copied() {
         let own = mapped(
             &mut tx,
             &target.team_id,
@@ -505,8 +665,21 @@ async fn process_messages(
             &message.ts,
         )
         .await?;
-        if own.as_ref().is_some_and(|(_, origin)| origin == "zoo") {
-            continue;
+        if let Some((mapped_id, origin)) = &own {
+            if origin == "zoo" {
+                continue;
+            }
+            // 対応付けた Zoo のメッセージが別のチャンネルにあるなら、触らない
+            // (取り込み先の付け替え後に、古い取り込み先の投稿を作り直さない)
+            let other = query(
+                &mut tx,
+                "SELECT json_build_object('other',channel_id <> $2)::text FROM messages WHERE id = $1",
+                &[mapped_id, &target.channel_id],
+            )
+            .await?;
+            if other.first().is_some_and(|row| row["other"] == true) {
+                continue;
+            }
         }
         let derived = own.is_none();
         let id = own.map(|(id, _)| id).unwrap_or_else(|| {
@@ -553,6 +726,11 @@ async fn process_messages(
                 }
             }
             None => {
+                if apply && !resolved_insert_ts.contains(message.ts.as_str()) {
+                    // 事前の候補抽出後に別トランザクションで挿入可能になった投稿は、
+                    // channels のロック後に users を解決しないよう今回は飛ばす (次回実行で拾える)
+                    continue;
+                }
                 report.matched_inserts += 1;
                 if apply {
                     insert_message(
@@ -741,6 +919,9 @@ fn sync_error_message(err: &SyncError) -> String {
         SyncError::NoAccess(e) => format!("no access: {e}"),
         SyncError::InvalidCursor => "invalid cursor".into(),
         SyncError::LeaseLost => "lease lost".into(),
+        SyncError::TargetChanged => "target changed".into(),
+        SyncError::PrivateTargetViolation => "private target violation".into(),
+        SyncError::PrivacyCheckFailed(e) => format!("privacy check failed: {e}"),
         SyncError::Failed(e) => e.clone(),
     }
 }
@@ -788,6 +969,84 @@ mod tests {
             "{}",
             sync_error_message(&err)
         );
+        assert_eq!(sleeps.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_slack_privacy_uses_the_same_bounded_retry_then_observes_privacy() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/conversations.info"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/conversations.info"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "channel": {"id": "C1", "is_private": true},
+            })))
+            .with_priority(2)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let key = [8u8; 32];
+        let enc = super::super::crypto::encrypt(&key, "xoxp-test").unwrap();
+        let mut slack = Slack::from_tokens(server.uri(), key, vec![("u1".into(), enc)]).unwrap();
+        let sleeps = Arc::new(AtomicUsize::new(0));
+        let sleeps_ref = Arc::clone(&sleeps);
+        let mut private = false;
+
+        if let Err(err) =
+            refresh_slack_privacy_with_retry_using(&mut slack, "C1", &mut private, move |d| {
+                assert_eq!(d, Duration::from_secs(1));
+                sleeps_ref.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(())
+            })
+            .await
+        {
+            panic!("{}", sync_error_message(&err));
+        }
+
+        assert!(private);
+        assert_eq!(sleeps.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_slack_privacy_skips_a_long_retry_after_without_writing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/conversations.info"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "600"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let key = [9u8; 32];
+        let enc = super::super::crypto::encrypt(&key, "xoxp-test").unwrap();
+        let mut slack = Slack::from_tokens(server.uri(), key, vec![("u1".into(), enc)]).unwrap();
+        let sleeps = Arc::new(AtomicUsize::new(0));
+        let sleeps_ref = Arc::clone(&sleeps);
+        let mut private = false;
+
+        let err =
+            refresh_slack_privacy_with_retry_using(&mut slack, "C1", &mut private, move |_| {
+                sleeps_ref.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(())
+            })
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SyncError::RateLimited(600)),
+            "{}",
+            sync_error_message(&err)
+        );
+        assert!(!private);
         assert_eq!(sleeps.load(Ordering::SeqCst), 0);
     }
 

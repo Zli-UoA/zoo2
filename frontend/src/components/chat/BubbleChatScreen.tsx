@@ -5,7 +5,7 @@ import { cn } from "cn";
 
 import { useBubbleChat } from "../../hooks/useBubbleChat";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useUsers } from "../../hooks/useRealtime";
+import { useAllUsers } from "../../hooks/useRealtime";
 import { useMediaQuery } from "../layout/useMediaQuery";
 import { AppAvatar } from "./AppIdentity";
 import {
@@ -54,7 +54,7 @@ export function BubbleChatScreen() {
   const { t } = useTranslation();
   const { entries, content, isSharing, setContent, clearContent } = useBubbleChat(true);
   const { currentUserId } = useCurrentUser();
-  const usersQuery = useUsers();
+  const usersQuery = useAllUsers();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const isDesktop = useMediaQuery("(min-width: 768px)");

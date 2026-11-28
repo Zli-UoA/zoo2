@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "works.zli.zoo"
     compileSdk = 36
+    testOptions.unitTests.isIncludeAndroidResources = true
     defaultConfig {
         applicationId = "works.zli.zoo"
         minSdk = 26
@@ -105,6 +106,9 @@ val emojiCatalogs by tasks.registering(Sync::class) {
     from("../src/commonMain/composeResources/files") {
         include("shortcodes.json", "emoji-kitchen.json")
     }
+    from("../../frontend/public/emojibase-data") {
+        include("*/data.json", "*/messages.json", "LICENSE")
+    }
     into(layout.buildDirectory.dir("generated/assets/emoji"))
 }
 
@@ -156,16 +160,6 @@ val electricLicense by
     }
 
 tasks.named("preBuild") { dependsOn(electricLicense) }
-
-val launcherIcon by
-    tasks.registering(Sync::class) {
-        from("../../frontend/public/icons/icon-512.png") { rename { "zoo_launcher.png" } }
-        into(layout.buildDirectory.dir("generated/launcherRes/drawable-nodpi"))
-    }
-
-android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/launcherRes"))
-
-tasks.named("preBuild") { dependsOn(launcherIcon) }
 
 // Bundle the shared WebRTC engine; SIP and credentials stay on the backend.
 // frontend/build contains media-viewer build tools and is an input of buildMediaPreview.

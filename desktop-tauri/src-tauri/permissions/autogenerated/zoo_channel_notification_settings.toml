@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-channel-notification-settings"
+description = "Enables the zoo_channel_notification_settings command without any pre-configured scope."
+commands.allow = ["zoo_channel_notification_settings"]
+
+[[permission]]
+identifier = "deny-zoo-channel-notification-settings"
+description = "Denies the zoo_channel_notification_settings command without any pre-configured scope."
+commands.deny = ["zoo_channel_notification_settings"]

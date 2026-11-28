@@ -330,6 +330,11 @@
     "markSensitive": "画像をセンシティブとして投稿",
     "showSensitive": "画像を表示",
     "hideSensitive": "画像を隠す",
+    "showSensitiveVideo": "動画を表示",
+    "hideSensitiveVideo": "動画を隠す",
+    "openOriginal": "元のファイル",
+    "imagePreviewFailed": "画像を読み込めませんでした",
+    "altText": "画像の説明",
     "sensitiveShort": "センシティブ",
     "documentSummary": "本文・セルの簡易表示です。書式・レイアウトは原本と異なる場合があります。",
     "previewLimit": "プレビューのサイズ・件数・処理時間の上限を超えました。ファイルをダウンロードして確認してください。",
@@ -386,7 +391,10 @@
     "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
     "participantsDescription": "このスレッドに参加している人です。",
     "joinToReply": "参加するとこのスレッドに返信できます。",
-    "reopenAndJoin": "再Openして参加する"
+    "reopenAndJoin": "再Openして参加する",
+    "errors": {
+      "busy": "スレッドが混み合っています。しばらく待ってからもう一度お試しください。"
+    }
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -422,6 +430,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "絵文字を読み込み中…",
     "recent": "最近使った絵文字",
+    "accountEmojiCategory": "アカウント",
     "skinTone": "肌の色"
   },
   "theme": {
@@ -471,6 +480,9 @@
     "readError": "通知を既読にできませんでした",
     "mention": "{{actor}} さんがあなたをメンションしました",
     "reply": "{{actor}} さんが返信しました",
+    "channelMessage": "{{actor}} さんがメッセージを投稿しました",
+    "channel_message": "{{actor}} さんがメッセージを投稿しました",
+    "channelMessageContext": "チャンネルのメッセージ",
     "reaction": "{{actor}} さんがリアクションしました",
     "openMessage": "メッセージを開く",
     "unavailable": "チャンネルを利用できません",
@@ -488,7 +500,24 @@
     "readStatus": "既読",
     "actors_one": "{{actor}} さんほか1人",
     "actors_other": "{{actor}} さんほか{{count}}人",
-    "forwardedPreview": "メッセージを転送しました"
+    "forwardedPreview": "メッセージを転送しました",
+    "settings": "通知設定",
+    "settingsDefault": "既定はメンションと返信などです。",
+    "settingsHint": "チャンネルごとの通知レベルは、各チャンネルのヘッダーまたは DM のメニューから変更できます。",
+    "channelSettings": "チャンネルの通知設定",
+    "openChannel": "チャンネルを開く",
+    "noChannel": "参加中のチャンネルがありません。",
+    "notMember": "このチャンネルに参加していないため、通知設定を変更できません。",
+    "levelTitle": "通知レベル",
+    "levelLoading": "通知設定を読み込み中…",
+    "levelAll": "すべてのメッセージ",
+    "levelAllHelp": "通常の投稿も通知します。暗号化チャンネルでも選べます。",
+    "levelMentions": "メンションと返信（既定）",
+    "levelMentionsHelp": "あなたへのメンション、返信、DM、リアクションを通知します。",
+    "levelMute": "ミュート",
+    "levelMuteHelp": "通常の通知は届きません。あなたへのメンションと @channel / @here は届きます。",
+    "levelEncryptedHint": "暗号化チャンネルでも「すべてのメッセージ」を選べます。",
+    "levelError": "通知設定を変更できませんでした。"
   },
   "webhooks": {
     "title": "Webhook設定",
@@ -889,6 +918,7 @@
     "deleted": "投稿を削除しました",
     "newPosts": "新しい投稿を見る（{{count}}件）",
     "quotedPost": "引用元の投稿",
+    "postUnavailable": "投稿を表示できません",
     "quoteUnavailable": "引用元の投稿を表示できません",
     "openQuotedPost": "引用元を開く",
     "image": "画像",
@@ -919,6 +949,7 @@
       "unlisted": "ホーム",
       "followers": "フォロワー限定"
     },
+    "followersAudience": "フォロワー",
     "audienceHint": {
       "local": "Zoo内だけに表示します。外部には配送しません。",
       "public": "誰でも閲覧でき、外部のフォロワーにも配送します。",
@@ -952,6 +983,7 @@
     "userSearch": "ユーザーを検索",
     "search": "検索",
     "noUsers": "ユーザーが見つかりません",
+    "openAuthorProfile": "「{{author}}」のプロフィールを開く",
     "userDetails": "ユーザー詳細",
     "joinedAt": "登録日: {{date}}",
     "pullRefresh": "引っ張って更新",
@@ -975,22 +1007,22 @@
       "follow_accepted": "さんへのフォローが承認されました",
       "like": "さんが投稿にリアクションしました",
       "reply": "さんが投稿に返信しました",
-      "repost": "さんが投稿をリポストしました"
+      "repost": "さんが投稿をリノートしました"
     },
     "actions": "投稿のアクション",
     "reply": "返信",
-    "repost": "リポスト",
-    "undoRepost": "リポストを取り消す",
+    "repost": "リノート",
+    "undoRepost": "リノートを取り消す",
     "react": "リアクション",
     "copyContent": "本文をコピー",
-    "privateRepost": "フォロワー限定の投稿はリポストできません",
+    "privateRepost": "フォロワー限定の投稿はリノートできません",
     "customEmojis": "カスタム絵文字",
     "searchEmoji": "絵文字を検索",
     "noEmojis": "利用できるカスタム絵文字はありません",
     "emojiSearchMore": "続きは名前で検索してください",
     "replyTo": "{{name}}さんに返信",
     "cancelReply": "返信先を解除",
-    "repostedBy": "{{name}}さんがリポスト",
+    "repostedBy": "{{name}}さんがリノート",
     "quickReactions": "よく使うリアクション"
   },
   "activitypubSettings": {
@@ -1803,6 +1835,16 @@
   },
   "androidUpdate": {
     "title": "アプリの更新"
+  },
+  "androidAttachmentCache": {
+    "title": "画像キャッシュ",
+    "description": "このアカウントの画像を端末に保存します。上限を下げると、最近使っていない画像から削除します。オフにすると保存済みの画像を削除します。"
+  },
+  "androidNavigationCache": {
+    "title": "画面遷移キャッシュ",
+    "description": "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。",
+    "off": "オフ",
+    "entries": "{{count}} 件"
   },
   "androidNotifications": {
     "enable": "通知を有効にする",

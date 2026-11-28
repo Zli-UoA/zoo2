@@ -40,7 +40,7 @@ internal class AndroidPasskeys(private val activity: Activity) : PasskeyClient {
             } catch (failure: GetCredentialCancellationException) {
                 throw PasskeyException(PasskeyError.CANCELLED, "パスキーの操作が取り消されました", failure)
             } catch (failure: NoCredentialException) {
-                throw PasskeyException(PasskeyError.CANCELLED, "使えるパスキーがありません", failure)
+                throw PasskeyException(PasskeyError.NO_CREDENTIAL, "使えるパスキーがありません。リカバリーキーで解錠できます。", failure)
             } catch (failure: GetPublicKeyCredentialDomException) {
                 val error =
                     when (failure.domError::class.simpleName) {

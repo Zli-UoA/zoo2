@@ -13,14 +13,14 @@ import androidx.compose.material3.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import io.ktor.client.*
-import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.*
 import zoo.*
 import zoo.android.phone.AndroidPhoneHost
@@ -35,6 +35,7 @@ import zoo.android.update.UpdateScheduler
 private class UnbackedKeysPrompt(val count: Int, val answer: CompletableDeferred<Boolean>)
 
 class MainActivity : ComponentActivity() {
+    private val networkLifecycle = NetworkLifecycleObserver()
     private var unbackedKeysPrompt by mutableStateOf<UnbackedKeysPrompt?>(null)
 
     private suspend fun confirmUnbackedKeys(count: Int): Boolean {
@@ -47,9 +48,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var notificationSettingsVersion by mutableIntStateOf(0)
+    private var shared by mutableStateOf<IncomingShare?>(null)
     private var notificationIntent by mutableStateOf<Intent?>(null)
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationSettingsVersion++
             AndroidPushRegistration.tokenChanged()
         }
 
@@ -101,6 +105,25 @@ class MainActivity : ComponentActivity() {
             result.await()
         } finally {
             if (photoPermissionResult === result) photoPermissionResult = null
+        }
+    }
+
+    private var saveResult: CompletableDeferred<Uri?>? = null
+    private val savePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        saveResult?.complete(it.data?.data.takeIf { _ -> it.resultCode == RESULT_OK })
+        saveResult = null
+    }
+    private suspend fun saveFile(bytes: ByteArray, name: String, type: String) {
+        check(saveResult == null)
+        val answer = CompletableDeferred<Uri?>()
+        saveResult = answer
+        val destination = try {
+            savePicker.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(type.ifBlank { "application/octet-stream" }).putExtra(Intent.EXTRA_TITLE, name))
+            answer.await()
+        } finally { if (saveResult === answer) saveResult = null }
+        if (destination != null) withContext(Dispatchers.IO) {
+            checkNotNull(contentResolver.openOutputStream(destination, "wt")).use { it.write(bytes) }
         }
     }
 
@@ -159,11 +182,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycle.addObserver(networkLifecycle)
         enableEdgeToEdge()
-        notificationIntent = intent
-        UpdatePreferences(this).confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
-        if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
+        receiveLaunchIntent(intent)
         setContent { AndroidApp() }
+        // A first draw is queued before any update bookkeeping opens disk-backed stores.
+        window.decorView.postOnAnimation {
+            window.decorView.post {
+                val updates = UpdatePreferences(this)
+                updates.confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
+                if (updates.enabled) UpdateScheduler.configure(this, true)
+            }
+        }
+    }
+
+    private fun receiveLaunchIntent(intent: Intent) {
+        if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            shared = incomingShare(intent)
+            if (shared == null) android.widget.Toast.makeText(this, "共有内容を開けません", android.widget.Toast.LENGTH_SHORT).show()
+        } else notificationIntent = intent
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -172,7 +209,7 @@ class MainActivity : ComponentActivity() {
         // 初回ログインと再認証で同じ App Link を使い、待機中の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
-        } else notificationIntent = intent
+        } else receiveLaunchIntent(intent)
     }
 
     @Composable
@@ -182,7 +219,8 @@ class MainActivity : ComponentActivity() {
         val dark = isSystemInDarkTheme()
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
-        var restoring by remember { mutableStateOf(loginStore.hasSession) }
+        var restoring by remember { mutableStateOf(true) }
+        var restorationStage by remember { mutableStateOf(LoginStage.SavedSession) }
         var restoreCancelRequested by remember { mutableStateOf(false) }
         var restoreAttempt by remember { mutableIntStateOf(0) }
         var restoreJob by remember { mutableStateOf<Job?>(null) }
@@ -190,6 +228,12 @@ class MainActivity : ComponentActivity() {
         var restoreError by remember { mutableStateOf("") }
         var restoreDiagnostics by remember { mutableStateOf("") }
         val current = active
+        val lightIconsBackground = !(current?.platform?.env?.dark ?: dark)
+        SideEffect {
+            val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            controller.isAppearanceLightStatusBars = lightIconsBackground
+            controller.isAppearanceLightNavigationBars = lightIconsBackground
+        }
         var callPresentation by remember(current) { mutableIntStateOf(0) }
         LaunchedEffect(current) {
             if (current != null && android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -252,16 +296,17 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(restoreAttempt) {
             restoreJob = currentCoroutineContext()[Job]
-            restoring = loginStore.hasSession
+            restoring = true
+            restorationStage = LoginStage.SavedSession
             restoreCancelRequested = false
             restoreError = ""
             restoreDiagnostics = ""
             val stages = mutableListOf(LoginStage.SavedSession)
             try {
-                val saved = loginStore.load()
+                val saved = withContext(Dispatchers.IO) { loginStore.load() }
                 canRestore = saved != null
                 if (saved == null) PushBinding(this@MainActivity).forgetAll()
-                if (saved != null) connect(saved.connection, saved.refreshToken) { stages.add(it) }
+                if (saved != null) connect(saved.connection, saved.refreshToken) { stage -> stages.add(stage); restorationStage = stage }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: LoginFailure) {
@@ -280,7 +325,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (current == null) {
-            SignInRoute(dark, restoring, restoreError,
+            SignInRoute(dark, restoring, restoreError, restorationStage = restorationStage,
                 retry = if (canRestore && !restoring) ({ restoreAttempt++ }) else null,
                 cancelRestore = if (restoreCancelRequested) null else ({
                     restoreCancelRequested = true
@@ -303,40 +348,54 @@ class MainActivity : ComponentActivity() {
             }
             DisposableEffect(current) {
                 var disposed = false
-                val observer = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
-                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                    current.session.update(platform.env)
-                }
-                lifecycle.addObserver(observer)
-                platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                current.session.update(platform.env)
                 val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-                fun updateOnline() = runOnUiThread {
-                    if (!disposed) platform.online(hasInternet(
-                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
-                    ))
-                }
-                val callback =
-                    object : android.net.ConnectivityManager.NetworkCallback() {
-                        override fun onAvailable(network: android.net.Network) = updateOnline()
-
-                        override fun onLost(network: android.net.Network) = updateOnline()
-
-                        override fun onCapabilitiesChanged(
-                            network: android.net.Network,
-                            caps: android.net.NetworkCapabilities,
-                        ) = updateOnline()
+                var network = connectivity.activeInternetNetwork()
+                fun updateNetworkStatus(returning: Boolean = false) {
+                    val nextNetwork = connectivity.activeInternetNetwork()
+                    val networkChanged = nextNetwork != null && network != nextNetwork
+                    val wasOnline = platform.env.online
+                    network = nextNetwork
+                    if (returning || networkChanged) current.transport.reconnect()
+                    platform.online(nextNetwork != null)
+                    current.session.update(platform.env, reconnect = returning || networkChanged)
+                    if (nextNetwork != null && (returning || networkChanged || !wasOnline)) {
+                        current.shapeReconnects.update { it + 1 }
+                        current.phone.refreshInvites()
                     }
+                }
+                val unbindLifecycle = networkLifecycle.bind(current.networkRevisionAtStart) { visible, returning, resumed ->
+                    platform.visible(visible)
+                    updateNetworkStatus(returning)
+                    if (resumed) {
+                        notificationSettingsVersion++
+                        current.push.refresh()
+                    }
+                }
+                val callback = DefaultNetworkCallback {
+                    runOnUiThread {
+                        if (!disposed) updateNetworkStatus()
+                    }
+                }
                 connectivity.registerDefaultNetworkCallback(callback)
-                updateOnline()
+                val offlineNetworkCheck = scope.launch {
+                    recheckDefaultNetworkWhileOffline(snapshotFlow { platform.env.visible && !platform.env.online }) {
+                        updateNetworkStatus()
+                    }
+                }
                 onDispose {
                     disposed = true
-                    lifecycle.removeObserver(observer)
+                    offlineNetworkCheck.cancel()
+                    unbindLifecycle()
                     connectivity.unregisterNetworkCallback(callback)
                 }
             }
             ConnectedScreens(current.session, platform, current.phone.controller,
+                settingsVersion = notificationSettingsVersion,
+                incoming = shared,
+                finishShare = {
+                    shared = null
+                    if (intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) setIntent(Intent(Intent.ACTION_MAIN))
+                },
                 enableNotifications = ::enableNotifications,
                 background = { moveTaskToBack(true) },
                 callPresentation = callPresentation,
@@ -382,18 +441,18 @@ class MainActivity : ComponentActivity() {
         logout: () -> Unit,
     ): RunningSession {
         connection.validate()
-        val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
+        val owner = withContext(Dispatchers.IO) { loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) }) }
         val oidcRoutes = OidcNetworkRoutes()
-        val http = HttpClient(OkHttp) {
+        val transport = SessionHttpEngine {
             // Refresh tokens are single-use: never replay a request inside OkHttp.
-            engine {
-                config {
-                    retryOnConnectionFailure(false)
-                    dns(oidcRoutes)
-                    followRedirects(false)
-                    followSslRedirects(false)
-                }
+            config {
+                retryOnConnectionFailure(false)
+                dns(oidcRoutes)
+                followRedirects(false)
+                followSslRedirects(false)
             }
+        }
+        val http = HttpClient(transport) {
             followRedirects = false
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000
@@ -433,7 +492,7 @@ class MainActivity : ComponentActivity() {
             stage(LoginStage.Session)
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
-                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys,
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys, ::saveFile,
             )
             platform.systemDark(dark)
             platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -441,8 +500,15 @@ class MainActivity : ComponentActivity() {
                 connection.base, "/api/shapes", me.text("id"), me.flag("is_admin"),
                 assetsBaseUrl = connection.base,
             )
+            val networkRevisionAtStart = networkLifecycle.reconnectRevision
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
+            session.setNavigationCacheLimit(platform.navigationCacheLimit)
+            lifetime.launch {
+                if (!platform.enforceAttachmentCacheSize()) session.toast = session.t("offline.deleteFailed")
+            }
+            platform.onNavigation = { session.update(it) }
             // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
+            val shapeReconnects = MutableStateFlow(0L)
             val e2eeApi = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http))
             val e2ee = zoo.crypto.E2eeDeviceManager(
                 api = e2eeApi,
@@ -451,7 +517,7 @@ class MainActivity : ComponentActivity() {
                 displayName = e2eeDisplayName(),
                 files = zoo.crypto.CryptoStoreFiles.android(this, connection.base, me.text("id")),
                 pending = zoo.crypto.PendingDeviceDeletions.android(this),
-                toDevice = { deviceId -> zoo.crypto.toDeviceShape(config, platform, http, deviceId) },
+                toDevice = { deviceId -> zoo.crypto.toDeviceShape(config, platform, http, deviceId, shapeReconnects) },
                 scope = lifetime,
                 onError = { failure ->
                     android.util.Log.w("ZooE2ee", "E2EE の端末の処理に失敗しました: ${failure::class.simpleName}: ${failure.message}")
@@ -471,14 +537,20 @@ class MainActivity : ComponentActivity() {
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
-                session.start()
-                e2ee.start()
+            return RunningSession(session, platform, lifetime, http, transport, networkRevisionAtStart, shapeReconnects, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
+                try {
+                    session.start()
+                    e2ee.start()
+                } catch (failure: Throwable) {
+                    it.close()
+                    throw failure
+                }
             }
         } catch (failure: Throwable) {
             if (reauth === reauthenticator) reauth = null
             auth.close()
             http.close()
+            transport.close()
             throw failure
         }
     }
@@ -490,6 +562,9 @@ private class RunningSession(
     val platform: AndroidPlatform,
     val scope: CoroutineScope,
     private val http: HttpClient,
+    val transport: SessionHttpEngine,
+    val networkRevisionAtStart: Long,
+    val shapeReconnects: MutableStateFlow<Long>,
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val notifications: AndroidNotifications,
@@ -499,7 +574,12 @@ private class RunningSession(
     suspend fun logout() {
         notifications.close()
         try { push.logout() } finally {
-            try { auth.forget() } finally { close(preserveNotifications = false) }
+            try {
+                platform.clearImageCache()
+                auth.forget()
+            } finally {
+                close(preserveNotifications = false)
+            }
         }
     }
 
@@ -513,6 +593,7 @@ private class RunningSession(
         scope.cancel()
         platform.close()
         http.close()
+        transport.close()
     }
 }
 

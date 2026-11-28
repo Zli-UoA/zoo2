@@ -122,7 +122,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
                     url.to_owned()
                 }
             });
-            let mut attachment = json!({"type":"Document","mediaType":item["media_type"],"name":item["name"],"url":url});
+            let mut attachment = json!({"type":"Document","mediaType":item["media_type"],"name":item["description"].as_str().or(item["name"].as_str()),"url":url});
             attachment["sensitive"] = json!(item["is_sensitive"] == true);
             for key in ["width", "height", "blurhash"] {
                 if !item[key].is_null() {
@@ -167,6 +167,20 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
             .unwrap();
         tags.extend(emojis.iter().map(emoji::as_tag));
         note["@context"] = json!([CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash","sensitive":"as:sensitive"}]);
+    }
+    if let Some(uri) = post["quote_uri"].as_str() {
+        let source = quotes::fallback_text(string(post, "content")?, uri);
+        note["source"]["content"] = json!(source);
+        note["_misskey_content"] = json!(source);
+        let href = html_escape::encode_double_quoted_attribute(uri);
+        let label = html_escape::encode_text(uri);
+        note["content"] = json!(format!(
+            r#"{content}<br><br>RE: <a href="{href}">{label}</a>"#
+        ));
+        note["quoteUrl"] = json!(uri);
+        note["_misskey_quote"] = json!(uri);
+        note["@context"][1]["quoteUrl"] = json!("as:quoteUrl");
+        note["@context"][1]["_misskey_quote"] = json!("https://misskey-hub.net/ns#_misskey_quote");
     }
     Ok(note)
 }
@@ -379,8 +393,17 @@ pub(crate) async fn remember_display_emojis(
     Ok(())
 }
 pub async fn worker(state: AppState) {
+    if base_url().is_err() {
+        return;
+    }
+    let blurhash_workers =
+        futures_util::future::join_all((0..4).map(|_| emoji::blurhash_worker(&state)));
+    tokio::join!(delivery_worker(&state), blurhash_workers);
+}
+
+async fn delivery_worker(state: &AppState) {
     loop {
-        match deliver_next(&state).await {
+        match deliver_next(state).await {
             Ok(true) => {}
             Ok(false) => tokio::time::sleep(Duration::from_secs(2)).await,
             Err(e) => {

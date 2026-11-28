@@ -13,7 +13,9 @@ import { Spinner } from "./spinner";
 /** Shared display and accessible enlargement for channel, encrypted and APub media. */
 export function MediaPreview({
   src,
+  thumbnailSrc,
   name,
+  alt,
   contentType,
   loading,
   failed,
@@ -28,7 +30,9 @@ export function MediaPreview({
   ...metadata
 }: ImageMetadata & {
   src?: string | null;
+  thumbnailSrc?: string;
   name: string;
+  alt?: string;
   contentType: string;
   loading?: boolean;
   failed?: boolean;
@@ -55,6 +59,7 @@ export function MediaPreview({
         : `preview:${name}:${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`),
   );
   const [open, setOpen] = useState(initialOpen);
+  const [brokenThumbnail, setBrokenThumbnail] = useState<string | null>(null);
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const kind = mediaPreviewKind(contentType, name);
   const error = failed || (!!src && brokenSrc === src);
@@ -88,7 +93,7 @@ export function MediaPreview({
         <div role="status" aria-label={t("attachments.loading")} aria-busy="true">
           <ImagePreview
             {...metadata}
-            alt={name}
+            alt={alt || name}
             className="w-full max-h-96"
             style={{ aspectRatio: imageAspectRatio(metadata) }}
           />
@@ -96,19 +101,22 @@ export function MediaPreview({
       ) : (
         <Spinner label={t("attachments.loading")} className="min-h-32" />
       );
-    if (kind === "image")
+    if (kind === "image") {
+      const thumbnail =
+        !expanded && thumbnailSrc && brokenThumbnail !== thumbnailSrc ? thumbnailSrc : null;
       return (
         <ImagePreview
           {...metadata}
-          src={src}
-          alt={name}
+          src={thumbnail ?? src}
+          alt={alt || name}
           className={
             expanded ? (embedded ? "h-full w-full" : "h-[75dvh] w-full") : "w-full max-h-96"
           }
           style={expanded ? undefined : { aspectRatio: imageAspectRatio(metadata) }}
-          onError={errorHandler}
+          onError={thumbnail ? () => setBrokenThumbnail(thumbnail) : errorHandler}
         />
       );
+    }
     if (kind === "video")
       return (
         <video

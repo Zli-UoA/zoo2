@@ -329,6 +329,11 @@
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
+    "showSensitiveVideo": "顯示影片",
+    "hideSensitiveVideo": "隱藏影片",
+    "openOriginal": "原始檔案",
+    "imagePreviewFailed": "無法載入圖片",
+    "altText": "圖片說明",
     "sensitiveShort": "敏感圖片",
     "documentSummary": "內文同儲存格嘅簡單預覽，格式同版面可能同原檔唔同。",
     "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
@@ -386,7 +391,10 @@
     "participantsFilterPartial": "淨係喺載入咗嘅頭 {{loaded}} 人入面搵（仲有 {{count}} 人搵唔到）。",
     "participantsDescription": "已經加入呢個討論串嘅人。",
     "joinToReply": "參加之後就可以喺呢個討論串回覆。",
-    "reopenAndJoin": "重開並參加"
+    "reopenAndJoin": "重開並參加",
+    "errors": {
+      "busy": "呢個討論串而家好繁忙，稍等一陣再試多次。"
+    }
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",
@@ -422,6 +430,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "載入緊表情符號…",
     "recent": "最近用過嘅表情符號",
+    "accountEmojiCategory": "帳戶",
     "skinTone": "膚色"
   },
   "theme": {
@@ -471,6 +480,9 @@
     "readError": "標唔到通知為已讀",
     "mention": "{{actor}} 提到你",
     "reply": "{{actor}} 回覆咗你",
+    "channelMessage": "{{actor}} 貼咗個訊息",
+    "channel_message": "{{actor}} 貼咗個訊息",
+    "channelMessageContext": "頻道訊息",
     "reaction": "{{actor}} 對你嘅訊息加咗表情回應",
     "openMessage": "開啟訊息",
     "unavailable": "頻道用唔到",
@@ -488,7 +500,24 @@
     "readStatus": "已讀",
     "actors_one": "{{actor}} 同另外 1 人",
     "actors_other": "{{actor}} 同另外 {{count}} 人",
-    "forwardedPreview": "轉寄咗一個訊息"
+    "forwardedPreview": "轉寄咗一個訊息",
+    "settings": "通知設定",
+    "settingsDefault": "預設係通知提到你同回覆。",
+    "settingsHint": "每個頻道嘅通知級別可以喺頻道標題或者私人訊息選單改。",
+    "channelSettings": "頻道通知設定",
+    "openChannel": "開啟頻道",
+    "noChannel": "未加入任何頻道。",
+    "notMember": "你未加入呢個頻道，改唔到通知設定。",
+    "levelTitle": "通知級別",
+    "levelLoading": "載入通知設定中…",
+    "levelAll": "所有訊息",
+    "levelAllHelp": "一般貼文都會通知。加密頻道都揀得。",
+    "levelMentions": "提及同回覆（預設）",
+    "levelMentionsHelp": "有人提到你、回覆、私訊或者畀 reaction 先通知。",
+    "levelMute": "靜音",
+    "levelMuteHelp": "唔收一般通知，提到你或者 @channel / @here 仍然會送到。",
+    "levelEncryptedHint": "加密頻道都揀到「所有訊息」。",
+    "levelError": "改唔到通知設定。"
   },
   "webhooks": {
     "title": "Webhook 設定",
@@ -889,6 +918,7 @@
     "deleted": "已刪除帖文",
     "newPosts": "睇新帖文（{{count}}）",
     "quotedPost": "引用嘅帖文",
+    "postUnavailable": "無法顯示呢篇貼文",
     "quoteUnavailable": "無法顯示引用嘅帖文",
     "openQuotedPost": "開啟引用嘅帖文",
     "image": "圖片",
@@ -919,6 +949,7 @@
       "unlisted": "首頁",
       "followers": "只限追蹤者"
     },
+    "followersAudience": "追蹤者",
     "audienceHint": {
       "local": "只喺 Zoo 入面顯示，唔會傳送去其他伺服器。",
       "public": "任何人都睇到，亦會傳送畀遠端追蹤者。",
@@ -952,6 +983,7 @@
     "userSearch": "搜尋用戶",
     "search": "搜尋",
     "noUsers": "搵唔到用戶",
+    "openAuthorProfile": "開啟 {{author}} 嘅個人檔案",
     "userDetails": "用戶詳情",
     "joinedAt": "加入日期：{{date}}",
     "pullRefresh": "向下拉更新",
@@ -1803,6 +1835,16 @@
   },
   "androidUpdate": {
     "title": "應用程式更新"
+  },
+  "androidAttachmentCache": {
+    "title": "圖片快取",
+    "description": "將呢個帳戶嘅圖片儲存喺部裝置。調低上限會先刪除最耐冇用嘅圖片。關閉會清除已儲存嘅圖片。"
+  },
+  "androidNavigationCache": {
+    "title": "頁面切換快取",
+    "description": "設定記憶體保留嘅首頁、帖文詳情同個人資料項目數，以及另外嘅頻道項目數。",
+    "off": "關閉",
+    "entries": "{{count}} 項"
   },
   "androidNotifications": {
     "enable": "啟用通知",

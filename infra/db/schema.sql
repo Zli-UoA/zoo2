@@ -62,6 +62,8 @@ CREATE TABLE channel_user (
   user_id text NOT NULL,
   channel_id text NOT NULL,
   joined_at timestamp(3) NOT NULL,
+  notification_level text NOT NULL DEFAULT 'mentions',
+  CONSTRAINT channel_user_notification_level_check CHECK (notification_level IN ('all', 'mentions', 'mute')),
   CONSTRAINT "ChannelUser_pkey" PRIMARY KEY (user_id, channel_id),
   CONSTRAINT channel_user_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
@@ -70,6 +72,76 @@ CREATE TABLE channel_user (
     FOREIGN KEY (channel_id) REFERENCES channels (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
+
+-- チャンネルごとの通知設定の正本 (#620)。channel_user.notification_level は旧アプリとの
+-- 互換用に残すだけで、実際の設定はここにだけ持つ。本人用の Shape / REST からのみ読み書きし、
+-- メンバー一覧から他人の設定が漏れないようにする。
+CREATE TABLE user_channel_notification_settings (
+  user_id text NOT NULL,
+  channel_id text NOT NULL,
+  notification_level text NOT NULL DEFAULT 'mentions',
+  CONSTRAINT user_channel_notification_settings_check CHECK (notification_level IN ('all', 'mentions', 'mute')),
+  CONSTRAINT user_channel_notification_settings_pkey PRIMARY KEY (user_id, channel_id),
+  CONSTRAINT user_channel_notification_settings_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT user_channel_notification_settings_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+-- 投稿時の通知先選択とスレッド参加者の JOIN は channel_id で引く。主キーは (user_id, channel_id) なので、
+-- チャンネル単位の走査を M 行に抑えるための索引。
+CREATE INDEX idx_user_channel_notification_settings_channel_id
+  ON user_channel_notification_settings (channel_id, user_id);
+
+-- メンバーシップの追加・削除に設定行を追随させる。旧アプリが channel_user に書いた通知レベルは
+-- 新しいテーブルへ写し、古い列は既定値へ戻す（ローリング更新中もメンバー一覧から実際の設定を読めない）。
+CREATE FUNCTION user_channel_notification_settings_sync() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    DELETE FROM user_channel_notification_settings
+     WHERE user_id = OLD.user_id AND channel_id = OLD.channel_id;
+    RETURN OLD;
+  END IF;
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, 'mentions')
+  ON CONFLICT (user_id, channel_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER channel_user_notification_settings_sync
+  AFTER INSERT OR DELETE ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION user_channel_notification_settings_sync();
+
+CREATE FUNCTION channel_user_notification_level_legacy() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.notification_level IS DISTINCT FROM 'mentions' THEN
+      INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+      VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+      ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+       WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+    END IF;
+    -- 旧アプリが読む列には実際の設定を残さない。
+    NEW.notification_level := 'mentions';
+    RETURN NEW;
+  END IF;
+  -- UPDATE OF notification_level で発火したときは、旧列が既定値の mentions に戻されているため
+  -- OLD と NEW が同じでも指定値を正本へ反映する。旧値との比較で判定すると、旧アプリが
+  -- 現在の mentions をそのまま書いたときに正本の all/mute が更新されない。
+  -- 同値更新の抑止は正本側の ON CONFLICT ... WHERE で行う。
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+  ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+   WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+  -- 旧アプリが読む列には実際の設定を残さない。
+  NEW.notification_level := OLD.notification_level;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER channel_user_notification_level_legacy
+  BEFORE INSERT OR UPDATE OF notification_level ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION channel_user_notification_level_legacy();
 
 -- ユーザーが自分でチャンネルを退出した日時（退出日での並び替え用）。退出のたびに上書きし、
 -- 本人の Shape にだけ配る。チャンネルへの再参加では消さない。
@@ -209,6 +281,12 @@ CREATE TABLE channel_webhooks (
 );
 CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
 
+CREATE TABLE channel_notes_cleanup_cursor (
+  id boolean PRIMARY KEY DEFAULT true CHECK (id),
+  last_channel_id text
+);
+INSERT INTO channel_notes_cleanup_cursor (id, last_channel_id) VALUES (true, NULL);
+
 CREATE TABLE channel_notes (
   id text NOT NULL PRIMARY KEY,
   channel_id text NOT NULL REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
@@ -224,6 +302,7 @@ CREATE TABLE channel_notes (
 CREATE INDEX idx_channel_notes_channel_updated ON channel_notes (channel_id, updated_at DESC, id);
 CREATE INDEX idx_channel_notes_channel_position ON channel_notes (channel_id, position) WHERE deleted_at IS NULL;
 CREATE INDEX idx_channel_notes_deleted_at ON channel_notes (channel_id, deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_channel_notes_expired ON channel_notes (channel_id, deleted_at, id) WHERE deleted_at IS NOT NULL;
 -- Structured integration cards are separate from user-controlled message content.
 ALTER TABLE messages ADD COLUMN card text;
 ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
@@ -1041,7 +1120,7 @@ END $$;
 CREATE TRIGGER app_guest_rules BEFORE INSERT OR UPDATE OF guest_kind ON users FOR EACH ROW EXECUTE FUNCTION app_guest_rules();
 CREATE FUNCTION app_guest_membership_rules() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single') THEN PERFORM 1 FROM users WHERE id=NEW.user_id FOR UPDATE;END IF;
+ IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single') THEN PERFORM 1 FROM users WHERE id=NEW.user_id FOR NO KEY UPDATE;END IF;
  IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single')
  AND EXISTS(SELECT 1 FROM channels WHERE id=NEW.channel_id AND NOT is_dm)
  AND EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.user_id=NEW.user_id AND cu.channel_id<>NEW.channel_id AND NOT c.is_dm AND c.deleted_at IS NULL) THEN RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='Single-channel guests can join only one channel';END IF;
@@ -1309,7 +1388,8 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION app_member_events_v2() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE row_data jsonb:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+DECLARE src jsonb:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+DECLARE row_data jsonb:=jsonb_build_object('user_id',src->>'user_id','channel_id',src->>'channel_id','joined_at',src->>'joined_at');
 BEGIN
  PERFORM app_emit(CASE WHEN TG_OP='DELETE' THEN 'member.left' ELSE 'member.joined' END,row_data,row_data->>'user_id',row_data->>'channel_id',NULL,NULL,CASE WHEN TG_OP='DELETE' THEN row_data->>'user_id' END);
  RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
@@ -1775,7 +1855,9 @@ CREATE TRIGGER apub_remote_recipients_home_live AFTER INSERT OR UPDATE OR DELETE
 CREATE TRIGGER apub_follows_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_follows FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER apub_actors_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_actors FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER channels_home_live AFTER INSERT OR UPDATE OR DELETE ON channels FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
-CREATE TRIGGER channel_user_home_live AFTER INSERT OR UPDATE OR DELETE ON channel_user FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+-- notification_level は Home の表示に影響しない。設定変更で全員の Home を refresh しないよう、
+-- UPDATE は Home の内容を変える列だけに絞る (文レベルトリガーなので SET 句で判定する)。
+CREATE TRIGGER channel_user_home_live AFTER INSERT OR UPDATE OF user_id, channel_id, joined_at OR DELETE ON channel_user FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER users_home_live AFTER INSERT OR DELETE ON users FOR EACH ROW EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER users_update_home_live AFTER UPDATE ON users FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER user_role_home_live AFTER INSERT OR UPDATE OR DELETE ON user_role FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
@@ -1960,12 +2042,14 @@ CREATE TABLE slack_users (
   linked boolean NOT NULL DEFAULT false,
   name text NOT NULL DEFAULT '',
   real_name text NOT NULL DEFAULT '',
+  profile_source text NOT NULL DEFAULT 'unknown',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, slack_user_id),
   CONSTRAINT slack_users_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
-    ON UPDATE CASCADE ON DELETE CASCADE
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT slack_users_profile_source_check CHECK (profile_source IN ('unknown', 'fallback', 'profile'))
 );
 
 CREATE INDEX idx_slack_users_user_id ON slack_users (user_id);
@@ -2245,6 +2329,8 @@ ALTER TABLE notification_events REPLICA IDENTITY FULL;
 -- Match the existing ElectricSQL identities established by earlier migrations.
 ALTER TABLE attachments REPLICA IDENTITY FULL;
 ALTER TABLE channel_user REPLICA IDENTITY FULL;
+ALTER TABLE user_channel_notification_settings REPLICA IDENTITY FULL;
+ALTER TABLE channel_leave REPLICA IDENTITY FULL;
 ALTER TABLE channels REPLICA IDENTITY FULL;
 ALTER TABLE message_reactions REPLICA IDENTITY FULL;
 ALTER TABLE messages REPLICA IDENTITY FULL;
@@ -2318,6 +2404,13 @@ ALTER TABLE home_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE apub_remote_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 ALTER TABLE home_images ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE home_images
+  ADD COLUMN thumbnail_bytes bigint NOT NULL DEFAULT 0,
+  ADD COLUMN thumbnail_ready boolean,
+  ADD COLUMN thumbnail_conditional_write boolean NOT NULL DEFAULT false,
+  ADD COLUMN original_write_confirmed boolean NOT NULL DEFAULT false,
+  ADD COLUMN thumbnail_write_pending boolean NOT NULL DEFAULT false,
+  ADD COLUMN thumbnail_check_at timestamptz NOT NULL DEFAULT (now()+interval '5 minutes');
 CREATE INDEX home_images_uploader_created ON home_images(uploader_id,created_at);
 CREATE TABLE home_image_upload_rates (
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -2326,23 +2419,74 @@ CREATE TABLE home_image_upload_rates (
   PRIMARY KEY(user_id,window_start)
 );
 CREATE TABLE home_image_deletions (
-  id text PRIMARY KEY,
+  id text CONSTRAINT home_image_deletions_pkey PRIMARY KEY,
   uploader_id text NOT NULL,
   file_size bigint NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE home_image_deletions RENAME TO home_image_deletion_queue;
+ALTER TABLE home_image_deletion_queue
+  ADD COLUMN thumbnail_accounted boolean NOT NULL DEFAULT false,
+  ADD COLUMN unconfirmed_thumbnail_bytes bigint NOT NULL DEFAULT 0,
+  ADD COLUMN legacy_write_pending boolean NOT NULL DEFAULT true,
+  ADD COLUMN original_write_pending boolean NOT NULL DEFAULT false,
+  ADD COLUMN thumbnail_write_pending boolean NOT NULL DEFAULT false;
+
+CREATE FUNCTION home_image_can_have_thumbnail(content_type text, width integer, height integer)
+RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT content_type IN ('image/png','image/jpeg','image/webp')
+    AND (width IS NULL OR height IS NULL OR GREATEST(width,height)>768)
+$$;
+
+CREATE INDEX home_images_unconfirmed_thumbnail ON home_images(thumbnail_check_at,id)
+  WHERE thumbnail_ready IS NULL;
+CREATE INDEX home_images_uploader_unconfirmed_thumbnail
+  ON home_images(uploader_id,(thumbnail_bytes>0),thumbnail_check_at,id)
+  WHERE thumbnail_ready IS NULL
+    AND home_image_can_have_thumbnail(content_type,width,height);
+
 CREATE FUNCTION queue_home_image_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  INSERT INTO home_image_deletions(id,uploader_id,file_size) VALUES(OLD.id,OLD.uploader_id,OLD.file_size) ON CONFLICT DO NOTHING;
+  INSERT INTO home_image_deletion_queue(id,uploader_id,file_size,thumbnail_accounted,unconfirmed_thumbnail_bytes,legacy_write_pending,original_write_pending,thumbnail_write_pending)
+  VALUES(OLD.id,OLD.uploader_id,
+    OLD.file_size + CASE WHEN OLD.thumbnail_ready THEN OLD.thumbnail_bytes ELSE 0 END,
+    true,
+    CASE WHEN OLD.thumbnail_ready IS NULL THEN
+      CASE WHEN OLD.thumbnail_bytes>0 THEN OLD.thumbnail_bytes
+           WHEN home_image_can_have_thumbnail(OLD.content_type,OLD.width,OLD.height) THEN OLD.file_size
+           ELSE 0 END
+      ELSE 0 END,
+    NOT OLD.thumbnail_conditional_write,
+    OLD.thumbnail_conditional_write AND NOT OLD.original_write_confirmed,
+    OLD.thumbnail_write_pending) ON CONFLICT DO NOTHING;
   RETURN OLD;
 END $$;
 CREATE TRIGGER home_image_deleted AFTER DELETE ON home_images FOR EACH ROW EXECUTE FUNCTION queue_home_image_deletion();
 
+-- The legacy application uses one relation for quota and row-locked cleanup.
+-- The exact quota SELECT can include pending rows. Cleanup scans only finite dates,
+-- using the same indexed expression for its upper bound and ORDER BY.
+CREATE VIEW home_image_deletions AS
+SELECT id,uploader_id,file_size,
+       CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END AS created_at
+FROM home_image_deletion_queue
+WHERE (CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END) <= (SELECT CASE
+        WHEN current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$
+        THEN 'infinity'::timestamptz ELSE TIMESTAMPTZ '294276-12-31 23:59:59.999999+00' END);
+
+
 CREATE INDEX home_posts_live_media ON home_posts USING gin(media jsonb_path_ops) WHERE deleted_at IS NULL;
 CREATE INDEX attachments_storage_key ON attachments(storage_key);
 CREATE INDEX home_images_created ON home_images(created_at);
-CREATE INDEX home_image_deletions_uploader ON home_image_deletions(uploader_id);
-CREATE INDEX home_image_deletions_created ON home_image_deletions(created_at);
+CREATE INDEX home_image_deletions_uploader ON home_image_deletion_queue(uploader_id);
+CREATE INDEX home_image_deletions_created ON home_image_deletion_queue(created_at);
+CREATE INDEX home_image_deletions_current_created ON home_image_deletion_queue(created_at)
+  WHERE NOT legacy_write_pending;
+CREATE INDEX home_image_deletions_legacy_gc_created ON home_image_deletion_queue
+  ((CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END));
 -- Shared service read projection; management and ownership remain in the emoji service.
 CREATE TABLE shared_emoji_source(id text PRIMARY KEY CHECK (id='workspace'),url text);
 CREATE TABLE shared_emojis(
@@ -3202,8 +3346,7 @@ ALTER TABLE messages ADD COLUMN revision integer NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
   CHECK (ciphertext IS NULL OR (content = '' AND epoch IS NOT NULL));
 
--- encrypted は作成時だけ指定できる（両方向の変更を拒否する）。暗号化チャンネルを公開にする変更は
--- CHECK channels_encrypted_private が拒否する。
+-- encrypted は作成時だけ指定できる。後続の main migration が変換 API 用の保護関数に置き換える。
 CREATE FUNCTION e2ee_protect_channel_encryption() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'channels.encrypted cannot be changed' USING ERRCODE = '23514';
@@ -3211,6 +3354,38 @@ END $$;
 CREATE TRIGGER channels_encrypted_immutable BEFORE UPDATE ON channels
   FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted)
   EXECUTE FUNCTION e2ee_protect_channel_encryption();
+
+-- 暗号化への切替後も復元可能な平文ノートを隠さない。チャンネル行の更新ロックを取得してから確認するため、
+-- ノートAPIのチャンネルロックと切替が直列になる。
+CREATE FUNCTION e2ee_reject_channel_encryption_with_notes() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT OLD.encrypted AND NEW.encrypted AND EXISTS (
+    SELECT 1 FROM channel_notes
+    WHERE channel_id = NEW.id
+      AND (deleted_at IS NULL OR deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')
+  ) THEN
+    RAISE EXCEPTION 'remove active and restorable channel notes before encrypting the channel' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER channels_encrypted_reject_notes BEFORE UPDATE OF encrypted ON channels
+  FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted AND NEW.encrypted)
+  EXECUTE FUNCTION e2ee_reject_channel_encryption_with_notes();
+
+-- DBへ直接書く経路も含め、暗号化チャンネルに平文ノートを作らせない。暗号化列のUPDATEが取る
+-- NO KEY UPDATEとも競合するFOR SHAREを使う。ノートAPIも先に同じチャンネルをFOR SHAREする。
+-- 直接SQLでchannel_notesを更新・削除する経路も、先に同じchannels行をFOR SHAREして同じロック順を保つこと。
+CREATE FUNCTION e2ee_reject_plaintext_channel_notes() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE enc boolean;
+BEGIN
+  SELECT encrypted INTO enc FROM channels WHERE id = NEW.channel_id FOR SHARE;
+  IF COALESCE(enc, false) THEN
+    RAISE EXCEPTION 'channel notes are unavailable in encrypted channels' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER channel_notes_e2ee_reject_plaintext BEFORE INSERT OR UPDATE ON channel_notes
+  FOR EACH ROW EXECUTE FUNCTION e2ee_reject_plaintext_channel_notes();
 
 -- 論理削除した行（DELETE /api/messages/{id} と履歴の消去）の暗号文は残さない。
 CREATE FUNCTION e2ee_clear_deleted_ciphertext() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -3724,8 +3899,13 @@ BEGIN
   IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NEW; END IF;
   IF (SELECT phase FROM thread_rollout WHERE id)='collecting' THEN RETURN NEW; END IF;
   root_id:=thread_root(NEW.parent_id);
+  -- Slack の履歴の取り込みは、削除済みの親への返信も書く (zoo.slack_import)。
   IF root_id IS NULL OR root_id=NEW.id OR NOT EXISTS (
-    SELECT 1 FROM messages WHERE id=root_id AND channel_id=NEW.channel_id AND (deleted_at IS NULL OR current_setting('zoo.thread_migration',true)='on')
+    SELECT 1 FROM messages WHERE id=root_id AND channel_id=NEW.channel_id AND (
+      deleted_at IS NULL
+      OR current_setting('zoo.thread_migration',true)='on'
+      OR current_setting('zoo.slack_import',true)='on'
+    )
   ) THEN RAISE EXCEPTION 'Invalid thread parent' USING ERRCODE='23514'; END IF;
   -- The encrypted payload authenticates parent_id; never silently rewrite it.
   IF NEW.ciphertext IS NOT NULL AND (root_id IS DISTINCT FROM NEW.parent_id OR
@@ -3996,7 +4176,9 @@ BEGIN
     (NEW.parent_id,NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
   RETURN NULL;
 END $$;
-CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW EXECUTE FUNCTION sync_apub_recipient_order();
+CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW
+  WHEN ((OLD.actor_id,OLD.published,OLD.parent_id,OLD.deleted_at IS NOT NULL) IS DISTINCT FROM (NEW.actor_id,NEW.published,NEW.parent_id,NEW.deleted_at IS NOT NULL))
+  EXECUTE FUNCTION sync_apub_recipient_order();
 -- Use 1,024 lock stripes: bulk inserts cannot exhaust advisory lock memory.
 CREATE FUNCTION sync_home_reply_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent text:=COALESCE(NEW.id,OLD.id);
@@ -4234,6 +4416,8 @@ CREATE TRIGGER messages_channel_author_latest AFTER INSERT OR DELETE OR UPDATE O
 -- Skip completed import history during every Slack channel claim.
 CREATE INDEX slack_import_jobs_active_team ON slack_import_jobs(team_id) WHERE status IN ('analyzing','importing');
 CREATE INDEX slack_channel_syncs_due_order ON slack_channel_syncs(available_at,team_id,slack_channel_id);
+-- Keep a team-specific claim from walking other teams' due rows.
+CREATE INDEX slack_channel_syncs_team_due_order ON slack_channel_syncs(team_id,available_at,slack_channel_id);
 CREATE INDEX slack_channel_wakes_due_order ON slack_channel_wakes(first_at,team_id,slack_channel_id);
 -- SIP credentials stay outside Electric/publication; only authenticated REST may read them.
 CREATE TABLE sip_lines (
@@ -4593,3 +4777,68 @@ END;
 $$;
 DROP TRIGGER IF EXISTS message_notifications_display ON messages;
 CREATE TRIGGER message_notifications_display AFTER UPDATE OF content,user_id,display_data,deleted_at,forwarded_message_ids ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_notifications_display();
+
+-- Slack チャンネルの対応先 (取り込み先) を付け替えたら、同期の途中経過を捨てる。
+-- 途中経過 (ページのカーソル・残りのスレッド・今回の最大 ts) は、古い対応先のためのものなので、
+-- 新しい対応先には使えない。カーソル (slack_channels.last_ts) はブリッジの付け替えが NULL にし、
+-- ここでは再開位置と実行中の印を戻す。
+CREATE FUNCTION reset_slack_channel_sync_on_remap() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE slack_channel_syncs
+  SET running=false,
+      phase='history',
+      run_oldest=NULL,
+      run_max_ts=NULL,
+      page_cursor=NULL,
+      pending_threads='[]',
+      swept_at=NULL,
+      run_light=false,
+      lease_token=NULL,
+      lease_until=NULL,
+      updated_at=now()
+  WHERE team_id=NEW.team_id AND slack_channel_id=NEW.slack_channel_id;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER reset_slack_channel_sync_on_remap
+AFTER UPDATE OF channel_id ON slack_channels
+FOR EACH ROW WHEN (OLD.channel_id IS DISTINCT FROM NEW.channel_id)
+EXECUTE FUNCTION reset_slack_channel_sync_on_remap();
+
+CREATE TABLE apub_media_blurhash_queue (
+  post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_id text,
+  image_retry_counts jsonb
+);
+CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);
+
+-- Keep private versions fetched for quotes outside the Inbox and notification store.
+CREATE TABLE apub_quote_originals (
+  id text PRIMARY KEY,
+  actor_id text NOT NULL REFERENCES apub_actors(id),
+  content text NOT NULL,
+  published timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  superseded boolean NOT NULL DEFAULT false,
+  superseded_by_public boolean NOT NULL DEFAULT false,
+  observed_audience text,
+  revision bigint NOT NULL DEFAULT 1,
+  parent_id text,
+  emojis jsonb NOT NULL,
+  media jsonb NOT NULL
+);
+CREATE INDEX apub_quote_originals_actor ON apub_quote_originals(actor_id);
+
+-- Signed quote access applies to the fetched version.
+CREATE TABLE apub_quote_grants (
+  post_id text NOT NULL REFERENCES apub_quote_originals(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  note_revision bigint NOT NULL,
+  PRIMARY KEY (post_id,user_id)
+);
+CREATE INDEX apub_quote_grants_user ON apub_quote_grants(user_id);
+CREATE TRIGGER apub_quote_grants_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_quote_grants
+  FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+
+ALTER TABLE home_posts ADD COLUMN quote_uri text;

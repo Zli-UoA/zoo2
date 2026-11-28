@@ -61,9 +61,38 @@ describe("shapeQueryParams", () => {
     expect(shapeQueryParams("userPinnedChannels", proxyConfig, { userId: "user-1" })).toEqual({});
   });
 
+  it("scopes channel notification settings to the current user in direct mode", () => {
+    expect(
+      shapeQueryParams("channelNotificationSettings", directConfig, { userId: "alice" }),
+    ).toEqual({
+      where: "user_id = $1",
+      "params[1]": "alice",
+    });
+    expect(() => shapeQueryParams("channelNotificationSettings", directConfig)).toThrow(/user ID/);
+    // 新しい実テーブルでも、列だけを参照する where / params はそのまま通る。
+    const params = paramsOf(
+      buildShapeRequestUrl("channelNotificationSettings", directConfig, { userId: "alice" }),
+    );
+    expect(params.get("table")).toBe("user_channel_notification_settings");
+    expect(params.get("where")).toBe("user_id = $1");
+    expect(params.get("params[1]")).toBe("alice");
+  });
+
+  it("routes proxy notification settings through their own path without extra params", () => {
+    expect(
+      buildShapeRequestUrl("channelNotificationSettings", proxyConfig, { userId: "alice" }),
+    ).toBe("http://localhost:8000/api/shapes/channel_notification_settings");
+  });
+
   it("adds no filter for whole-table shapes", () => {
     expect(shapeQueryParams("channels", directConfig, { channelId: "ignored" })).toEqual({});
-    expect(shapeQueryParams("users", proxyConfig, { channelId: "ignored" })).toEqual({});
+    expect(shapeQueryParams("allUsers", proxyConfig)).toEqual({});
+  });
+
+  it("requests the shared-channel scope only for the Web users shape", () => {
+    expect(shapeQueryParams("users", proxyConfig, { channelId: "ignored" })).toEqual({
+      scope: "shared",
+    });
   });
 });
 

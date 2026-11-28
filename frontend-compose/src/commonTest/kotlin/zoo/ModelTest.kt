@@ -42,4 +42,12 @@ class ModelTest {
         assertTrue(canManage(channel, "admin", true))
         assertFalse(canManage(channel, "member", false))
     }
+
+    @Test
+    fun notificationLevelIsUnknownUntilTheSettingsRowArrives() {
+        val settings = listOf(row("""{"channel_id":"c","notification_level":"all"}"""))
+        assertNull(channelNotificationLevel(emptyList(), "c"))
+        assertEquals("all", channelNotificationLevel(settings, "c"))
+        assertNull(channelNotificationLevel(settings, "other"))
+    }
 }
