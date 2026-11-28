@@ -1,6 +1,8 @@
 package zoo.android.ui
 
 
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
@@ -286,6 +288,7 @@ internal fun AndroidScreens(
     pageState: SaveableStateHolder = rememberSaveableStateHolder(),
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
     val systemHaptics = LocalHapticFeedback.current
     pageState.SaveableStateProvider("screen-history") {
         var recentRoutes by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
@@ -298,29 +301,44 @@ internal fun AndroidScreens(
         }
     }
     CompositionLocalProvider(LocalHapticFeedback provides if (interaction.haptics) systemHaptics else SilentHaptics) {
-        AnimatedContent(
-            targetState = screen,
-            contentKey = { it.routeKey() },
-            transitionSpec = {
-                val opening = initialState is AndroidScreen.Conversation && targetState is AndroidScreen.Thread
-                val closing = initialState is AndroidScreen.Thread && targetState is AndroidScreen.Conversation
-                when {
-                    interaction.reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
-                    opening -> slideInHorizontally(tween(240)) { it } togetherWith
-                        slideOutHorizontally(tween(240)) { -it / 4 }
-                    closing -> slideInHorizontally(tween(240)) { -it / 4 } togetherWith
-                        slideOutHorizontally(tween(240)) { it }
-                    else -> EnterTransition.None togetherWith ExitTransition.None
-                }
-            },
-            label = "Android screen",
-        ) { visibleScreen ->
+        val render: @Composable (AndroidScreen) -> Unit = { visibleScreen ->
             pageState.SaveableStateProvider(visibleScreen.routeKey()) {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
                     dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
             }
         }
+        if (interaction.reducedMotion) render(screen) else AnimatedContent(
+            targetState = screen,
+            contentKey = { it.routeKey() },
+            transitionSpec = {
+                val direction = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 1 else -1
+                val opening = targetState.isDetailOf(initialState)
+                val closing = initialState.isDetailOf(targetState)
+                val tabs = initialState.isTopLevel() && targetState.isTopLevel() && initialState::class != targetState::class
+                when {
+                    opening -> (fadeIn(tween(160)) + slideInHorizontally(tween(200)) { direction * it / 7 }) togetherWith fadeOut(tween(100))
+                    closing -> fadeIn(tween(160)) togetherWith (fadeOut(tween(140)) + slideOutHorizontally(tween(180)) { direction * it / 7 })
+                    tabs -> fadeIn(tween(110)) togetherWith fadeOut(tween(90))
+                    else -> EnterTransition.None togetherWith ExitTransition.None
+                }
+            },
+            label = "Android screen",
+        ) { render(it) }
     }
+}
+
+private fun AndroidScreen.isTopLevel() = this is AndroidScreen.Home || this is AndroidScreen.Channels ||
+    this is AndroidScreen.Notifications || this is AndroidScreen.Search || this is AndroidScreen.Bubble || this is AndroidScreen.Settings
+
+private fun AndroidScreen.isDetailOf(parent: AndroidScreen): Boolean = when (this) {
+    is AndroidScreen.Conversation -> parent is AndroidScreen.Channels
+    is AndroidScreen.Thread -> parent is AndroidScreen.Conversation
+    is AndroidScreen.ChannelSettings -> parent is AndroidScreen.Conversation
+    is AndroidScreen.EditChannel -> parent is AndroidScreen.ChannelSettings || parent is AndroidScreen.Channels
+    is AndroidScreen.SettingsDetail -> parent is AndroidScreen.Settings || parent is AndroidScreen.ChannelSettings
+    is AndroidScreen.Post -> parent is AndroidScreen.Home || parent is AndroidScreen.Conversation || parent is AndroidScreen.Profile
+    is AndroidScreen.NewPost, is AndroidScreen.Profile -> parent is AndroidScreen.Home
+    else -> false
 }
 
 private fun AndroidScreen.routeKey(): String = when (this) {

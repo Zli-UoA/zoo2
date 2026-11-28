@@ -1049,6 +1049,39 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun captureSettingsNavigationAndReducedMotion() {
+        val settings = AndroidScreen.Settings(listOf(SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", "ライト")))))
+        val detail = AndroidScreen.SettingsDetail("テーマ", listOf(SettingsGroup("", listOf(
+            SettingsEntry.Choice("light", "ライト", true), SettingsEntry.Choice("dark", "ダーク", false)))))
+        var screen by mutableStateOf<AndroidScreen>(settings)
+        var reduced by mutableStateOf(false)
+        ui.setContent {
+            AndroidScreens(screen, false, true, { action ->
+                screen = if (action == AndroidUiAction.Back) settings else detail
+            }, interaction = AndroidInteractionSettings(reducedMotion = reduced)) { _, _ -> }
+        }
+        ui.mainClock.autoAdvance = false
+        try {
+            capture("motion-00")
+            ui.onNodeWithText("テーマ").performClick()
+            for (frame in 1..14) {
+                ui.mainClock.advanceTimeByFrame()
+                capture("motion-" + frame.toString().padStart(2, '0'))
+            }
+            ui.onNodeWithText("ダーク").assertIsDisplayed()
+            ui.runOnIdle { screen = settings }
+            for (frame in 15..28) {
+                ui.mainClock.advanceTimeByFrame()
+                capture("motion-" + frame.toString().padStart(2, '0'))
+            }
+            ui.runOnIdle { reduced = true; screen = detail }
+            ui.mainClock.advanceTimeBy(32)
+            ui.onNodeWithText("ダーク").assertIsDisplayed()
+            ui.onNodeWithText("外観").assertDoesNotExist()
+        } finally { ui.mainClock.autoAdvance = true }
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "ja-rJP-w320dp-h640dp-xhdpi")
     fun narrowScreenWithEnlargedTypeOffersRecovery() {
         var retries = 0
