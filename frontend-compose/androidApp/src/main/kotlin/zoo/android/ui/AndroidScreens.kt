@@ -137,7 +137,7 @@ internal data class ChannelSection(val label: String, val channels: List<Channel
 internal sealed interface AndroidScreen {
     data class Home(
         val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
-        val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
+        val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true, val showingSavedHead: Boolean = false,
     ) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
     data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false, val appendFailed: Boolean = false) : AndroidScreen
@@ -575,6 +575,8 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                 loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null,
                 header = if (screen.posts.isNotEmpty() && screen.loadFailed && screen.online) {
                     { TimelineLoadError(colors) { dispatch(AndroidUiAction.RetryTimeline) } }
+                } else if (screen.showingSavedHead) {
+                    { Text("前回の表示", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = colors.secondary, fontSize = 12.sp) }
                 } else null,
             )
             if (screen.posts.isEmpty()) {

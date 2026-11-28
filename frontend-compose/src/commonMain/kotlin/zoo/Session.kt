@@ -20,8 +20,15 @@ private fun Row.channelReadPosition() = ChannelReadPosition(
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
     internal val homeTimelines = HomeTimelineCache()
+    internal val startupTimeline = StartupTimeline(repo.platform)
+
+    internal fun clearStartupTimeline() {
+        val version = startupTimeline.invalidate()
+        scope.launch { startupTimeline.replace(version, "", emptyList()) }
+    }
 
     fun setNavigationCacheLimit(limit: Int) {
+        if (limit == 0) clearStartupTimeline()
         homeTimelines.limit = limit.coerceIn(0, 16)
         repo.navigationCacheLimit = limit
     }

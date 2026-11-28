@@ -417,9 +417,9 @@ internal fun ConnectedScreens(
         if (route == "/bubble" && env.online && env.visible) state.bubble.run()
     }
     LaunchedEffect(route, env.visible, env.online) {
-        if (route == "/home" && env.online && env.visible) {
+        if (route == "/home" && env.visible) {
             state.home.restoreSelection()
-            if (state.home.needsRefresh()) state.home.refresh(retain = true)
+            if (env.online && state.home.needsRefresh()) state.home.refresh(retain = true)
         }
         if (route == "/notifications" && env.online && env.visible) session.activityPubNotifications.ensureLoaded()
     }
@@ -593,7 +593,7 @@ internal fun ConnectedScreens(
         state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache") -> state.settingsDetail(env, notificationOptions)
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
-            loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
+            showingSavedHead = state.home.showingSavedHead, loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
         route == "/notifications" -> state.inbox.screen(state.followResponses)
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true, characterLimit = 1000), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, fullScreenAllowed))

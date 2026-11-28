@@ -80,10 +80,25 @@ class HomeTimeline(
         app.homeTimelines.save(cacheKey, HomeTimelineSnapshot(posts, hasMore, index, offset, checkedAt))
     }
 
+    var showingSavedHead by mutableStateOf(false)
+        private set
+    private var attemptedDiskRestore = false
     private var selectionChanged = false
     suspend fun restoreSelection() {
         val saved = readHomePreference(app, settingsKey)
         if (!selectionChanged) timeline = saved.takeIf { it in listOf("home", "local", "social") } ?: "home"
+        if (!attemptedDiskRestore && postId == null && actorId == null && app.homeTimelines.limit > 0 && posts.isEmpty()) {
+            attemptedDiskRestore = true
+            val selected = timeline
+            val generationAtRead = generation
+            val cached = app.startupTimeline.read(selected)
+            if (generation == generationAtRead && timeline == selected && posts.isEmpty() && cached.isNotEmpty() &&
+                app.homeTimelines.limit > 0) {
+                posts = cached
+                showingSavedHead = true
+                loading = false
+            }
+        }
     }
 
     fun select(value: String) {
@@ -91,6 +106,7 @@ class HomeTimeline(
         if (posts.isNotEmpty()) save()
         timeline = value
         selectionChanged = true
+        showingSavedHead = false
         scope.launch { writeHomePreference(app, settingsKey, value) }
         deferred = false
         generation++
@@ -160,6 +176,12 @@ class HomeTimeline(
                             if (!hasMore) olderError = false
                         }
                         if (fetchHead && headApplied) {
+                            showingSavedHead = false
+                            if (actorId == null && postId == null && app.homeTimelines.limit > 0) {
+                                val selected = timeline
+                                val versionToSave = app.startupTimeline.invalidate()
+                                scope.launch { app.startupTimeline.replace(versionToSave, selected, head) }
+                            }
                             pendingHead = false
                             checkedAt = kotlin.time.Clock.System.now().toEpochMilliseconds()
                             validatedIds = headIds
@@ -193,6 +215,8 @@ class HomeTimeline(
     }
 
     fun reloadAfterAudienceChange() {
+        app.clearStartupTimeline()
+        showingSavedHead = false
         app.homeTimelines.clear()
         posts = emptyList()
         hasMore = false
@@ -200,6 +224,7 @@ class HomeTimeline(
     }
 
     fun remove(postId: String) {
+        app.clearStartupTimeline()
         generation++
         refreshJob?.cancel()
         refreshJob = null
