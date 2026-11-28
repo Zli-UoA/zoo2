@@ -50,7 +50,11 @@ struct MfmDocument {
 private final class MfmScanner {
     private let source: String
     private let units: [UInt16]
-    private var remaining: Int
+    final class Budget {
+        var remaining: Int
+        init(_ count: Int) { remaining = count }
+    }
+    private let budget: Budget
     private var nextID = 0
     private var tokens: [String: [UInt16]] = [:]
     private var patterns: [String: NSRegularExpression] = [:]
@@ -62,19 +66,19 @@ private final class MfmScanner {
         ("__", "__", .bold), ("~~", "~~", .strike), ("*", "*", .italic), ("_", "_", .italic),
     ]
 
-    init(_ source: String, initialDepth: Int = 0, headings: Bool = true) {
+    init(_ source: String, initialDepth: Int = 0, headings: Bool = true, budget: Budget? = nil) {
         self.source = source
         self.initialDepth = initialDepth
         self.headings = headings
         units = Array(source.utf16)
-        remaining = min(1_000_000, max(4096, units.count * 64))
+        self.budget = budget ?? Budget(min(1_000_000, max(4096, units.count * 64)))
     }
 
-    private func step() -> Bool { remaining -= 1; return remaining >= 0 }
+    private func step() -> Bool { budget.remaining -= 1; return budget.remaining >= 0 }
     private func string(_ start: Int, _ end: Int) -> String { String(decoding: units[start..<end], as: UTF16.self) }
     private func has(_ token: String, at: Int, end: Int) -> Bool {
         let needle = tokens[token] ?? Array(token.utf16)
-        tokens[token] = needle
+        if tokens[token] == nil { tokens[token] = needle }
         return at + needle.count <= end && units[at..<(at + needle.count)].elementsEqual(needle)
     }
     private func match(_ pattern: String, at: Int, end: Int) -> NSTextCheckingResult? {
@@ -202,7 +206,7 @@ private final class MfmScanner {
                     let body = string(at, stop).components(separatedBy: "\n").map { line -> String in
                         var value = String(line.dropFirst()); if value.hasPrefix(" ") { value.removeFirst() }; return value
                     }.joined(separator: "\n")
-                    let nested = MfmScanner(body, initialDepth: depth + 1, headings: false).parse()
+                    let nested = MfmScanner(body, initialDepth: depth + 1, headings: false, budget: budget).parse()
                     append(node(.quote, "", children: renumber(nested), start: at, end: stop), stop: stop)
                     textStart = at; continue
                 }
@@ -251,7 +255,7 @@ private final class MfmScanner {
                 appendText(until: at); let stop = NSMaxRange(account.range)
                 append(node(.emoji, string(at, stop), start: at, end: stop), stop: stop); textStart = at; continue
             }
-            if has("https://", at: at, end: end) || has("http://", at: at, end: end) {
+            if (units[at] == 104 || units[at] == 72), match(#"(?i:https?)://"#, at: at, end: end) != nil {
                 let stop = urlEnd(from: at, end: end)
                 if stop > at {
                     appendText(until: at)

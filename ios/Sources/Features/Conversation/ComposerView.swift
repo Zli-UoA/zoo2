@@ -85,6 +85,8 @@ struct ComposerView: View {
                             inputLabel: parentID == nil ? "メッセージを入力" : "返信を入力", handle: handleMfmKey)
                             .padding(.vertical, expanded ? 12 : 10)
                             .frame(minHeight: expanded ? 48 : 40)
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(TapGesture().onEnded { focused = true })
                         if !expanded { sendButton }
                     }
                     .padding(.horizontal, expanded ? 12 : 0)
@@ -372,6 +374,9 @@ private struct MfmComposerTextField: UIViewRepresentable {
         let view = MfmInputTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
+        view.isScrollEnabled = false
+        view.showsHorizontalScrollIndicator = false
+        view.showsVerticalScrollIndicator = false
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         view.adjustsFontForContentSizeCategory = true
@@ -416,7 +421,8 @@ private struct MfmComposerTextField: UIViewRepresentable {
         let measured = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         let line = uiView.font?.lineHeight ?? 21
         let height = min(max(line, ceil(measured.height)), ceil(line * 6))
-        uiView.isScrollEnabled = measured.height > height + 1
+        let scrolls = measured.height > height + 1
+        if uiView.isScrollEnabled != scrolls { uiView.isScrollEnabled = scrolls }
         return CGSize(width: width, height: height)
     }
     static func dismantleUIView(_ view: MfmInputTextView, coordinator: Coordinator) {

@@ -226,6 +226,14 @@ struct MfmTests {
     func uppercaseLinks() throws {
         let block = try #require(MfmNativeState(content: "**資料** HTTPS://example.com/path").prepare(key: key(), images: [:]).first)
         #expect(block.imageLinks.contains { $0.url.host == "example.com" && $0.url.path == "/path" })
+        for raw in ["HTTPS://example.com/search?user=＠alice", "hTtP://example.com/search?user=@alice"] {
+            let content = "**資料** " + raw
+            let link = try #require(MfmDocument(content).nodes.first { $0.kind == .link })
+            #expect(link.argument == raw)
+            let rendered = try #require(MfmNativeState(content: content).prepare(key: key(), images: [:]).first)
+            let url = try #require(rendered.imageLinks.first { $0.url.host == "example.com" }?.url)
+            #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == (raw.contains("＠") ? "＠alice" : "@alice"))
+        }
     }
 
     @Test("登録済み絵文字の画像が未取得なら標準絵文字に置き換えない")
@@ -352,6 +360,11 @@ struct MfmTests {
         #expect(!MfmDocument(deep).nodes.isEmpty)
         #expect(!MfmDocument(String(repeating: "$[spin ** [", count: 3_000)).nodes.isEmpty)
         #expect(!MfmDocument(String(repeating: ">", count: 40_000)).nodes.isEmpty)
+        let quotes = String(repeating: "> " + String(repeating: "[", count: 1_990) + "\n\n", count: 20)
+        let elapsed = ContinuousClock().measure {
+            #expect(!MfmDocument(quotes).nodes.isEmpty)
+        }
+        #expect(elapsed < .seconds(3))
         let text = String(repeating: "😀日本語\n", count: 6_000)
         #expect(MfmDocument(text).nodes.map(\.plainText).joined() == text)
     }

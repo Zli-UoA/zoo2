@@ -51,7 +51,7 @@ struct MfmMessageView: View {
                             .accessibilityLabel(Text(verbatim: block.accessibilityLabel))
                             .accessibilityActions {
                                 ForEach(block.imageLinks) { link in
-                                    Button(link.url.scheme == "zoo-mfm-blur" ? "ぼかしを解除" : "リンクを開く：" + String(link.label.prefix(80))) { handleURL(link.url) }
+                                    Button(link.url.scheme == "zoo-mfm-blur" ? "ぼかしを解除" : "リンクを開く：" + String(link.label.prefix(80)) + "（" + (link.url.host ?? link.url.absoluteString) + "）") { handleURL(link.url) }
                                 }
                             }
                             .accessibilityValue(block.imageLinks.contains { $0.url.scheme == "zoo-mfm-blur" } ? "ぼかしあり" : "")
