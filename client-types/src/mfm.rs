@@ -624,6 +624,8 @@ struct Scan<'t> {
     found: Vec<(&'static str, usize, Option<usize>)>,
     /// `[` の位置から対応する `]` の位置。初めて必要になったときに一度だけ求める。
     brackets: Option<std::collections::HashMap<usize, usize>>,
+    /// 空白と、空白でない文字の、直近の探索の開始位置と見つかった位置。
+    spaces: [Option<(usize, Option<usize>)>; 2],
 }
 
 impl<'t> Scan<'t> {
@@ -632,6 +634,7 @@ impl<'t> Scan<'t> {
             text,
             found: Vec::new(),
             brackets: None,
+            spaces: [None; 2],
         }
     }
 
@@ -650,6 +653,38 @@ impl<'t> Scan<'t> {
             None => self.found.push((close, from, found)),
         }
         found
+    }
+
+    /// `from` 以降で最初の、空白（`space` が偽なら、空白でない文字）の位置。
+    fn find_space(&mut self, space: bool, from: usize) -> Option<usize> {
+        let cached = &mut self.spaces[usize::from(space)];
+        if let Some((start, found)) = *cached
+            && start <= from
+            && found.is_none_or(|found| found >= from)
+        {
+            return found;
+        }
+        let found = self.text[from..]
+            .find(|c: char| c.is_whitespace() == space)
+            .map(|index| from + index);
+        *cached = Some((from, found));
+        found
+    }
+
+    /// `[label](url)` の行き先が `from` から始まるときの、閉じる `)` の位置。行き先は、`)` の直前の
+    /// ほかに空白を含まず、次のリンクの `](` も含まない（閉じ忘れたリンクが、後ろの本文を行き先に
+    /// しないように）。
+    fn destination_end(&mut self, from: usize) -> Option<usize> {
+        let close = self.find(")", from)?;
+        if self.find("](", from).is_some_and(|next| next < close) {
+            return None;
+        }
+        match self.find_space(true, from) {
+            Some(space) if space < close => {
+                (self.find_space(false, space) == Some(close)).then_some(close)
+            }
+            _ => Some(close),
+        }
     }
 
     /// `i` から `open` で始まるなら、次の `close` までの中身。
@@ -763,11 +798,15 @@ pub(crate) fn leading_url(text: &str) -> Option<&str> {
 fn link(scan: &mut Scan, i: usize, base: Style, show_url: bool) -> Option<(usize, Vec<Span>)> {
     let offset = usize::from(scan.text[i..].starts_with('?'));
     let label = scan.between(i + offset, "[", "]")?;
-    let url = scan.between(i + offset + label.len() + 2, "(", ")")?;
-    if !(url.starts_with("https://") || url.starts_with("http://")) || label.contains('\n') {
+    let text = scan.text;
+    let after = text[i + offset + label.len() + 2..].strip_prefix('(')?;
+    if !(after.starts_with("https://") || after.starts_with("http://")) || label.contains('\n') {
         return None;
     }
-    let consumed = offset + label.len() + 2 + url.len() + 2;
+    let start = text.len() - after.len();
+    let end = scan.destination_end(start)?;
+    let url = &text[start..end];
+    let consumed = end + 1 - i;
     let mut spans = vec![Span {
         silent: offset == 1,
         ..Span::link(label.to_string(), url, base.patch(LINK))
@@ -818,6 +857,39 @@ fn unixtime(body: &str, base: Style) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unclosed_link_does_not_swallow_the_following_text() {
+        let shown = |content: &str| {
+            let spans = parse(content, None).remove(0).spans;
+            let text: String = spans.iter().map(|span| span.content.as_str()).collect();
+            let hrefs: Vec<String> = spans.into_iter().filter_map(|span| span.href).collect();
+            (text, hrefs)
+        };
+        let new = "https://a.test/new";
+        for (content, kept) in [
+            (
+                format!("[旧](https://a.test/old を使わず、[新]({new}) を参照"),
+                "[旧](https://a.test/old を使わず、新",
+            ),
+            // 空白がなくても、後ろのリンクは行き先に含めない。
+            (
+                format!("[旧](https://a.test/oldを使わず、[新]({new})を参照"),
+                "[旧](https://a.test/oldを使わず、新",
+            ),
+        ] {
+            let (text, hrefs) = shown(&content);
+            assert!(text.starts_with(kept), "{text}");
+            assert_eq!(hrefs, ["https://a.test/old", new], "{content}");
+        }
+        // 閉じる前に本文があれば、リンクにしない。
+        let (text, hrefs) = shown("[旧](https://a.test/old は古い（重要)");
+        assert_eq!(text, "[旧](https://a.test/old は古い（重要)");
+        assert_eq!(hrefs, ["https://a.test/old"]);
+        // `)` の直前の空白は、今までどおり扱う。
+        let (_, hrefs) = shown("[a](https://a.test/3 　)");
+        assert_eq!(hrefs, ["https://a.test/3 　"]);
+    }
 
     #[test]
     fn plain_over_several_lines_shows_its_content_as_is() {

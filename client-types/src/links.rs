@@ -617,6 +617,10 @@ mod tests {
             "https://a[".repeat(4_000),
             "<plain>".repeat(5_000),
             "<plain>\n</plain>".repeat(3_000),
+            "[](https://a ".repeat(3_000),
+            format!("{} x)", "[](https://a".repeat(3_000)),
+            format!("{}{}x)", "[](https://a".repeat(3_000), " ".repeat(20_000)),
+            format!("{}{}x)", "[](https://a ".repeat(3_000), " ".repeat(20_000)),
         ] {
             app_links(&content, APP);
             embedded_links(&content, APP);
@@ -675,6 +679,13 @@ mod tests {
         assert_eq!(
             excerpt("[**太い**リンク](https://example.com/x)"),
             "太いリンク"
+        );
+        // 閉じ忘れたリンクの後ろの本文は消えない。
+        assert_eq!(
+            excerpt(
+                "手順は[旧版](https://example.test/old を使わず、[新版](https://example.test/new) を参照"
+            ),
+            "手順は[旧版](https://example.test/old を使わず、新版 を参照"
         );
         assert_eq!(excerpt(" \n "), "");
         assert_eq!(excerpt(&"あ".repeat(300)), format!("{}…", "あ".repeat(200)));
