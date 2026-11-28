@@ -243,7 +243,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                             pushStringAnnotation(mentionAvatarTag, username)
                             appendInlineContent("$mentionAvatarTag:$username", "\uFFFC")
                             pop()
-                            append(" $label")
+                            append("\u202F$label")
                         }
                     }
                     pop()
@@ -392,10 +392,10 @@ internal fun EntryBody(
             val username = annotation.item
             val profile = mentionProfiles.getValue(username)
             "$mentionAvatarTag:$username" to InlineTextContent(
-                Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)
+                Placeholder(1.em, 1.em, PlaceholderVerticalAlign.TextCenter)
             ) {
                 TimelineAvatar(profile.text("display_name").ifEmpty { username },
-                    profile.text("avatar_url").ifEmpty { null }, mentionColors, iconSize * 1.15f)
+                    profile.text("avatar_url").ifEmpty { null }, mentionColors, iconSize)
             }
         }
     }
@@ -404,5 +404,5 @@ internal fun EntryBody(
 }
 
 internal fun AndroidColors.mentionStyle() = SpanStyle(
-    color = mentionText, fontWeight = AndroidWeights.label,
+    color = mentionText, fontWeight = AndroidWeights.emphasis,
 )

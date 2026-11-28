@@ -66,8 +66,8 @@ class EntryTextTest {
             mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
         )
 
-        assertEquals("\uFFFC Alice. @bob HERE", result.text)
-        assertEquals(listOf("\uFFFC Alice", "HERE"), result.spanStyles.filter { it.item == style }
+        assertEquals("\uFFFC\u202FAlice. @bob HERE", result.text)
+        assertEquals(listOf("\uFFFC\u202FAlice", "HERE"), result.spanStyles.filter { it.item == style }
             .map { result.text.substring(it.start, it.end) })
     }
     @Test
