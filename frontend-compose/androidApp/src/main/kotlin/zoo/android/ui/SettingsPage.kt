@@ -34,7 +34,7 @@ internal fun SettingsPage(
     colors: AndroidColors,
     open: (String) -> Unit,
     toggle: (String, Boolean) -> Unit,
-    title: String = "設定",
+    title: String = androidLabel("settings.navTitle", "設定"),
     onBack: (() -> Unit)? = null,
 ) {
     PageHeader(title, colors, onBack = onBack)

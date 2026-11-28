@@ -35,20 +35,20 @@ internal fun EntryActionSheet(
             if (open != null) {
                 SheetAction(
                     if (posts) UiIcon.Document else UiIcon.Bubble,
-                    if (posts) "投稿を開く" else "スレッドを開く",
+                    if (posts) androidLabel("android.post.open", "投稿を開く") else androidLabel("threads.open", "スレッドを開く"),
                     colors,
                     open,
                 )
             }
             if (entry.editable) {
-                SheetAction(UiIcon.Format, "編集", colors) { action(EntryOperation.Edit, "") }
-                SheetAction(UiIcon.Delete, "削除", colors) { action(EntryOperation.Delete, "") }
+                SheetAction(UiIcon.Format, androidLabel("messages.edit", "編集"), colors) { action(EntryOperation.Edit, "") }
+                SheetAction(UiIcon.Delete, androidLabel("messages.delete", "削除"), colors) { action(EntryOperation.Delete, "") }
             }
-            if (entry.canReact) SheetAction(UiIcon.Emoji, "リアクション", colors) { action(EntryOperation.React, "") }
-            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿", colors) {
+            if (entry.canReact) SheetAction(UiIcon.Emoji, androidLabel("home.react", "リアクション"), colors) { action(EntryOperation.React, "") }
+            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) androidLabel("android.post.undoRepost", "再投稿を取り消す") else androidLabel("android.post.repost", "再投稿"), colors) {
                 action(EntryOperation.Repost, "")
             }
-            SheetAction(UiIcon.Copy, "本文をコピー", colors) {
+            SheetAction(UiIcon.Copy, androidLabel("home.copyContent", "本文をコピー"), colors) {
                 scope.launch {
                     clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, entry.body)))
                     dismiss()

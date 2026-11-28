@@ -73,7 +73,8 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
     "create": "통로 만들기",
-    "nsfw": "NSFW 통로"
+    "nsfw": "NSFW 통로",
+    "selectPrompt": "통로를 선택하십시오"
   },
   "sync": {
     "title": "동기화 상태",
@@ -212,7 +213,8 @@
       "server": "봉사기에서 오류가 발생했습니다. 잠시 기다렸다가 다시 시도하십시오.",
       "network": "봉사기에 접속하지 못했습니다. 접속상태를 확인하고 다시 시도하십시오.",
       "unexpected": "조작에 실패했습니다. 다시 시도하십시오."
-    }
+    },
+    "ok": "확인"
   },
   "welcome": {
     "title": "Zoo에 오신것을 환영합니다",
@@ -2039,5 +2041,240 @@
     "unreadTooOld": "이전 안 읽은 메시지가 아직 범위 밖에 있습니다. 더 불러온 뒤 읽음으로 표시하세요.",
     "loadMore": "더 불러오기",
     "unreadChanged": "읽는 동안 새로운 안 읽은 메시지가 도착했습니다. 이 대화는 읽지 않은 상태로 다음으로 넘어가세요."
+  },
+  "android": {
+    "thread": {
+      "reopen": "다시 열기",
+      "settingsTitle": "타래 설정",
+      "participantsTitle": "타래 참가자"
+    },
+    "channel": {
+      "unarchive": "보관 풀기",
+      "editNameDescription": "이름과 설명 편집",
+      "notifyAllPosts": "모든 글",
+      "notifyMentionsOnly": "언급만 알림",
+      "openSettings": "통로 설정 열기",
+      "create": "만들기"
+    },
+    "settings": {
+      "profile": "프로필",
+      "editNameIcon": "이름·아이콘 편집",
+      "viewPublicPage": "공개 페지 보기",
+      "receiveDmCalls": "DM 통화 받기",
+      "themeSystem": "단말기 설정에 따름",
+      "openOsNotifications": "Android 알림 설정 열기"
+    },
+    "bubble": {
+      "self": "나",
+      "description": "입력하는 내용이 실시간으로 표시됩니다"
+    },
+    "dm": {
+      "createTitle": "직접통보문 만들기",
+      "start": "시작"
+    },
+    "entry": {
+      "deleteConfirmTitle": "삭제하겠습니까?"
+    },
+    "members": {
+      "removeTitle": "통로에서 삭제"
+    },
+    "post": {
+      "title": "글",
+      "new": "새 글",
+      "placeholder": "지금 무엇을 하고 있습니까?",
+      "selectPhotos": "사진 선택",
+      "photo": "사진",
+      "federate": "ActivityPub로 배포",
+      "repost": "다시 올리기",
+      "undoRepost": "다시 올리기 취소",
+      "repostedBy": "{{name}} 님이 다시 올림",
+      "moreActions": "다른 글 조작",
+      "open": "글 열기",
+      "quoteBy": "인용 · {{author}}",
+      "visibility": {
+        "direct": "받는 사람 한정"
+      }
+    },
+    "profile": {
+      "title": "프로필",
+      "openOriginal": "공개 프로필 열기",
+      "posts": "글",
+      "noPosts": "표시할 글이 없습니다",
+      "unfollow": "팔로우 해제",
+      "cancelFollowRequest": "신청 취소"
+    },
+    "signIn": {
+      "description": "열람기에서 인증을 마치면 Zoo로 돌아옵니다.",
+      "openLoginPage": "로그인 화면 열기",
+      "connectionSettings": "접속처설정",
+      "setUpConnection": "접속처 설정",
+      "serverUrl": "Zoo 봉사기 URL",
+      "clientId": "Android용 public client ID",
+      "viewDiagnostics": "진단기록 보기",
+      "diagnosticsTitle": "로그인의 진단기록",
+      "diagnosticsCopied": "진단기록을 복사했습니다",
+      "tryAnyway": "그래도 시도",
+      "browserHint": "열람기에서 인증을 완료하면 Zoo로 돌아옵니다.",
+      "openLogin": "로그인화면 열기",
+      "retryAutoLogin": "자동로그인 다시 시도"
+    },
+    "channels": {
+      "addMenu": "통로 찾기·만들기",
+      "createDm": "DM 만들기"
+    },
+    "channelEditor": {
+      "name": "통로 이름",
+      "description": "설명",
+      "sensitive": "민감한 내용 포함"
+    },
+    "message": {
+      "actions": "통보문 조작"
+    },
+    "emoji": {
+      "customTab": "사용자정의",
+      "pickFirst": "첫번째 그림글자 선택",
+      "pickCombination": "조합 선택",
+      "loading": "그림글자를 불러오는 중",
+      "customLoadError": "사용자정의 그림글자를 불러오지 못했습니다",
+      "empty": "선택할수 있는 그림글자가 없습니다"
+    },
+    "composer": {
+      "liveHint": "입력 내용 공유",
+      "shrink": "입력칸 줄이기",
+      "grow": "입력칸 넓히기",
+      "attach": "첨부",
+      "format": "서식",
+      "clearLive": "입력 지우기",
+      "formattingTitle": "글자 꾸미기",
+      "codeSample": "코드",
+      "quoteSample": "인용"
+    },
+    "call": {
+      "minimize": "통화 화면 숨기기",
+      "pictureInPicture": "통화를 작은 창으로 표시",
+      "end": "통화 끝내기"
+    },
+    "notifications": {
+      "actorsMore": "{{author}} 님 외"
+    },
+    "media": {
+      "playVideo": "동영상 재생",
+      "video": "동영상",
+      "previewFailed": "미리보기를 표시할 수 없습니다"
+    },
+    "login": {
+      "issuerHttps": "인증처는 HTTPS로 지정하십시오",
+      "issuerUrlHttps": "인증처는 HTTPS의 issuer URL로 지정하십시오",
+      "serverHttps": "봉사기에는 HTTPS의 origin URL을 지정하십시오",
+      "clientRequired": "Public client ID를 지정하십시오",
+      "discoveryFailed": "인증처의 설정을 가져올수 없습니다 (HTTP {{status}})",
+      "issuerMismatch": "issuer가 일치하지 않습니다",
+      "refreshUnreachable": "인증처에 접속할수 없습니다. 통신상태를 확인하고 다시 시도하십시오.",
+      "refreshUnconfirmed": "토큰갱신의 결과를 확인할수 없었습니다. 다시 로그인하십시오.",
+      "noAccessToken": "인증봉사기에서 토큰을 가져올수 없었습니다. 다시 로그인하십시오",
+      "step": {
+        "discovery": "인증처의 설정 가져오기",
+        "token": "토큰 가져오기"
+      },
+      "invalidResponse": "{{stage}}에 실패했습니다 (HTTP {{status}}). 인증봉사기의 응답을 확인하십시오",
+      "stepFailed": "{{stage}}에 실패했습니다 ({{details}}). {{hint}}",
+      "oauthHint": {
+        "unauthorizedClient": "AuthZ에서 Public client의 인가코드와 refresh_token의 인증을 허용하십시오",
+        "invalidTarget": "Resource / audience와 AuthZ의 API 설정, 클라이언트와의 련결을 확인하십시오",
+        "invalidScope": "openid profile offline_access의 리용이 허용되였는지 확인하십시오",
+        "invalidClient": "Client ID와 클라이언트가 유효한 Public client인지 확인하십시오",
+        "accessDenied": "열람기에서 로그인이 거부되였습니다. 다시 로그인하십시오",
+        "invalidGrant": "인증정보가 무효이거나 기한이 지났습니다. 다시 로그인하십시오",
+        "checkServer": "인증봉사기의 설정을 확인하십시오"
+      },
+      "wifiSignIn": "Wi-Fi의 로그인이 필요합니다. Android의 Wi-Fi 설정에서 접속을 완료하고 다시 시도하십시오.",
+      "network": {
+        "dns": "접속처의 이름을 해석할수 없습니다. Wi-Fi의 접속상태를 확인하십시오.",
+        "certificate": "접속처의 증명서를 확인할수 없습니다. 장치의 날자와 시간, Wi-Fi의 접속상태를 확인하십시오.",
+        "timeout": "접속처에서 시간안에 응답이 없었습니다. 망을 바꾸거나 다시 시도하십시오.",
+        "connection": "접속처에 접속할수 없습니다. Wi-Fi의 접속상태를 확인하십시오."
+      },
+      "reauth": {
+        "noAuthorizationEndpoint": "이 IdP는 인가코드흐름에 대응하지 않습니다",
+        "browserUnavailable": "열람기를 열수 없습니다",
+        "timeout": "인증이 시간안에 끝나지 않았습니다",
+        "cancelled": "인증이 취소되였습니다",
+        "noTokenEndpoint": "토큰 끝점이 없습니다",
+        "invalidCallback": "인증의 귀환처를 확인할수 없었습니다",
+        "callbackVerificationFailed": "열람기에서 인증의 귀환처를 검증할수 없었습니다",
+        "noIdToken": "ID 토큰을 받을수 없었습니다 (HTTP {{status}})"
+      },
+      "store": {
+        "changed": "보존한 인증정보가 변경되였습니다. 자동로그인을 다시 시도하십시오",
+        "superseded": "다른 로그인이 시작되였습니다. 로그인화면에서 다시 하십시오",
+        "removeOldFailed": "갱신전의 인증정보를 삭제할수 없었습니다. 장치의 빈 용량을 확인하십시오",
+        "saveFailed": "인증정보를 보존할수 없었습니다. 장치의 빈 용량과 잠금설정을 확인하십시오",
+        "removeFailed": "보존한 인증정보를 삭제할수 없었습니다. 장치의 빈 용량과 잠금설정을 확인하십시오"
+      },
+      "failedGeneric": "로그인할수 없습니다. 접속처와 망을 확인하십시오.",
+      "sessionExpired": "인증정보의 유효기간이 지났습니다. 다시 로그인하십시오.",
+      "autoLoginFailed": "자동로그인할수 없었습니다. 망을 확인하고 다시 시도하십시오.",
+      "zooApiFailed": "Zoo에 접속할수 없습니다 (HTTP {{status}})"
+    },
+    "encryption": {
+      "preparing": "이 장치의 암호화를 준비하고 있습니다",
+      "saveRecoveryKey": "복구 열쇠를 안전한 곳에 기록해두십시오",
+      "recoveryKeyNoted": "열쇠를 기록했음",
+      "recoveryKeySaved": "보존됨",
+      "passkeyAdded": "패스키를 추가함",
+      "continueSetup": "초기설정 계속하기",
+      "setUp": "암호화 설정",
+      "uploadBackup": "열쇠를 예비보관",
+      "restoreBackup": "열쇠의 예비보관을 복원",
+      "operationFailed": "암호화조작을 완료할수 없었습니다",
+      "reload": "상태를 다시 읽기",
+      "revocation": {
+        "noteLine": "{{name}}: {{reasons}}",
+        "reasonSeparator": ", ",
+        "deviceLine": "{{name}} ({{id}})"
+      }
+    },
+    "update": {
+      "installing": "{{version}}을(를) 설치하고 있습니다",
+      "installed": "{{version}}(으)로 갱신했습니다",
+      "notChecked": "아직 갱신을 확인하지 않았습니다",
+      "releaseOnly": "자동갱신은 서명된 release 판에서 리용할 수 있습니다",
+      "shizukuRequired": "Shizuku를 기동하고 Zoo의 사용을 허가하십시오",
+      "checking": "main의 갱신을 확인하고 있습니다",
+      "upToDate": "최신판입니다 ({{version}})",
+      "downloading": "{{version}}을(를) 내려받고 있습니다",
+      "apkHttpError": "APK를 받을 수 없습니다 (HTTP {{status}})",
+      "apkSizeMismatch": "APK의 크기가 일치하지 않습니다",
+      "apkChecksumMismatch": "APK의 검사합이 일치하지 않습니다",
+      "apkUnreadable": "APK를 해석할 수 없습니다",
+      "failed": "갱신하지 못했습니다: {{reason}}",
+      "channelMismatch": "갱신통로가 일치하지 않습니다",
+      "sourceMismatch": "갱신원천이 일치하지 않습니다",
+      "otherApp": "다른 앱의 APK입니다",
+      "versionMismatch": "APK의 판본이 일치하지 않습니다",
+      "signerMismatch": "서명열쇠가 일치하지 않습니다. 현재 앱과 같은 열쇠로 서명된 갱신이 필요합니다",
+      "feedHttpError": "갱신정보를 받을 수 없습니다 (HTTP {{status}})",
+      "feedTooLarge": "갱신정보가 너무 큽니다",
+      "noResultFromShizuku": "Shizuku 설치프로그람에서 결과를 받지 못했습니다. Shizuku를 재기동하고 다시 시도하십시오",
+      "installerMismatch": "Shizuku 설치프로그람의 접속대상이 일치하지 않습니다: {{descriptor}}",
+      "shizukuDisconnected": "Shizuku와의 접속이 끊어졌습니다",
+      "installerConnectFailed": "Shizuku 설치프로그람에 접속하지 못했습니다. Shizuku를 재기동하고 다시 시도하십시오",
+      "installFailed": "설치하지 못했습니다: {{detail}}",
+      "permissionDenied": "Shizuku의 사용이 허가되지 않았습니다",
+      "version": "판본 {{version}}",
+      "description": "자동갱신은 Wi-Fi와 같은 종량제가 아닌 접속에서 확인합니다. 설치가 끝나면 Zoo가 다시 열립니다.",
+      "shizukuGranted": "Shizuku의 사용을 허가함",
+      "shizukuNeeded": "Shizuku의 기동과 사용허가가 필요합니다",
+      "debugBuild": "자동갱신은 서명된 배포판에서 리용할 수 있습니다.",
+      "grantShizuku": "Shizuku의 사용을 허가",
+      "startShizukuFirst": "Shizuku 봉사를 기동한 다음 허가하십시오",
+      "shizukuGuide": "Shizuku의 도입방법",
+      "browserFailed": "브라우저를 열지 못했습니다",
+      "autoUpdate": "자동갱신",
+      "checkNow": "지금 갱신 확인",
+      "downloadLatest": "최신 APK 내려받기",
+      "feedFailed": "갱신정보를 받지 못했습니다",
+      "manualInstall": "Shizuku를 쓰지 않는 경우에는 APK를 내려받아 열고 수동으로 설치하십시오."
+    }
   }
 }

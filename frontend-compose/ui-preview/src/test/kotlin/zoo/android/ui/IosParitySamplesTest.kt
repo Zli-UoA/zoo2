@@ -85,7 +85,7 @@ class IosParitySamplesTest {
                 )),
                 ChannelItem("random", "雑談", threads = listOf(ChannelThreadItem("t3", "週末の予定", 5))),
             )),
-            ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "みずき", isUserName = true))),
+            ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "みずき", isUserName = true)), dm = true),
         ), moreThreads = true)
         ui.setContent { AndroidScreens(screen, dark, true, dispatch = { actions += it }, language = "ja") { _, _ -> } }
         capture("channels-threads-light")

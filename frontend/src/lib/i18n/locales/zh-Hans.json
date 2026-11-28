@@ -73,7 +73,8 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "创建中…",
     "create": "创建频道",
-    "nsfw": "NSFW 频道"
+    "nsfw": "NSFW 频道",
+    "selectPrompt": "请选择频道"
   },
   "sync": {
     "title": "同步状态",
@@ -212,7 +213,8 @@
       "server": "服务器发生错误。请稍后再试。",
       "network": "无法连接到服务器。请检查网络后重试。",
       "unexpected": "操作失败。请重试。"
-    }
+    },
+    "ok": "确定"
   },
   "welcome": {
     "title": "欢迎使用 Zoo",
@@ -2039,5 +2041,240 @@
     "unreadTooOld": "部分较早的未读消息仍在加载范围外。请先加载更多再标为已读。",
     "loadMore": "加载更多",
     "unreadChanged": "阅读期间有新的未读消息。请保持此会话未读并继续。"
+  },
+  "android": {
+    "thread": {
+      "reopen": "重新开启",
+      "settingsTitle": "子线程设置",
+      "participantsTitle": "子线程参与者"
+    },
+    "channel": {
+      "unarchive": "取消归档",
+      "editNameDescription": "编辑名称和说明",
+      "notifyAllPosts": "所有帖子",
+      "notifyMentionsOnly": "仅通知提及",
+      "openSettings": "打开频道设置",
+      "create": "创建"
+    },
+    "settings": {
+      "profile": "个人资料",
+      "editNameIcon": "编辑名称和头像",
+      "viewPublicPage": "查看公开页面",
+      "receiveDmCalls": "接听私信来电",
+      "themeSystem": "跟随设备",
+      "openOsNotifications": "打开 Android 通知设置"
+    },
+    "bubble": {
+      "self": "自己",
+      "description": "输入的内容会实时显示"
+    },
+    "dm": {
+      "createTitle": "新建私信",
+      "start": "开始"
+    },
+    "entry": {
+      "deleteConfirmTitle": "要删除吗？"
+    },
+    "members": {
+      "removeTitle": "从频道移除"
+    },
+    "post": {
+      "title": "帖子",
+      "new": "新帖子",
+      "placeholder": "你在做什么？",
+      "selectPhotos": "选择照片",
+      "photo": "照片",
+      "federate": "通过 ActivityPub 分发",
+      "repost": "转发",
+      "undoRepost": "取消转发",
+      "repostedBy": "{{name}} 转发了",
+      "moreActions": "更多帖子操作",
+      "open": "打开帖子",
+      "quoteBy": "引用 · {{author}}",
+      "visibility": {
+        "direct": "仅限提及的人"
+      }
+    },
+    "profile": {
+      "title": "个人资料",
+      "openOriginal": "打开公开个人资料",
+      "posts": "帖子",
+      "noPosts": "没有可显示的帖子",
+      "unfollow": "取消关注",
+      "cancelFollowRequest": "取消申请"
+    },
+    "signIn": {
+      "description": "在浏览器中完成验证后，将返回 Zoo。",
+      "openLoginPage": "打开登录界面",
+      "connectionSettings": "连接目标设置",
+      "setUpConnection": "设置连接目标",
+      "serverUrl": "Zoo 服务器 URL",
+      "clientId": "Android 用 public client ID",
+      "viewDiagnostics": "查看诊断日志",
+      "diagnosticsTitle": "登录诊断日志",
+      "diagnosticsCopied": "已复制诊断日志",
+      "tryAnyway": "仍然尝试",
+      "browserHint": "在浏览器中完成认证后，将返回 Zoo。",
+      "openLogin": "打开登录界面",
+      "retryAutoLogin": "重试自动登录"
+    },
+    "channels": {
+      "addMenu": "浏览或创建频道",
+      "createDm": "创建私信"
+    },
+    "channelEditor": {
+      "name": "频道名称",
+      "description": "描述",
+      "sensitive": "包含敏感内容"
+    },
+    "message": {
+      "actions": "消息操作"
+    },
+    "emoji": {
+      "customTab": "自定义",
+      "pickFirst": "选择第一个表情",
+      "pickCombination": "选择组合",
+      "loading": "正在加载表情",
+      "customLoadError": "无法加载自定义表情",
+      "empty": "没有可选的表情"
+    },
+    "composer": {
+      "liveHint": "分享输入内容",
+      "shrink": "缩小输入框",
+      "grow": "展开输入框",
+      "attach": "附件",
+      "format": "格式",
+      "clearLive": "清空输入",
+      "formattingTitle": "文字格式",
+      "codeSample": "代码",
+      "quoteSample": "引用"
+    },
+    "call": {
+      "minimize": "收起通话界面",
+      "pictureInPicture": "以小窗口显示通话",
+      "end": "结束通话"
+    },
+    "notifications": {
+      "actorsMore": "{{author}} 等人"
+    },
+    "media": {
+      "playVideo": "播放视频",
+      "video": "视频",
+      "previewFailed": "无法显示预览"
+    },
+    "login": {
+      "issuerHttps": "认证方请指定 HTTPS",
+      "issuerUrlHttps": "认证方请指定 HTTPS 的 issuer URL",
+      "serverHttps": "服务器请指定 HTTPS 的 origin URL",
+      "clientRequired": "请指定 Public client ID",
+      "discoveryFailed": "无法获取认证方的设置 (HTTP {{status}})",
+      "issuerMismatch": "issuer 不一致",
+      "refreshUnreachable": "无法连接到认证方。请检查网络状态后重试。",
+      "refreshUnconfirmed": "无法确认令牌更新的结果。请重新登录。",
+      "noAccessToken": "无法从认证服务器获取令牌。请重新登录",
+      "step": {
+        "discovery": "获取认证方设置",
+        "token": "获取令牌"
+      },
+      "invalidResponse": "{{stage}}失败 (HTTP {{status}})。请检查认证服务器的响应",
+      "stepFailed": "{{stage}}失败 ({{details}})。{{hint}}",
+      "oauthHint": {
+        "unauthorizedClient": "请在 AuthZ 中允许 Public client 使用授权码和 refresh_token 认证",
+        "invalidTarget": "请检查 Resource / audience，以及 AuthZ 的 API 设置和与客户端的关联",
+        "invalidScope": "请确认是否允许使用 openid profile offline_access",
+        "invalidClient": "请确认 Client ID，以及客户端是否为有效的 Public client",
+        "accessDenied": "浏览器中的登录被拒绝。请再次登录",
+        "invalidGrant": "认证信息无效或已过期。请再次登录",
+        "checkServer": "请检查认证服务器的设置"
+      },
+      "wifiSignIn": "需要登录 Wi-Fi。请在 Android 的 Wi-Fi 设置中完成连接后重试。",
+      "network": {
+        "dns": "无法解析连接目标的名称。请检查 Wi-Fi 连接状态。",
+        "certificate": "无法验证连接目标的证书。请检查设备的日期时间和 Wi-Fi 连接状态。",
+        "timeout": "连接目标未在规定时间内响应。请切换网络或重试。",
+        "connection": "无法连接到连接目标。请检查 Wi-Fi 连接状态。"
+      },
+      "reauth": {
+        "noAuthorizationEndpoint": "此 IdP 不支持授权码流程",
+        "browserUnavailable": "无法打开浏览器",
+        "timeout": "认证未在规定时间内完成",
+        "cancelled": "认证已取消",
+        "noTokenEndpoint": "没有令牌端点",
+        "invalidCallback": "无法确认认证的回调地址",
+        "callbackVerificationFailed": "浏览器无法验证认证的回调地址",
+        "noIdToken": "未能收到 ID 令牌 (HTTP {{status}})"
+      },
+      "store": {
+        "changed": "已保存的认证信息已更改。请重试自动登录",
+        "superseded": "已开始另一个登录。请从登录界面重新开始",
+        "removeOldFailed": "无法删除更新前的认证信息。请检查设备的可用空间",
+        "saveFailed": "无法保存认证信息。请检查设备的可用空间和锁定设置",
+        "removeFailed": "无法删除已保存的认证信息。请检查设备的可用空间和锁定设置"
+      },
+      "failedGeneric": "无法登录。请检查连接目标和网络。",
+      "sessionExpired": "认证信息已过期。请重新登录。",
+      "autoLoginFailed": "无法自动登录。请检查网络后重试。",
+      "zooApiFailed": "无法连接到 Zoo (HTTP {{status}})"
+    },
+    "encryption": {
+      "preparing": "正在准备此设备的加密",
+      "saveRecoveryKey": "请将恢复密钥记在安全的地方",
+      "recoveryKeyNoted": "已记下密钥",
+      "recoveryKeySaved": "已保存",
+      "passkeyAdded": "已添加通行密钥",
+      "continueSetup": "继续初始设置",
+      "setUp": "设置加密",
+      "uploadBackup": "备份密钥",
+      "restoreBackup": "恢复密钥备份",
+      "operationFailed": "无法完成加密操作",
+      "reload": "重新加载状态",
+      "revocation": {
+        "noteLine": "{{name}}：{{reasons}}",
+        "reasonSeparator": "、",
+        "deviceLine": "{{name}}（{{id}}）"
+      }
+    },
+    "update": {
+      "installing": "正在安装 {{version}}",
+      "installed": "已更新到 {{version}}",
+      "notChecked": "尚未检查更新",
+      "releaseOnly": "自动更新仅适用于已签名的 release 版本",
+      "shizukuRequired": "请启动 Shizuku 并允许 Zoo 使用",
+      "checking": "正在检查 main 的更新",
+      "upToDate": "已是最新版本（{{version}}）",
+      "downloading": "正在下载 {{version}}",
+      "apkHttpError": "无法获取 APK（HTTP {{status}}）",
+      "apkSizeMismatch": "APK 大小不一致",
+      "apkChecksumMismatch": "APK 校验和不一致",
+      "apkUnreadable": "无法解析 APK",
+      "failed": "无法更新：{{reason}}",
+      "channelMismatch": "更新渠道不一致",
+      "sourceMismatch": "更新来源不一致",
+      "otherApp": "这是其他应用的 APK",
+      "versionMismatch": "APK 版本不一致",
+      "signerMismatch": "签名密钥不一致。更新必须使用与当前应用相同的密钥签名",
+      "feedHttpError": "无法获取更新信息（HTTP {{status}}）",
+      "feedTooLarge": "更新信息过大",
+      "noResultFromShizuku": "无法从 Shizuku 安装程序获取结果。请重启 Shizuku 后重试",
+      "installerMismatch": "Shizuku 安装程序的连接对象不一致：{{descriptor}}",
+      "shizukuDisconnected": "与 Shizuku 的连接已断开",
+      "installerConnectFailed": "无法连接到 Shizuku 安装程序。请重启 Shizuku 后重试",
+      "installFailed": "无法安装：{{detail}}",
+      "permissionDenied": "未获准使用 Shizuku",
+      "version": "版本 {{version}}",
+      "description": "自动更新会在 Wi-Fi 等不按流量计费的连接上检查。安装完成后 Zoo 会重新打开。",
+      "shizukuGranted": "已允许使用 Shizuku",
+      "shizukuNeeded": "需要启动 Shizuku 并允许使用",
+      "debugBuild": "自动更新仅适用于已签名的发布版本。",
+      "grantShizuku": "允许使用 Shizuku",
+      "startShizukuFirst": "请先启动 Shizuku 服务，然后再允许",
+      "shizukuGuide": "如何安装 Shizuku",
+      "browserFailed": "无法打开浏览器",
+      "autoUpdate": "自动更新",
+      "checkNow": "立即检查更新",
+      "downloadLatest": "下载最新 APK",
+      "feedFailed": "无法获取更新信息",
+      "manualInstall": "如不使用 Shizuku，请下载并打开 APK，手动安装。"
+    }
   }
 }

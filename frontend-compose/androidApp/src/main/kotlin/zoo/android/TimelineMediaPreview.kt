@@ -161,7 +161,7 @@ internal fun TimelineVideoPreview(
             Box(Modifier.fillMaxWidth().heightIn(min = 80.dp, max = 340.dp), contentAlignment = Alignment.Center) {
                 val file = video
                 when {
-                    failed -> Text("プレビューを表示できません", color = colors.foreground)
+                    failed -> Text(session.t("android.media.previewFailed"), color = colors.foreground)
                     file != null -> AndroidView(
                         factory = { ctx ->
                             VideoView(ctx).apply {
@@ -180,8 +180,8 @@ internal fun TimelineVideoPreview(
                 }
             }
         },
-        confirmButton = { DialogAction("閉じる", UiIcon.Close, click = dismiss) },
-        dismissButton = { DialogAction("元のファイル", UiIcon.External, click = openOriginal) },
+        confirmButton = { DialogAction(session.t("common.close"), UiIcon.Close, click = dismiss) },
+        dismissButton = { DialogAction(session.t("attachments.openOriginal"), UiIcon.External, click = openOriginal) },
     )
 }
 

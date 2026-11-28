@@ -22,7 +22,7 @@ internal fun shizukuReady(): Boolean =
 
 internal class ShizukuInstaller(private val context: Context) {
     suspend fun install(file: File): String {
-        check(shizukuReady()) { "Shizuku を起動し、Zoo に使用を許可してください" }
+        checkUpdate(shizukuReady(), "android.update.shizukuRequired")
         val connected = CompletableDeferred<IUpdateInstaller>()
         val args =
             Shizuku.UserServiceArgs(
@@ -36,9 +36,11 @@ internal class ShizukuInstaller(private val context: Context) {
                 override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                     try {
                         val descriptor = binder.interfaceDescriptor
-                        check(descriptor == IUpdateInstaller::class.java.name) {
-                            "Shizuku のインストーラーの接続先が一致しません: $descriptor"
-                        }
+                        checkUpdate(
+                            descriptor == IUpdateInstaller::class.java.name,
+                            "android.update.installerMismatch",
+                            "descriptor" to descriptor.orEmpty(),
+                        )
                         Log.i(
                             "ZooUpdater",
                             "Installer connected: $descriptor, alive=${binder.isBinderAlive}",
@@ -50,14 +52,14 @@ internal class ShizukuInstaller(private val context: Context) {
                 }
 
                 override fun onServiceDisconnected(name: ComponentName) {
-                    connected.completeExceptionally(IllegalStateException("Shizuku との接続が切れました"))
+                    connected.completeExceptionally(UpdateStateException("android.update.shizukuDisconnected"))
                 }
             }
         return installerSession(
             connect = {
                 withContext(Dispatchers.Main) { Shizuku.bindUserService(args, connection) }
                 withTimeoutOrNull(20_000) { connected.await() }
-                    ?: error("Shizuku のインストーラーに接続できませんでした。Shizuku を再起動して再試行してください")
+                    ?: throw UpdateStateException("android.update.installerConnectFailed")
             },
             install = { installer ->
                 withContext(Dispatchers.IO) {

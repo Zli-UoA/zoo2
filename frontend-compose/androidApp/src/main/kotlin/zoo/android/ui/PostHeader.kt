@@ -29,7 +29,7 @@ internal enum class PostAudience(val apiValue: String, val icon: UiIcon, val lab
     @Composable
     fun localizedLabel(): String = when (this) {
         Followers -> androidLabel("home.followersAudience", label)
-        Direct -> label
+        Direct -> androidLabel("android.post.visibility.direct", label)
         else -> androidLabel("home.visibility.$apiValue", label)
     }
 

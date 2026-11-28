@@ -61,7 +61,7 @@ class NotificationInbox(private val session: Session) {
             val summary = if (rows.size > 1) "${groupActivityLabel(kind)} · ×${rows.size}"
                 else {
                     val key = "home.notificationKinds.$kind"
-                    session.t(key).takeUnless { it == key } ?: activityLabel(kind)
+                    session.t(key).takeUnless { it == key } ?: groupActivityLabel(kind)
                 }
             val unreadIds = entries.flatMap { entry ->
                 (entry.channel ?: listOf(entry.representative())).filterNot { it.flag("is_read") }.map { it.text("id") }
@@ -163,16 +163,6 @@ class NotificationInbox(private val session: Session) {
             ?: actor.text("avatar_url").ifBlank { user?.text("avatar_url").orEmpty() }
                 .takeIf { publicUrl(it)?.protocol?.name == "https" }
         return NotificationActor(id, name, avatar)
-    }
-
-    private fun activityLabel(kind: String): String = when (kind) {
-        "like" -> "リアクション"
-        "reply" -> "返信"
-        "mention" -> "メンション"
-        "repost" -> "リポスト"
-        "dm" -> "ダイレクトメッセージ"
-        "follow_request", "follow_accepted" -> "フォロー"
-        else -> session.t("notifications.title")
     }
 
     private fun groupActivityLabel(kind: String): String = session.t(when (kind) {

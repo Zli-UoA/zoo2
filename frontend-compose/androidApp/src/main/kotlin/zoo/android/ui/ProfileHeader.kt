@@ -33,10 +33,10 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
                 else Text(profile.name.take(1), color = colors.foreground, fontSize = 26.sp,
                     fontWeight = AndroidWeights.emphasis)
             }
-            profile.follow?.let { label ->
-                TextAction(label, colors, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp),
-                    icon = if (label == "フォロー") UiIcon.UserAdd else UiIcon.Close,
-                    style = if (label == "フォロー") TextActionStyle.Primary else TextActionStyle.Neutral, click = follow)
+            profile.follow?.let { state ->
+                TextAction(androidLabel(state.key, state.fallback), colors, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp),
+                    icon = if (state == FollowState.Follow) UiIcon.UserAdd else UiIcon.Close,
+                    style = if (state == FollowState.Follow) TextActionStyle.Primary else TextActionStyle.Neutral, click = follow)
             }
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp).padding(top = 5.dp)) {
@@ -49,10 +49,10 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
                 Text(formatEntry(profile.bio), Modifier.padding(top = 10.dp), color = colors.foreground,
                     fontSize = 15.sp, lineHeight = 22.sp)
             }
-            Text("投稿", Modifier.padding(top = 18.dp, bottom = 4.dp), color = colors.foreground,
+            Text(androidLabel("android.profile.posts", "投稿"), Modifier.padding(top = 18.dp, bottom = 4.dp), color = colors.foreground,
                 fontWeight = AndroidWeights.emphasis, fontSize = 16.sp)
             if (profile.posts.isEmpty() && !profile.postsPending) {
-                Text("表示できる投稿はありません", Modifier.padding(vertical = 16.dp), color = colors.secondary, fontSize = 14.sp)
+                Text(androidLabel("android.profile.noPosts", "表示できる投稿はありません"), Modifier.padding(vertical = 16.dp), color = colors.secondary, fontSize = 14.sp)
             }
         }
     }

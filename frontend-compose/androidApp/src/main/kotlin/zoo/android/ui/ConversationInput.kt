@@ -162,7 +162,7 @@ internal fun ConversationInput(
                 maxLines = if (adjustable) Int.MAX_VALUE else if (showTools) 6 else 1,
                 decorationBox = { inner ->
                     Box {
-                        if (state.text.isEmpty()) Text(if (state.live) "入力内容を共有" else "メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
+                        if (state.text.isEmpty()) Text(if (state.live) androidLabel("android.composer.liveHint", "入力内容を共有") else androidLabel("messages.compose", "メッセージを送信"), color = colors.inputHint, fontSize = 16.sp)
                         inner()
                     }
                 },
@@ -228,6 +228,8 @@ internal fun ConversationInput(
                     }
                 },
                 {
+                    val handleAction = if (full) androidLabel("android.composer.shrink", "入力欄を縮める")
+                        else androidLabel("android.composer.grow", "入力欄を広げる")
                     if (canResize && (!hideIdleHandle || showTools)) Box(
                         Modifier.fillMaxWidth().height(AndroidControlSize.inputHandleHeight)
                             .pointerInput(full) {
@@ -258,7 +260,7 @@ internal fun ConversationInput(
                                     true
                                 } else false
                             }.focusable().semantics {
-                                val action = if (full) "入力欄を縮める" else "入力欄を広げる"
+                                val action = handleAction
                                 contentDescription = action
                                 customActions = listOf(CustomAccessibilityAction(action) { expand(); true })
                             },
@@ -273,7 +275,7 @@ internal fun ConversationInput(
                             .padding(horizontal = if (showTools) 0.dp else AndroidControlSize.inputEdgeInset),
                         verticalAlignment = if (adjustable) Alignment.Top else Alignment.CenterVertically,
                     ) {
-                        if (!showTools && !state.live) UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
+                        if (!showTools && !state.live) UiIconButton(UiIcon.Attach, androidLabel("android.composer.attach", "添付"), colors.inputText, { onTool(InputTool.Attach) })
                         field(Modifier.weight(1f).then(if (adjustable) Modifier.fillMaxHeight() else Modifier))
                         if (!showTools) SendAction(state, colors, onTool)
                     }
@@ -310,9 +312,9 @@ internal fun ConversationInput(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 if (!state.live) {
-                                    UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
-                                    UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) })
-                                    UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) })
+                                    UiIconButton(UiIcon.Attach, androidLabel("android.composer.attach", "添付"), colors.inputText, { onTool(InputTool.Attach) })
+                                    UiIconButton(UiIcon.Format, androidLabel("android.composer.format", "書式"), colors.inputText, { onTool(InputTool.Format) })
+                                    UiIconButton(UiIcon.Emoji, androidLabel("reactions.tabEmoji", "絵文字"), colors.inputText, { onTool(InputTool.Emoji) })
                                 }
                                 Spacer(Modifier.weight(1f))
                                 SendAction(state, colors, onTool)
@@ -374,7 +376,7 @@ private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputT
     val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend
     UiIconButton(
         if (state.live) UiIcon.Delete else UiIcon.Send,
-        if (state.live) "入力を消去" else "送信", if (enabled) Color.Black else colors.inputHint,
+        if (state.live) androidLabel("android.composer.clearLive", "入力を消去") else androidLabel("messages.send", "送信"), if (enabled) Color.Black else colors.inputHint,
         action = { onTool(InputTool.Send) },
         enabled = enabled,
         fill = if (enabled) colors.accent else Color.Transparent,
@@ -384,10 +386,15 @@ private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputT
 
 @Composable
 internal fun FormattingDialog(onDismiss: () -> Unit, onSelect: (String) -> Unit) {
-    val options = listOf("B" to "**太字**", "I" to "*斜体*", "‹/›" to "`コード`", "❝" to "\n> 引用")
+    val options = listOf(
+        "B" to "**${androidLabel("composer.bold", "太字")}**",
+        "I" to "*${androidLabel("composer.italic", "斜体")}*",
+        "‹/›" to "`${androidLabel("android.composer.codeSample", "コード")}`",
+        "❝" to "\n> ${androidLabel("android.composer.quoteSample", "引用")}",
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("文字装飾") },
+        title = { Text(androidLabel("android.composer.formattingTitle", "文字装飾")) },
         text = {
             Row {
                 options.forEach { (label, value) ->

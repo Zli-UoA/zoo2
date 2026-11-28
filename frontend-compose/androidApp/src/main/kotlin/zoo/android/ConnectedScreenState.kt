@@ -226,10 +226,10 @@ internal class ConnectedScreenState(
         private set
     var profileReloadRequest by mutableIntStateOf(0)
         private set
-    private val followStates = mutableStateMapOf<String, String>()
+    private val followStates = mutableStateMapOf<String, FollowState>()
     private val followRevisions = mutableMapOf<String, Int>()
     private val pendingFollows = mutableSetOf<String>()
-    val followState: String? get() = followStates[profile.text("id")]
+    val followState: FollowState? get() = followStates[profile.text("id")]
     var federatePost by mutableStateOf(false)
         private set
     var federationAvailable by mutableStateOf(false)
@@ -402,7 +402,7 @@ internal class ConnectedScreenState(
                 reactionImage, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
-        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull(::timelineAttachmentMedia)
+        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { timelineAttachmentMedia(it, mediaName) }
         else emptyList()
         val previewIds = attachmentMedia.mapNotNull { it.attachmentId }.toSet()
         val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
@@ -476,7 +476,10 @@ internal class ConnectedScreenState(
     ): Map<String, TimelineMedia> =
         timelineBodyEmojis(app.config.apiBaseUrl, data, metadata, body, isPost, workspaceEmojiIndex, displayedBlocks)
 
-    private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
+    /** 名前のない添付の表示名（「画像」「動画」）。 */
+    private val mediaName: (TimelineMediaKind) -> String = { kind -> translatedTimelineMediaName(kind) { app.t(it) } }
+
+    private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row, mediaName)
 
     private fun runEntryAction(action: AndroidUiAction.ActOnEntry, post: Boolean, encrypted: Boolean) {
         val id = action.item.id.encodeURLParameter()
@@ -720,9 +723,9 @@ internal class ConnectedScreenState(
         if (id !in pendingFollows && followRevisions[id] == followRevision) {
             if (!profile.flag("remote") || id == app.config.userId) followStates.remove(id)
             else followStates[id] = when {
-                !account.present("following") -> "フォロー"
-                account.flag("following") -> "フォローを解除"
-                else -> "申請を取り消す"
+                !account.present("following") -> FollowState.Follow
+                account.flag("following") -> FollowState.Unfollow
+                else -> FollowState.CancelRequest
             }
         }
     }
@@ -740,12 +743,12 @@ internal class ConnectedScreenState(
         followRevisions[id] = revision
         request {
             try {
-                if (state == "フォロー") {
+                if (state == FollowState.Follow) {
                     app.api.request("/api/activitypub/follows", "POST", obj("actor" to actor))
                     followStates[id] = updateFollowState(actor)
                 } else {
                     app.api.request("/api/activitypub/follows", "DELETE", obj("actor" to actor))
-                    followStates[id] = "フォロー"
+                    followStates[id] = FollowState.Follow
                     revalidateAfterUnfollow()
                 }
             } finally {
@@ -755,13 +758,13 @@ internal class ConnectedScreenState(
         }
     }
 
-    private suspend fun updateFollowState(actor: String): String {
+    private suspend fun updateFollowState(actor: String): FollowState {
         val follows = app.api.request("/api/activitypub/follows").rows()
         val followed = follows.firstOrNull { it.text("actor_id") == actor && it.text("direction") == "outgoing" }
         return when {
-            followed == null -> "フォロー"
-            followed.flag("accepted") -> "フォローを解除"
-            else -> "申請を取り消す"
+            followed == null -> FollowState.Follow
+            followed.flag("accepted") -> FollowState.Unfollow
+            else -> FollowState.CancelRequest
         }
     }
 
@@ -803,11 +806,11 @@ internal class ConnectedScreenState(
         val detail = threadDetails.takeIf { it.text("id") == threadId } ?: return emptyList()
         val joined = detail.text("membership") == "joined"
         val archived = detail.present("thread_archive_at")
-        return listOf(SettingsGroup("スレッド", buildList {
-            if (archived && canManage) add(SettingsEntry.Destination("thread-unarchive", "再開"))
+        return listOf(SettingsGroup(app.t("threads.title"), buildList {
+            if (archived && canManage) add(SettingsEntry.Destination("thread-unarchive", app.t("android.thread.reopen")))
             else if (!archived && member)
-                add(SettingsEntry.Destination(if (joined) "thread-leave" else "thread-join", if (joined) "退出" else "参加"))
-            add(SettingsEntry.Destination("thread-members", "参加者", detail.text("participant_count").ifBlank { null }))
+                add(SettingsEntry.Destination(if (joined) "thread-leave" else "thread-join", if (joined) app.t("members.leave") else app.t("members.join")))
+            add(SettingsEntry.Destination("thread-members", app.t("bubbleChat.participants"), detail.text("participant_count").ifBlank { null }))
         }))
     }
 
@@ -834,9 +837,9 @@ internal class ConnectedScreenState(
         val activeById = active.associateBy { it.text("id") }
         val unpinned = active.filterNot { it.text("id") in pins }
         return listOf(
-            ChannelSection("ピン留め", pins.mapNotNull(activeById::get).map(::item)),
-            ChannelSection("参加中", unpinned.filterNot { it.flag("is_dm") }.map(::item)),
-            ChannelSection("ダイレクトメッセージ", unpinned.filter { it.flag("is_dm") }.map(::item)),
+            ChannelSection(app.t("channelPins.title"), pins.mapNotNull(activeById::get).map(::item)),
+            ChannelSection(app.t("members.joined"), unpinned.filterNot { it.flag("is_dm") }.map(::item)),
+            ChannelSection(app.t("dms.title"), unpinned.filter { it.flag("is_dm") }.map(::item), dm = true),
         )
     }
 
@@ -978,7 +981,7 @@ internal class ConnectedScreenState(
     }
 
     private fun searchImage(row: Row, channel: Row): TimelineMedia? =
-        timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image }
+        timelineAttachmentMedia(row, mediaName)?.takeIf { it.kind == TimelineMediaKind.Image }
             ?.let { it.copy(sensitive = it.sensitive || channel.flag("is_nsfw")) }
 
     /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
@@ -1041,27 +1044,27 @@ internal class ConnectedScreenState(
         val archived = channel.present("archive_at")
         val entries = buildList {
             if (channel.text("description").isNotBlank()) add(SettingsEntry.Information("description", channel.text("description")))
-            if (encrypted) add(SettingsEntry.Information("encrypted", "暗号化チャンネル"))
-            add(SettingsEntry.Destination("members", "メンバー"))
+            if (encrypted) add(SettingsEntry.Information("encrypted", app.t("channelLink.encryptedChannel")))
+            add(SettingsEntry.Destination("members", app.t("members.title")))
             if (member && !archived) {
                 val pinned = channel.text("id") in pins
-                add(SettingsEntry.Destination(if (pinned) "unpin" else "pin", if (pinned) "ピン留めを解除" else "ピン留め"))
+                add(SettingsEntry.Destination(if (pinned) "unpin" else "pin", if (pinned) app.t("channelPins.unpin") else app.t("channelPins.pin")))
             }
-            if (canEditMembers(channel)) add(SettingsEntry.Destination("add-member", "メンバーを追加"))
+            if (canEditMembers(channel)) add(SettingsEntry.Destination("add-member", app.t("members.addLabel")))
             if (canManage(channel, app.config.userId, app.config.isAdmin) && !channel.flag("is_dm")) {
                 add(SettingsEntry.Destination(if (archived) "unarchive" else "archive",
-                    if (archived) "アーカイブを解除" else "アーカイブ"))
+                    if (archived) app.t("android.channel.unarchive") else app.t("moderation.archive")))
             }
             if (canManage(channel, app.config.userId, app.config.isAdmin) &&
                 !archived && !channel.flag("is_dm")) {
-                add(SettingsEntry.Destination("rename", "名前と説明を編集"))
+                add(SettingsEntry.Destination("rename", app.t("android.channel.editNameDescription")))
             }
             if (!channel.flag("is_dm") && !archived) {
-                if (member) add(SettingsEntry.Destination("leave", "退出"))
-                else if (!channel.flag("is_private")) add(SettingsEntry.Destination("join", "参加"))
+                if (member) add(SettingsEntry.Destination("leave", app.t("members.leave")))
+                else if (!channel.flag("is_private")) add(SettingsEntry.Destination("join", app.t("members.join")))
             }
         }
-        val groups = mutableListOf(SettingsGroup("チャンネル", entries))
+        val groups = mutableListOf(SettingsGroup(app.t("channels.title"), entries))
         // 参加中だけ設定できる。値は channel_notification_settings の Shape の行から渡され、
         // 書き込み後も同じ行の更新で選択状態が変わる（設定ごとの REST 取得は増やさない）。
         // 行が届く前は現在値が分からないので、誤って「メンション」が選択済みに見えないよう
@@ -1069,9 +1072,9 @@ internal class ConnectedScreenState(
         if (member && !archived) {
             val notificationEntries = notificationLevel?.let { level ->
                 listOf(
-                    SettingsEntry.Choice("notification:all", "すべての投稿", level == "all"),
-                    SettingsEntry.Choice("notification:mentions", "メンション", level == "mentions"),
-                    SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", level == "mute"),
+                    SettingsEntry.Choice("notification:all", app.t("android.channel.notifyAllPosts"), level == "all"),
+                    SettingsEntry.Choice("notification:mentions", app.t("notifications.filterMentions"), level == "mentions"),
+                    SettingsEntry.Choice("notification:mute", app.t("android.channel.notifyMentionsOnly"), level == "mute"),
                 )
             } ?: listOf(
                 SettingsEntry.Information(
@@ -1079,33 +1082,33 @@ internal class ConnectedScreenState(
                     app.t("notifications.levelLoading")
                 )
             )
-            groups += SettingsGroup("通知", notificationEntries)
+            groups += SettingsGroup(app.t("notifications.title"), notificationEntries)
         }
         return groups
     }
 
     fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
         // 自分のプロフィール（iOS のプロフィールタブ）。名前とアイコンは認証基盤の設定で変える。
-        SettingsGroup("プロフィール", buildList {
+        SettingsGroup(app.t("android.settings.profile"), buildList {
             add(SettingsEntry.Destination("public-profile", app.t("activitypubSettings.editProfile")))
-            if (platform.issuer != null) add(SettingsEntry.Destination("account-profile", "名前・アイコンを編集"))
-            add(SettingsEntry.Destination("public-page", "公開ページを見る"))
+            if (platform.issuer != null) add(SettingsEntry.Destination("account-profile", app.t("android.settings.editNameIcon")))
+            add(SettingsEntry.Destination("public-page", app.t("android.settings.viewPublicPage")))
         }),
-        SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", env.theme),
-            SettingsEntry.Destination("language", "言語", env.locale))),
-        SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", env.swipeReply),
-            SettingsEntry.Toggle("haptics", "触覚フィードバック", env.operationHaptics))),
-        SettingsGroup("Zoo", listOf(SettingsEntry.Destination("search-engine", "検索エンジン", app.searchEngine),
-            SettingsEntry.Destination("notifications", "通知"),
+        SettingsGroup(app.t("settings.appearance"), listOf(SettingsEntry.Destination("theme", app.t("theme.title"), env.theme),
+            SettingsEntry.Destination("language", app.t("language.title"), env.locale))),
+        SettingsGroup(app.t("settings.interaction"), listOf(SettingsEntry.Toggle("swipe", app.t("settings.swipeReply"), env.swipeReply),
+            SettingsEntry.Toggle("haptics", app.t("settings.operationHaptics"), env.operationHaptics))),
+        SettingsGroup("Zoo", listOf(SettingsEntry.Destination("search-engine", app.t("search.engine"), app.searchEngine),
+            SettingsEntry.Destination("notifications", app.t("notifications.title")),
             SettingsEntry.Destination("navigation-cache", app.t("androidNavigationCache.title"), cacheLimitLabel(platform.navigationCacheLimit)),
             SettingsEntry.Destination("attachment-cache", app.t("androidAttachmentCache.title"),
                 attachmentCacheSizeLabel(platform.attachmentCacheSizeMiB)),
-            SettingsEntry.Destination("app-update", "アプリの更新"),
-            SettingsEntry.Destination("encryption", "エンドツーエンド暗号化"),
-            SettingsEntry.Destination("logout", "ログアウト"))),
-        SettingsGroup("通話", buildList {
+            SettingsEntry.Destination("app-update", app.t("androidUpdate.title")),
+            SettingsEntry.Destination("encryption", app.t("e2ee.title")),
+            SettingsEntry.Destination("logout", app.t("auth.logout")))),
+        SettingsGroup(app.t("call.settingsTab"), buildList {
             add(SettingsEntry.Destination("sip", app.t("sip.title")))
-            add(SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", phone.dmWaiting))
+            add(SettingsEntry.Toggle("dm-calls", app.t("android.settings.receiveDmCalls"), phone.dmWaiting))
             if (phone.dmWaitingError) add(SettingsEntry.Information("dm-call-error", app.t("androidPhone.callError")))
             if (incomingSettingsAvailable) {
                 add(SettingsEntry.Destination("incoming-screen", app.t("androidPhone.incomingScreenSettings")))
@@ -1125,11 +1128,11 @@ internal class ConnectedScreenState(
 
     fun settingsDetail(env: Environment): AndroidScreen {
         val (title, entries) = when (overlay) {
-            "theme" -> "テーマ" to listOf("system" to "端末に従う", "light" to "ライト", "dark" to "ダーク")
-                .map { SettingsEntry.Destination("theme:${it.first}", it.second, if (env.theme == it.first) "選択中" else null) }
-            "language" -> "言語" to listOf("ja" to "日本語", "en" to "English", "ko-KR" to "한국어", "ko-KP" to "조선말",
+            "theme" -> app.t("theme.title") to listOf("system" to app.t("android.settings.themeSystem"), "light" to app.t("theme.light"), "dark" to app.t("theme.dark"))
+                .map { SettingsEntry.Destination("theme:${it.first}", it.second, if (env.theme == it.first) app.t("dms.selected") else null) }
+            "language" -> app.t("language.title") to listOf("ja" to "日本語", "en" to "English", "ko-KR" to "한국어", "ko-KP" to "조선말",
                 "zh-Hans" to "简体中文", "zh-Hant" to "繁體中文", "yue" to "粵語").map {
-                SettingsEntry.Destination("locale:${it.first}", it.second, if (env.locale == it.first) "選択中" else null)
+                SettingsEntry.Destination("locale:${it.first}", it.second, if (env.locale == it.first) app.t("dms.selected") else null)
             }
             "navigation-cache" -> app.t("androidNavigationCache.title") to buildList<SettingsEntry> {
                 add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description")))
@@ -1145,10 +1148,10 @@ internal class ConnectedScreenState(
                         platform.attachmentCacheSizeMiB == sizeMiB))
                 }
             }
-            "search-engine" -> "検索エンジン" to searchEngines.map {
-                SettingsEntry.Destination("engine:${it.key}", it.value, if (app.searchEngine == it.key) "選択中" else null)
+            "search-engine" -> app.t("search.engine") to searchEngines.map {
+                SettingsEntry.Destination("engine:${it.key}", it.value, if (app.searchEngine == it.key) app.t("dms.selected") else null)
             }
-            else -> "通知" to listOf(SettingsEntry.Destination("os-notifications", "Androidの通知設定を開く"))
+            else -> app.t("notifications.title") to listOf(SettingsEntry.Destination("os-notifications", app.t("android.settings.openOsNotifications")))
         }
         val groupTitle = if (overlay in setOf("navigation-cache", "attachment-cache")) "" else title
         return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(groupTitle, entries)))
@@ -1478,10 +1481,10 @@ internal class ConnectedScreenState(
         val selection = draft.text.substring(start, end)
         val inserted = when {
             selection.isEmpty() -> value
-            value == "**太字**" -> "**$selection**"
-            value == "*斜体*" -> "*$selection*"
-            value == "`コード`" -> "`$selection`"
-            value == "\n> 引用" -> "\n" + selection.lineSequence().joinToString("\n") { "> $it" }
+            value.length > 4 && value.startsWith("**") && value.endsWith("**") -> "**$selection**"
+            value.length > 2 && value.startsWith("*") && value.endsWith("*") -> "*$selection*"
+            value.length > 2 && value.startsWith("`") && value.endsWith("`") -> "`$selection`"
+            value.startsWith("\n> ") -> "\n" + selection.lineSequence().joinToString("\n") { "> $it" }
             else -> value
         }
         val text = draft.text.replaceRange(start, end, inserted)

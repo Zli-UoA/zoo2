@@ -161,7 +161,7 @@ class AndroidSamplesTest {
         val channels = AndroidScreen.Channels(listOf(
             ChannelSection("参加中", listOf(ChannelItem("dev", "開発", true), ChannelItem("chat", "雑談"),
                 ChannelItem("ops", "運営"), ChannelItem("news", "お知らせ"))),
-            ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる", isUserName = true))),
+            ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる", isUserName = true)), dm = true),
         ))
         val inbox = AndroidScreen.Notifications(listOf(
             InboxItem("reply", listOf(InboxActor("haru", "はる", "fixture-avatar")),
@@ -308,7 +308,7 @@ class AndroidSamplesTest {
             "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。写真と通話の感想を投稿します。",
                 homePosts.map {
                     it.copy(author = "はる", postHeader = it.postHeader?.copy(handle = "@haru", channel = null, server = "social.example"))
-                }, "フォロー", handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
+                }, FollowState.Follow, handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
             "search-prompt" to AndroidScreen.Search(SearchScreenState("", "", GlobalSearchType.All)),
             "search" to searchResults,

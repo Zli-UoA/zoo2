@@ -14,19 +14,19 @@ internal data class LoginConnection(
 ) {
     fun validate() {
         val server = Url(base)
-        require(
+        if (!(
             server.protocol == URLProtocol.HTTPS &&
                 server.user.isNullOrEmpty() && server.password.isNullOrEmpty() &&
                 server.encodedPath in listOf("", "/") &&
                 server.parameters.isEmpty() && server.fragment.isEmpty()
-        ) { "サーバーには HTTPS の origin URL を指定してください" }
+        )) throw LoginSettingsInvalid("サーバーには HTTPS の origin URL を指定してください") { it.t("android.login.serverHttps") }
         val provider = Url(issuer)
-        require(
+        if (!(
             provider.protocol == URLProtocol.HTTPS &&
                 provider.user.isNullOrEmpty() && provider.password.isNullOrEmpty() &&
                 provider.parameters.isEmpty() && provider.fragment.isEmpty()
-        ) { "認証先は HTTPS の issuer URL を指定してください" }
-        require(client.isNotBlank()) { "Public client ID を指定してください" }
+        )) throw LoginSettingsInvalid("認証先は HTTPS の issuer URL を指定してください") { it.t("android.login.issuerUrlHttps") }
+        if (client.isBlank()) throw LoginSettingsInvalid("Public client ID を指定してください") { it.t("android.login.clientRequired") }
     }
 }
 

@@ -111,15 +111,28 @@ private fun Row.imageAspectRatio(kind: TimelineMediaKind): Float? {
     return width.toFloat() / height
 }
 
-internal fun timelineAttachmentMedia(row: Row): TimelineMedia? {
+/** 名前のない添付・メディアの表示名。呼び出し側は `session.t("android.media.video")` / `session.t("home.image")` を渡す。 */
+internal fun defaultTimelineMediaName(kind: TimelineMediaKind): String = if (kind == TimelineMediaKind.Video) "動画" else "画像"
+
+internal fun translatedTimelineMediaName(kind: TimelineMediaKind, t: (String) -> String): String =
+    t(if (kind == TimelineMediaKind.Video) "android.media.video" else "home.image")
+
+internal fun timelineAttachmentMedia(
+    row: Row,
+    fallbackName: (TimelineMediaKind) -> String = ::defaultTimelineMediaName,
+): TimelineMedia? {
     val id = row.text("id").takeIf(String::isNotBlank) ?: return null
     val kind = timelineMediaKind(row.text("content_type")) ?: return null
-    val name = row.text("file_name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
+    val name = row.text("file_name").ifBlank { fallbackName(kind) }
     return TimelineMedia(id, name, kind, row.flag("is_sensitive"), attachmentId = id,
         imageAspectRatio = row.imageAspectRatio(kind), blurhash = row.text("blurhash").ifBlank { null })
 }
 
-internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
+internal fun timelinePostMedia(
+    base: String,
+    row: Row,
+    fallbackName: (TimelineMediaKind) -> String = ::defaultTimelineMediaName,
+): TimelineMedia? {
     val raw = row.text("url")
     val local = raw.matches(localMediaPath)
     val id = imageId(row.text("image_id"))
@@ -132,7 +145,7 @@ internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
     val original = if (local || !raw.startsWith('/')) timelineImageUrl(base, raw) else null
     val url = original ?: preview ?: return null
     val thumbnail = if (local && kind == TimelineMediaKind.Image) "$url?thumbnail=true" else null
-    val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
+    val name = row.text("name").ifBlank { fallbackName(kind) }
     return TimelineMedia(url, name, kind, row.flag("is_sensitive"), url = url, previewUrl = preview, thumbnailUrl = thumbnail, imageAspectRatio = row.imageAspectRatio(kind), blurhash = row.text("blurhash").ifBlank { null })
 }
 

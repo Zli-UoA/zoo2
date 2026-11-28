@@ -28,6 +28,7 @@ import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
 import zoo.android.phone.PhonePictureInPictureActivity
 import zoo.android.ui.DialogAction
+import zoo.android.ui.LocalAndroidTranslation
 import zoo.android.ui.UiIcon
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
@@ -164,7 +165,11 @@ class MainActivity : ComponentActivity() {
         notificationIntent = intent
         UpdatePreferences(this).confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
-        setContent { AndroidApp() }
+        val translator = AppTranslator(this)
+        // ログイン前の画面や設定画面でも、表示言語の辞書で翻訳する。ログイン後は Session の翻訳に置き換える。
+        setContent {
+            CompositionLocalProvider(LocalAndroidTranslation provides { key, args -> translator.t(key, *args) }) { AndroidApp() }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -223,7 +228,7 @@ class MainActivity : ComponentActivity() {
                         if (running != null && running.auth === expiredAuth) {
                             active = null
                             canRestore = false
-                            restoreError = "認証情報の有効期限が切れました。ログインし直してください。"
+                            restoreError = this@MainActivity.appText("android.login.sessionExpired")
                             running.notifications.close()
                             running.push.forget()
                             running.close(preserveNotifications = false)
@@ -239,7 +244,7 @@ class MainActivity : ComponentActivity() {
                                 running?.logout()
                                 restoreError = ""
                             } catch (failure: LoginFailure) {
-                                restoreError = failure.message.orEmpty()
+                                restoreError = failure.display(this@MainActivity.loginText())
                             } finally {
                                 active = null
                                 canRestore = false
@@ -267,12 +272,13 @@ class MainActivity : ComponentActivity() {
                 throw failure
             } catch (failure: LoginFailure) {
                 canRestore = loginStore.hasSession
-                restoreError = failure.message.orEmpty()
+                restoreError = failure.display(this@MainActivity.loginText())
                 restoreDiagnostics = loginDiagnosticLog(stages, failure)
             } catch (failure: Exception) {
                 canRestore = loginStore.hasSession
-                restoreError = loginNetworkMessage(failure, captivePortal = false)
-                    ?: "自動ログインできませんでした。ネットワークを確認して再試行してください。"
+                val text = this@MainActivity.loginText()
+                restoreError = loginNetworkText(failure, captivePortal = false, text)
+                    ?: text.t("android.login.autoLoginFailed")
                 restoreDiagnostics = loginDiagnosticLog(stages, failure)
             } finally {
                 canRestore = loginStore.hasSession
@@ -296,7 +302,7 @@ class MainActivity : ComponentActivity() {
                     connect(connection, null, stage)
                 },
             )
-        } else {
+        } else CompositionLocalProvider(LocalAndroidTranslation provides { key, args -> current.session.t(key, *args) }) {
             val platform = current.platform
             LaunchedEffect(platform.env, dark) {
                 platform.systemDark(dark)
@@ -434,7 +440,8 @@ class MainActivity : ComponentActivity() {
             }
             if (response.status.value !in 200..299) {
                 if (response.status.value in setOf(401, 403)) auth.forget()
-                throw LoginFailure("Zoo に接続できません (HTTP ${response.status.value})")
+                val status = response.status.value
+                throw LoginFailure("Zoo に接続できません (HTTP $status)") { it.t("android.login.zooApiFailed", "status" to "$status") }
             }
             val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
             require(me.text("id").isNotBlank())

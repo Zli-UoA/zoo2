@@ -37,13 +37,17 @@ internal class AndroidLoginStore(
             val current = load()
             if (current == null || current.connection != expected.connection ||
                 current.refreshToken != expected.refreshToken
-            ) throw LoginFailure("保存した認証情報が変更されました。自動ログインを再試行してください")
+            ) throw LoginFailure("保存した認証情報が変更されました。自動ログインを再試行してください") {
+                it.t("android.login.store.changed")
+            }
         }
         ++generation
     }
 
     private fun checkOwner(owner: Long) {
-        if (owner != generation) throw LoginFailure("別のログインが開始されました。ログイン画面からやり直してください")
+        if (owner != generation) throw LoginFailure("別のログインが開始されました。ログイン画面からやり直してください") {
+            it.t("android.login.store.superseded")
+        }
     }
 
     fun load(): SavedLogin? = synchronized(lock) {
@@ -62,7 +66,9 @@ internal class AndroidLoginStore(
     fun consume(owner: Long) = synchronized(lock) {
         checkOwner(owner)
         if (!preferences.edit().remove("session").commit()) {
-            throw LoginFailure("更新前の認証情報を削除できませんでした。端末の空き容量を確認してください")
+            throw LoginFailure("更新前の認証情報を削除できませんでした。端末の空き容量を確認してください") {
+                it.t("android.login.store.removeOldFailed")
+            }
         }
     }
 
@@ -72,7 +78,9 @@ internal class AndroidLoginStore(
             val bytes = LoginCipher(readKey() ?: createKey()).encrypt(login.encode())
             check(preferences.edit().putString("session", Base64.getEncoder().encodeToString(bytes)).commit())
         } catch (_: Exception) {
-            throw LoginFailure("認証情報を保存できませんでした。端末の空き容量とロック設定を確認してください")
+            throw LoginFailure("認証情報を保存できませんでした。端末の空き容量とロック設定を確認してください") {
+                it.t("android.login.store.saveFailed")
+            }
         }
     }
 
@@ -84,7 +92,9 @@ internal class AndroidLoginStore(
             deleteKey()
             check(removed)
         } catch (_: Exception) {
-            throw LoginFailure("保存した認証情報を削除できませんでした。端末の空き容量とロック設定を確認してください")
+            throw LoginFailure("保存した認証情報を削除できませんでした。端末の空き容量とロック設定を確認してください") {
+                it.t("android.login.store.removeFailed")
+            }
         }
     }
 }

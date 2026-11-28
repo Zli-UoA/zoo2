@@ -123,10 +123,10 @@ internal fun CallPortrait(call: AndroidScreen.Call, colors: AndroidColors, size:
 internal fun CallPage(
     call: AndroidScreen.Call, colors: AndroidColors, motion: Boolean,
     remoteAudioLevel: () -> Float, dispatch: (AndroidUiAction) -> Unit,
-    answerLabel: String = "応答", dismissLabel: String = "拒否",
+    answerLabel: String = androidLabel("call.accept", "応答"), dismissLabel: String = androidLabel("call.decline", "拒否"),
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        BrandPage(call.status ?: if (call.incoming) "着信中" else "通話中", call.caller, colors,
+        BrandPage(call.status ?: if (call.incoming) androidLabel("sip.status.incoming", "着信中") else androidLabel("call.inCall", "通話中"), call.caller, colors,
             detailWeight = AndroidWeights.userName, compact = maxHeight < 360.dp, badge = { CallAvatar(call, colors, motion, remoteAudioLevel) }) {
             if (call.incoming) {
                 Row(
@@ -138,20 +138,20 @@ internal fun CallPage(
                 }
             } else Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (call.minimize || call.pictureInPicture) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    if (call.minimize) UiIconButton(UiIcon.Minimize, "通話画面をしまう", colors.foreground,
+                    if (call.minimize) UiIconButton(UiIcon.Minimize, androidLabel("android.call.minimize", "通話画面をしまう"), colors.foreground,
                         { dispatch(AndroidUiAction.MinimizeCall) })
-                    if (call.pictureInPicture) UiIconButton(UiIcon.Float, "通話を小窓で表示", colors.foreground,
+                    if (call.pictureInPicture) UiIconButton(UiIcon.Float, androidLabel("android.call.pictureInPicture", "通話を小窓で表示"), colors.foreground,
                         { dispatch(AndroidUiAction.FloatCall) })
                 }
                 if (call.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
-                    CallToggle("ミュート", if (call.muted) UiIcon.MicOff else UiIcon.Mic, call.muted, colors) {
+                    CallToggle(androidLabel("call.mute", "ミュート"), if (call.muted) UiIcon.MicOff else UiIcon.Mic, call.muted, colors) {
                         dispatch(AndroidUiAction.MuteCall)
                     }
-                    CallToggle("スピーカー", if (call.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, call.speaker, colors) {
+                    CallToggle(androidLabel("call.speakerLabel", "スピーカー"), if (call.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, call.speaker, colors) {
                         dispatch(AndroidUiAction.SpeakerCall)
                     }
                 }
-                TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
+                TextAction(androidLabel("android.call.end", "通話を終了"), colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
                     icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) { dispatch(AndroidUiAction.HangUp) }
             }
         }

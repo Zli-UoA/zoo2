@@ -314,9 +314,9 @@ internal fun ConnectedScreens(
     val showFullCall = callScreen != null && (!minimized || callScreen.incoming || phone.error)
     val bubbleDraft by state.bubble.input.collectAsState()
     val bubbles by state.bubble.entries.collectAsState()
-    val bubbleParticipants = remember(bubbles, usersById, session.config.userId) {
-        val self = usersById[session.config.userId]?.let(::author).orEmpty().ifBlank { "自分" }
-        listOf(SelectionItem(session.config.userId, self, "自分", isUserName = true)) +
+    val bubbleParticipants = remember(bubbles, usersById, session.config.userId, env.locale) {
+        val self = usersById[session.config.userId]?.let(::author).orEmpty().ifBlank { session.t("android.bubble.self") }
+        listOf(SelectionItem(session.config.userId, self, session.t("android.bubble.self"), isUserName = true)) +
             bubbles.filter { it.text("user_id") != session.config.userId }.map {
                 SelectionItem(it.text("user_id"), author(it), isUserName = true)
             }
@@ -468,7 +468,7 @@ internal fun ConnectedScreens(
     }
     val screen = when {
         showFullCall -> checkNotNull(callScreen)
-        state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
+        state.overlay == "people" -> AndroidScreen.Directory(session.t("home.userSearch"), state.query,
             state.people.map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) })
         state.overlay == "profile" -> AndroidScreen.Profile(
             author(profile), profile.text("summary"),
@@ -480,29 +480,29 @@ internal fun ConnectedScreens(
             postsPending = state.profilePostsPending, postsLoadFailed = state.profilePostsLoadFailed, online = env.online,
             accountLoadFailed = state.profileAccountLoadFailed,
         )
-        state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
+        state.overlay == "bubble-participants" -> AndroidScreen.Directory(session.t("bubbleChat.participants"), state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })
-        state.overlay == "browse" -> AndroidScreen.Directory("チャンネルを探す", state.query,
+        state.overlay == "browse" -> AndroidScreen.Directory(session.t("channels.browseTitle"), state.query,
             visibleChannels(channels).filterNot { it.flag("is_dm") }
                 .filter { it.text("channel_name").contains(state.query, ignoreCase = true) }
                 .map { SelectionItem(it.text("id"), it.text("channel_name"), it.text("description")) })
-        state.overlay == "dm" -> AndroidScreen.Directory("ダイレクトメッセージを作成", state.query,
+        state.overlay == "dm" -> AndroidScreen.Directory(session.t("android.dm.createTitle"), state.query,
             users.filter { it.text("id") != session.config.userId && author(it).contains(state.query, ignoreCase = true) }
                 .map { SelectionItem(it.text("id"), author(it), isUserName = true, selected = it.text("id") in state.dmTargets) },
-            "開始", env.online && !state.saving && state.dmTargets.isNotEmpty(), state.encryptedDm)
+            session.t("android.dm.start"), env.online && !state.saving && state.dmTargets.isNotEmpty(), state.encryptedDm)
         state.overlay == "thread-settings" && currentThread != null ->
-            AndroidScreen.SettingsDetail("スレッド設定", state.threadSettings(currentThread, canPost, member))
-        state.overlay == "thread-members" -> AndroidScreen.Directory("スレッドの参加者", state.query,
+            AndroidScreen.SettingsDetail(session.t("android.thread.settingsTitle"), state.threadSettings(currentThread, canPost, member))
+        state.overlay == "thread-members" -> AndroidScreen.Directory(session.t("android.thread.participantsTitle"), state.query,
             state.threadDetails.array("participants").rows().filter { author(it).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = currentThread)
-        state.overlay == "add-member" -> AndroidScreen.Directory("メンバーを追加", state.query,
+        state.overlay == "add-member" -> AndroidScreen.Directory(session.t("members.addLabel"), state.query,
             users.filter { u -> channelMembers.none { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
-        state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
+        state.overlay == "members" -> AndroidScreen.Directory(session.t("members.title"), state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
         state.overlay == "public-profile" -> AndroidScreen.EditChannel(
-            session.t("activitypubSettings.editProfile"), state.channelName, state.channelDescription, "保存",
+            session.t("activitypubSettings.editProfile"), state.channelName, state.channelDescription, session.t("common.save"),
             env.online && state.publicProfile != null && !state.saving && state.publicProfileValid(),
             nameLabel = session.t("activitypubSettings.displayName"),
             descriptionLabel = session.t("activitypubSettings.bio"),
@@ -516,9 +516,10 @@ internal fun ConnectedScreens(
             },
         )
         state.overlay == "create" || state.overlay == "rename" -> AndroidScreen.EditChannel(
-            if (state.overlay == "create") "チャンネルを作成" else "チャンネルを編集",
-            state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",
-            env.online && state.channelName.isNotBlank() && !state.saving,
+            if (state.overlay == "create") session.t("channels.createTitle") else session.t("channels.editTitle"),
+            state.channelName, state.channelDescription,
+            if (state.overlay == "create") session.t("android.channel.create") else session.t("common.save"),
+            env.online && state.channelName.isNotBlank() && !state.saving, creating = state.overlay == "create",
             privateChannel = state.channelPrivate.takeUnless { state.overlay == "rename" && encrypted },
             sensitive = state.channelSensitive,
             encrypted = state.channelEncrypted.takeIf { state.overlay == "create" && state.channelPrivate },
@@ -858,7 +859,7 @@ internal fun ConnectedScreens(
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
-            title = if (reaction == null) "絵文字" else "リアクション",
+            title = if (reaction == null) session.t("reactions.tabEmoji") else session.t("reactions.picker"),
             colors = AndroidColors(env.dark),
             unicode = unicode,
             custom = remember(session.workspaceEmojis, session.accountProfiles, allowAccountEmoji, env.locale) {
@@ -901,34 +902,34 @@ internal fun ConnectedScreens(
     state.confirmingEntry?.takeIf { it.operation == EntryOperation.Delete }?.let { action ->
         AlertDialog(
             onDismissRequest = { state.confirmingEntry = null },
-            title = { Text("削除しますか？") },
+            title = { Text(session.t("android.entry.deleteConfirmTitle")) },
             text = { Text(action.item.body, maxLines = 3) },
             confirmButton = {
-                DialogAction("削除", UiIcon.Delete) {
+                DialogAction(session.t("messages.delete"), UiIcon.Delete) {
                     state.confirmDelete(screen is AndroidScreen.Home || screen is AndroidScreen.Post || screen is AndroidScreen.Profile)
                 }
             },
-            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.confirmingEntry = null } },
+            dismissButton = { DialogAction(session.t("common.cancel"), UiIcon.Close) { state.confirmingEntry = null } },
         )
     }
     state.memberToRemove?.let { user ->
         AlertDialog(
             onDismissRequest = { state.memberToRemove = null },
-            title = { Text("チャンネルから削除") },
+            title = { Text(session.t("android.members.removeTitle")) },
             text = { Text(user.title) },
-            confirmButton = { DialogAction("削除", UiIcon.Delete) { channel?.let { state.removeMember(it, user.id) } } },
-            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.memberToRemove = null } },
+            confirmButton = { DialogAction(session.t("messages.delete"), UiIcon.Delete) { channel?.let { state.removeMember(it, user.id) } } },
+            dismissButton = { DialogAction(session.t("common.cancel"), UiIcon.Close) { state.memberToRemove = null } },
         )
     }
     val archive = state.overlay?.takeIf { it == "archive" || it == "unarchive" }
     if (archive != null && channel != null) {
-        val label = if (archive == "archive") "アーカイブ" else "アーカイブを解除"
+        val label = if (archive == "archive") session.t("moderation.archive") else session.t("android.channel.unarchive")
         AlertDialog(
             onDismissRequest = { state.overlay = "channel-settings" },
             title = { Text(label) },
             text = { Text(channel.text("channel_name")) },
             confirmButton = { DialogAction(label, if (archive == "archive") UiIcon.Archive else UiIcon.Refresh) { state.archiveChannel(channel, archive) } },
-            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.overlay = "channel-settings" } },
+            dismissButton = { DialogAction(session.t("common.cancel"), UiIcon.Close) { state.overlay = "channel-settings" } },
         )
     }
 }

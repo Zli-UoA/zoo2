@@ -64,8 +64,8 @@ internal fun rankEmojiChoices(choices: List<EmojiChoice>, query: String): List<E
     }.sortedWith(compareBy({ it.first.first }, { it.first.second }, { it.first.third })).map { it.second }
 }
 
-private enum class EmojiTab(val title: String) {
-    Unicode("絵文字"), Custom("カスタム"), Kitchen("Emoji Kitchen"),
+private enum class EmojiTab(val title: String, val translationKey: String) {
+    Unicode("絵文字", "reactions.tabEmoji"), Custom("カスタム", "android.emoji.customTab"), Kitchen("Emoji Kitchen", "reactions.tabKitchen"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,7 +76,7 @@ internal fun EmojiPicker(
     unicode: List<EmojiChoice>,
     custom: List<EmojiChoice>,
     recent: List<String> = emptyList(),
-    recentCategory: String = "最近使った絵文字",
+    recentCategory: String = androidLabel("reactions.recent", "最近使った絵文字"),
     customLoading: Boolean = false,
     customError: Boolean = false,
     loadKitchen: suspend () -> KitchenChoices?,
@@ -85,6 +85,7 @@ internal fun EmojiPicker(
     select: (EmojiChoice) -> Unit,
 ) {
     var tab by remember { mutableStateOf(EmojiTab.Unicode) }
+    val searchLabel = androidLabel("reactions.searchEmoji", "絵文字を検索")
     var query by remember { mutableStateOf("") }
     var first by remember { mutableStateOf<EmojiChoice?>(null) }
     var kitchen by remember { mutableStateOf<KitchenChoices?>(null) }
@@ -140,14 +141,14 @@ internal fun EmojiPicker(
             ) {
                 EmojiTab.entries.forEach { choice ->
                     Tab(selected = choice == tab, onClick = { tab = choice; query = "" },
-                        text = { Text(choice.title, fontSize = 12.sp, maxLines = 1) }, selectedContentColor = colors.foreground, unselectedContentColor = colors.secondary)
+                        text = { Text(androidLabel(choice.translationKey, choice.title), fontSize = 12.sp, maxLines = 1) }, selectedContentColor = colors.foreground, unselectedContentColor = colors.secondary)
                 }
             }
             BasicTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("emoji-search")
-                    .semantics { contentDescription = "絵文字を検索" },
+                    .semantics { contentDescription = searchLabel },
                 singleLine = true,
                 textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 15.sp),
                 cursorBrush = SolidColor(colors.inputText),
@@ -160,7 +161,7 @@ internal fun EmojiPicker(
                     ) {
                         UiGlyph(UiIcon.Search, colors.inputHint, AndroidControlSize.inlineIcon)
                         Box(Modifier.weight(1f)) {
-                            if (query.isEmpty()) Text("絵文字を検索", color = colors.inputHint, fontSize = 15.sp)
+                            if (query.isEmpty()) Text(searchLabel, color = colors.inputHint, fontSize = 15.sp)
                             field()
                         }
                     }
@@ -168,16 +169,16 @@ internal fun EmojiPicker(
             )
             if (tab == EmojiTab.Kitchen) {
                 val prefix = first
-                if (prefix == null) Text("最初の絵文字を選ぶ", color = colors.secondary)
-                else TextAction("${prefix.glyph}  組み合わせを選ぶ", colors, style = TextActionStyle.Plain,
+                if (prefix == null) Text(androidLabel("android.emoji.pickFirst", "最初の絵文字を選ぶ"), color = colors.secondary)
+                else TextAction("${prefix.glyph}  ${androidLabel("android.emoji.pickCombination", "組み合わせを選ぶ")}", colors, style = TextActionStyle.Plain,
                     icon = UiIcon.Back) { first = null; query = "" }
             }
             if (filtered.isEmpty()) {
                 val message = when {
-                    tab == EmojiTab.Custom && customLoading || tab == EmojiTab.Kitchen && kitchen == null -> "絵文字を読み込み中"
-                    tab == EmojiTab.Custom && customError -> "カスタム絵文字の読み込みに失敗しました"
-                    query.isNotBlank() -> "一致する絵文字がありません"
-                    else -> "選べる絵文字がありません"
+                    tab == EmojiTab.Custom && customLoading || tab == EmojiTab.Kitchen && kitchen == null -> androidLabel("android.emoji.loading", "絵文字を読み込み中")
+                    tab == EmojiTab.Custom && customError -> androidLabel("android.emoji.customLoadError", "カスタム絵文字の読み込みに失敗しました")
+                    query.isNotBlank() -> androidLabel("reactions.noSearchResults", "一致する絵文字がありません")
+                    else -> androidLabel("android.emoji.empty", "選べる絵文字がありません")
                 }
                 Text(message, Modifier.padding(vertical = 20.dp), color = colors.secondary)
             } else key(tab, first, query) {

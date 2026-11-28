@@ -43,6 +43,15 @@ internal fun loginNetworkIssue(failure: Throwable): LoginNetworkIssue? {
     return if (failure is IOException) LoginNetworkIssue.Io else null
 }
 
+/** ログイン画面に出す、表示言語のエラー文言。画面に出せる例外（ここで作った文言）でなければ null。 */
+internal fun loginErrorText(failure: Throwable, text: LoginText): String? = when (failure) {
+    is LoginFailure -> failure.display(text)
+    is LoginSettingsInvalid -> failure.display(text)
+    is ReauthException -> reauthMessage(failure, text)
+    is IllegalArgumentException -> failure.message.orEmpty()
+    else -> null
+}
+
 private val httpStatus = Regex("""\(HTTP ([1-5][0-9]{2})\)""")
 
 /** Only allowlisted stage names and error codes may be shown or copied. */

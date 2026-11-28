@@ -27,6 +27,11 @@ adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
 Android ターゲットは `zoo.android=true` で明示的に有効にします。
 フォントはチェックサムを固定して取得・生成し、翻訳辞書は
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
+画面の文言は日本語を直接書かず、Composable では `androidLabel("キー", "日本語")`、
+Session のある所では `t("キー")`、通知や更新の処理など Context しかない所では `context.appText("キー")` で引きます。
+ログイン前の画面も、`MainActivity` が設定の表示言語の辞書（`AppTranslator`）を渡すので翻訳されます。
+Android だけの文言は `android.*` に置き、7 言語すべてに入れます。
+`TranslationKeysTest` が、コードで使うキーが 7 言語の辞書にそろっているかを確かめます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
 
 ## SIP・DM通話とAndroid Telecom
