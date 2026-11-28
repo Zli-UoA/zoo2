@@ -98,13 +98,19 @@ internal class AndroidPlatform(
         cacheDirectory.resolve("images"), attachmentCacheBytes = attachmentCacheSizeMiB * BytesPerMiB,
     )
 
-    suspend fun saveAttachmentCacheSize(sizeMiB: Int) {
-        if (sizeMiB !in attachmentCacheSizesMiB) return
-        attachmentCacheSettingsLock.withLock {
-            if (sizeMiB == attachmentCacheSizeMiB) return
-            images.resizeAttachmentCache(sizeMiB * BytesPerMiB)
+    suspend fun enforceAttachmentCacheSize(): Boolean = attachmentCacheSettingsLock.withLock {
+        images.resizeAttachmentCache(attachmentCacheSizeMiB * BytesPerMiB)
+    }
+
+    suspend fun saveAttachmentCacheSize(sizeMiB: Int): Boolean {
+        if (sizeMiB !in attachmentCacheSizesMiB) return false
+        return attachmentCacheSettingsLock.withLock {
+            if (attachmentCacheSizeMiB == 0 && sizeMiB > 0 && !images.resizeAttachmentCache(0)) {
+                return@withLock false
+            }
             attachmentCacheSizeMiB = sizeMiB
             prefs.edit().putInt(attachmentCachePreference, sizeMiB).apply()
+            images.resizeAttachmentCache(sizeMiB * BytesPerMiB)
         }
     }
     private val dictionaries = mutableMapOf<String, Row>()

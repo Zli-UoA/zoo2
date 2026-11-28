@@ -90,7 +90,7 @@ internal class AndroidImageCache(
                 val resourceHash = AttachmentImageDiskCache.digest(resource.toString())
                 val stored = if (retry) null else attachments.read(cacheKey)
                 val matching = stored?.takeIf { it.urlHash.startsWith("$resourceHash:") }
-                if (matching != null && now() < matching.expiresAt &&
+                if (matching != null && now() < matching.revalidateAt &&
                     (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
                 ) {
                     if (!attachments.isCurrent(cacheKey, token)) throw ImageHttpFailure(403)
@@ -114,13 +114,14 @@ internal class AndroidImageCache(
                             attachments.remove(cacheKey, token)
                             return@loadPublicImage
                         }
-                        val expiresAt = attachmentFreshUntil(response, freshness, receivedAt, defaultLifetime = 300_000L)
+                        val responseDeadline = attachmentFreshUntil(response, freshness, receivedAt, defaultLifetime = 300_000L)
+                        val expiresAt = minOf(responseDeadline, redirectDeadlines.filterNotNull().minOrNull() ?: responseDeadline)
                         val etag = if (redirects.isEmpty()) {
                             response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
                                 ?: matching?.etag?.takeIf { validated }
                         } else null
                         attachments.write(cacheKey, token, AttachmentImageDiskCache.Entry(
-                            "$resourceHash:$urlHash", minOf(expiresAt, redirectDeadlines.filterNotNull().minOrNull() ?: expiresAt),
+                            "$resourceHash:$urlHash", expiresAt, minOf(expiresAt, receivedAt + 300_000L),
                             etag, if (redirects.isEmpty()) freshness else freshness.copy(stalePreviewMillis = 0L), bytes,
                         ))
                     }
@@ -182,7 +183,7 @@ internal class AndroidImageCache(
             (receivedAt - serverDate).coerceAtLeast(0),
             (headers[HttpHeaders.Age]?.toLongOrNull() ?: 0L).coerceIn(0, Int.MAX_VALUE.toLong()) * 1000L,
         )
-        return receivedAt + (lifetime - age).coerceAtMost(300_000L)
+        return receivedAt + lifetime - age
     }
 
     suspend fun imageIfCached(request: ImageRequest, limit: Int): ByteArray? =

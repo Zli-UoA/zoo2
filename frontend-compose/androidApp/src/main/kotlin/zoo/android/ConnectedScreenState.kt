@@ -1239,7 +1239,9 @@ internal class ConnectedScreenState(
                     }
                 action.id.startsWith("attachment-cache:") ->
                     action.id.substringAfter(':').toIntOrNull()?.let { sizeMiB ->
-                        app.scope.launch { platform.saveAttachmentCacheSize(sizeMiB) }
+                        app.scope.launch {
+                            if (!platform.saveAttachmentCacheSize(sizeMiB)) app.toast = app.t("offline.deleteFailed")
+                        }
                     }
                 action.id.startsWith("engine:") -> app.searchPreferences.save(action.id.substringAfter(':'))
                 action.id == "rename" && channel != null -> {

@@ -269,6 +269,41 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun theNetworkRevalidationCapDoesNotShortenTheStoredPreviewWindow() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=600, stale-while-revalidate=30")
+                .setHeader("ETag", "\"image\"").setBody("image"))
+            f.server.enqueue(MockResponse().setResponseCode(304))
+            f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
+            f.cache(now = { time }).use { cache ->
+                time += 360_000
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                assertEquals(1, f.server.requestCount)
+                assertEquals("image", cache.signedImage(f.url, key).decodeToString())
+                assertEquals(2, f.server.requestCount)
+                time += 629_999
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                time++
+                assertNull(cache.cachedAttachmentPreview(key))
+            }
+        }
+    }
+
+    @Test fun failedCapacityCleanupCanBeRetriedWithTheSameSize() = runBlocking {
+        Fixture().use { f ->
+            val cachePath = f.directory.resolve("account/images-attachment-bodies-v3")
+            assertTrue(cachePath.parentFile.mkdirs())
+            cachePath.writeText("unreadable as a directory")
+            f.cache().use { cache ->
+                assertFalse(cache.resizeAttachmentCache(0))
+                assertTrue(cachePath.delete())
+                assertTrue(cache.resizeAttachmentCache(0))
+            }
+        }
+    }
+
     @Test fun refreshesLegacyEntriesOnceToLearnTheirPreviewPolicy() = runBlocking {
         Fixture().use { f ->
             var time = 1_000L
@@ -280,11 +315,15 @@ class AndroidImageCacheTest {
             f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
             val file = f.directory.resolve("account/images-attachment-bodies-v3")
                 .resolve(AttachmentImageDiskCache.digest(key))
-            val (hash, remainingHeaderAndBody) = java.io.DataInputStream(file.inputStream()).use {
-                it.readUTF().removePrefix("preview:") to it.readBytes()
+            val (hash, expiresAt, remainingHeaderAndBody) = java.io.DataInputStream(file.inputStream()).use {
+                val hash = it.readUTF().removePrefix("http:preview:")
+                val expiresAt = it.readLong()
+                it.readLong()
+                Triple(hash, expiresAt, it.readBytes())
             }
             java.io.DataOutputStream(file.outputStream()).use {
                 it.writeUTF(hash)
+                it.writeLong(expiresAt)
                 it.write(remainingHeaderAndBody)
             }
             time += 60_000

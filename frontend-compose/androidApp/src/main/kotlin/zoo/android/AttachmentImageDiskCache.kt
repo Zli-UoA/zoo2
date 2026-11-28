@@ -16,6 +16,7 @@ internal class AttachmentImageDiskCache(
     data class Entry(
         val urlHash: String,
         val expiresAt: Long,
+        val revalidateAt: Long,
         val etag: String?,
         val freshness: Freshness,
         val bytes: ByteArray,
@@ -68,7 +69,9 @@ internal class AttachmentImageDiskCache(
             if (!file.isFile || file.length() > maxBytes) return null
             DataInputStream(file.inputStream().buffered()).use { input ->
                 // Older entries lack this prefix and still require fresh HTTP metadata for a preview.
-                val storedUrl = input.readUTF()
+                val header = input.readUTF()
+                val hasRevalidationDeadline = header.startsWith(RevalidationPrefix)
+                val storedUrl = header.removePrefix(RevalidationPrefix)
                 val timed = storedUrl.removePrefix(TimedPreviewPrefix)
                 val staleMillis = when {
                     storedUrl.startsWith(TimedPreviewPrefix) -> timed.substringBefore(':').toLongOrNull()
@@ -82,10 +85,11 @@ internal class AttachmentImageDiskCache(
                 if (previewAt != null && expiresAt <= previewAt &&
                     previewAt - expiresAt >= (staleMillis ?: 0L)
                 ) return null
+                val revalidateAt = if (hasRevalidationDeadline) input.readLong() else expiresAt
                 val etag = input.readUTF().ifEmpty { null }
                 val maxAge = input.readLong().takeUnless { it == Long.MIN_VALUE }
                 val httpExpiry = input.readLong().takeUnless { it == Long.MIN_VALUE }
-                Entry(url, expiresAt, etag, Freshness(maxAge, httpExpiry, staleMillis), input.readBytes())
+                Entry(url, expiresAt, revalidateAt, etag, Freshness(maxAge, httpExpiry, staleMillis), input.readBytes())
             }.also {
                 file.setLastModified(System.currentTimeMillis())
                 filesByUse.remove(file)?.let { size -> filesByUse[file] = size }
@@ -105,8 +109,9 @@ internal class AttachmentImageDiskCache(
                 Long.MAX_VALUE -> StalePreviewPrefix
                 else -> "$TimedPreviewPrefix$staleMillis:"
             }
-            output.writeUTF(prefix + entry.urlHash)
+            output.writeUTF(RevalidationPrefix + prefix + entry.urlHash)
             output.writeLong(entry.expiresAt)
+            output.writeLong(entry.revalidateAt)
             output.writeUTF(entry.etag.orEmpty())
             output.writeLong(entry.freshness.maxAgeMillis ?: Long.MIN_VALUE)
             output.writeLong(entry.freshness.httpExpiresAt ?: Long.MIN_VALUE)
@@ -135,10 +140,10 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun resize(bytes: Long) {
-        if (closed) return
+    fun resize(bytes: Long): Boolean {
+        if (closed) return false
         maxBytes = bytes
-        trimToBudget()
+        return trimToBudget()
     }
 
     private fun indexFiles(): Boolean {
@@ -157,16 +162,17 @@ internal class AttachmentImageDiskCache(
         return true
     }
 
-    private fun trimToBudget() {
-        if (!indexFiles()) return
+    private fun trimToBudget(): Boolean {
+        if (!indexFiles()) return false
         val entries = filesByUse.entries.iterator()
-        while (totalBytes > maxBytes && entries.hasNext()) {
+        while ((totalBytes > maxBytes || maxBytes == 0L) && entries.hasNext()) {
             val (file, size) = entries.next()
             if (file.delete() || !file.exists()) {
                 totalBytes -= size
                 entries.remove()
             }
         }
+        return if (maxBytes == 0L) filesByUse.isEmpty() else totalBytes <= maxBytes
     }
 
     private fun delete(file: File) {
@@ -179,6 +185,7 @@ internal class AttachmentImageDiskCache(
     }
 
     companion object {
+        private const val RevalidationPrefix = "http:"
         private const val TimedPreviewPrefix = "stale:"
         private const val StalePreviewPrefix = "preview:"
         private const val FreshPreviewPrefix = "fresh:"
