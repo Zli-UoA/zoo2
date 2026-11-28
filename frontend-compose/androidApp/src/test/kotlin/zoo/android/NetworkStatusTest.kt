@@ -3,6 +3,9 @@ package zoo.android
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import org.robolectric.RuntimeEnvironment
 import kotlin.test.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -19,6 +22,62 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 35], manifest = Config.NONE)
 class NetworkStatusTest {
+    @Test
+    fun switchingAppsReconnectsOnTheFirstResumeEvenIfTheActivityNeverStopped() {
+        val activity = object : LifecycleOwner {
+            override val lifecycle = LifecycleRegistry.createUnsafe(this)
+        }
+
+        val observer = NetworkLifecycleObserver()
+        activity.lifecycle.addObserver(observer)
+        activity.lifecycle.currentState = Lifecycle.State.RESUMED
+        var visible = true
+        val reconnects = mutableListOf<Lifecycle.State>()
+        observer.bind(observer.reconnectRevision) { nowVisible, returning, _ ->
+            visible = nowVisible
+            if (returning) reconnects += activity.lifecycle.currentState
+        }
+        assertTrue(reconnects.isEmpty(), "Installing the observer must not restart active connections")
+
+        activity.lifecycle.currentState = Lifecycle.State.STARTED
+        assertTrue(visible)
+        activity.lifecycle.currentState = Lifecycle.State.RESUMED
+        assertEquals(listOf(Lifecycle.State.RESUMED), reconnects)
+
+        activity.lifecycle.currentState = Lifecycle.State.CREATED
+        assertFalse(visible)
+        activity.lifecycle.currentState = Lifecycle.State.RESUMED
+        assertEquals(listOf(Lifecycle.State.RESUMED, Lifecycle.State.RESUMED), reconnects)
+    }
+
+    @Test
+    fun sessionRestorationReceivesTheResumeEvenWhenItFinishesAfterThePause() {
+        for (bindAfterResume in listOf(false, true)) {
+            val activity = object : LifecycleOwner {
+                override val lifecycle = LifecycleRegistry.createUnsafe(this)
+            }
+
+            val observer = NetworkLifecycleObserver()
+            activity.lifecycle.addObserver(observer)
+            activity.lifecycle.currentState = Lifecycle.State.RESUMED
+            activity.lifecycle.currentState = Lifecycle.State.STARTED
+            val revisionAtSessionStart = observer.reconnectRevision
+
+            if (bindAfterResume) activity.lifecycle.currentState = Lifecycle.State.RESUMED
+            var reconnects = 0
+            val unbind = observer.bind(revisionAtSessionStart) { _, returning, _ ->
+                if (returning) reconnects++
+            }
+            if (!bindAfterResume) activity.lifecycle.currentState = Lifecycle.State.RESUMED
+            assertEquals(1, reconnects)
+
+            unbind()
+            activity.lifecycle.currentState = Lifecycle.State.STARTED
+            activity.lifecycle.currentState = Lifecycle.State.RESUMED
+            assertEquals(1, reconnects)
+        }
+    }
+
     @Test
     @Config(sdk = [28, 35], manifest = Config.NONE)
     @OptIn(ExperimentalCoroutinesApi::class)

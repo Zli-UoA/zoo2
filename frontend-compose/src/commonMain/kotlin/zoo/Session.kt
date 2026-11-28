@@ -422,7 +422,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     internal var networkRevision by mutableIntStateOf(0)
         private set
 
-    fun update(next: Environment, networkChanged: Boolean = false): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+    fun update(next: Environment, reconnect: Boolean = false): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)
@@ -439,7 +439,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     "chat"
                 else "sidebar"
         }
-        if (next.online && (networkChanged || !old.online || (!old.visible && next.visible))) {
+        if (next.online && (reconnect || !old.online || (!old.visible && next.visible))) {
             networkRevision++
             repo.refresh(reconnect = true)
         }

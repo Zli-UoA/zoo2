@@ -1,5 +1,8 @@
 package zoo.android
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import java.util.concurrent.atomic.AtomicBoolean
@@ -87,6 +90,21 @@ class ShapeReconnectTransportTest {
                 "messages", Config(server.url("/").toString().trimEnd('/'), "/api/shapes", "alice", false),
                 platform, http, this, mapOf("channel_id" to "test-channel"), persist = false, onDemand = true,
             )
+            val activity = object : LifecycleOwner {
+                override val lifecycle = LifecycleRegistry.createUnsafe(this)
+            }
+
+            val observer = NetworkLifecycleObserver()
+            activity.lifecycle.addObserver(observer)
+            activity.lifecycle.currentState = Lifecycle.State.RESUMED
+            var visible = true
+            val unbind = observer.bind(observer.reconnectRevision) { nowVisible, returning, _ ->
+                visible = nowVisible
+                if (returning) {
+                    engine.reconnect()
+                    table.refresh(reconnect = true)
+                }
+            }
             var phase = "first page"
             try {
                 withTimeout(10_000) {
@@ -94,9 +112,10 @@ class ShapeReconnectTransportTest {
                     phase = "original live request"
                     oldLive.await()
 
+                    activity.lifecycle.currentState = Lifecycle.State.STARTED
+                    assertTrue(visible)
                     invalidate.set(true)
-                    engine.reconnect()
-                    table.refresh(reconnect = true)
+                    activity.lifecycle.currentState = Lifecycle.State.RESUMED
 
                     phase = "replacement page"
                     val recovered = table.rows.first { rows -> rows.any { it.text("id") == "new-row" } }
@@ -109,6 +128,7 @@ class ShapeReconnectTransportTest {
             } catch (timeout: TimeoutCancellationException) {
                 fail("Timed out waiting for $phase (snapshots=${snapshots.get()}, error=${table.error.value})", timeout)
             } finally {
+                unbind()
                 table.close()
                 http.close()
                 engine.close()
