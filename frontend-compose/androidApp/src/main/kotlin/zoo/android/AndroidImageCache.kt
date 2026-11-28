@@ -24,9 +24,10 @@ internal class AndroidImageCache(
     maxBytes: Long = 512L * 1024 * 1024,
     private val timeoutMillis: Long = 120_000,
     private val now: () -> Long = System::currentTimeMillis,
+    attachmentCacheBytes: Long = 512L * 1024 * 1024,
     configure: OkHttpClient.Builder.() -> Unit = {},
 ) : java.io.Closeable {
-    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("${directory.name}-attachment-bodies-v3"))
+    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("${directory.name}-attachment-bodies-v3"), attachmentCacheBytes)
     private val disk = Cache(directory, maxBytes)
     private val client = OkHttpClient.Builder()
         .apply(configure)
@@ -55,8 +56,12 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
-    suspend fun freshAttachmentImage(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
-        attachments.read(cacheKey, freshAt = now())?.bytes
+    suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        attachments.read(cacheKey, previewAt = now())?.bytes
+    }
+
+    suspend fun resizeAttachmentCache(bytes: Long) = withContext(Dispatchers.IO) {
+        attachments.resize(bytes)
     }
 
     suspend fun removeAttachmentImages(id: String) = withContext(Dispatchers.IO) {
@@ -92,8 +97,10 @@ internal class AndroidImageCache(
                     return@withContext matching.bytes
                 }
                 if (retry) attachments.remove(cacheKey, token)
+                // Legacy entries require a full response once to learn whether stale previews are permitted.
+                val conditional = matching?.takeIf { it.freshness.canPreviewStale != null }
                 val image = try {
-                    loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes, redirects ->
+                    loadPublicImage(http, url, noStore = true, conditional = conditional) { response, bytes, redirects ->
                         val receivedAt = now()
                         val validated = response.status == HttpStatusCode.NotModified
                         val freshness = attachmentFreshness(response, matching?.freshness?.takeIf { validated })
@@ -114,7 +121,7 @@ internal class AndroidImageCache(
                         } else null
                         attachments.write(cacheKey, token, AttachmentImageDiskCache.Entry(
                             "$resourceHash:$urlHash", minOf(expiresAt, redirectDeadlines.filterNotNull().minOrNull() ?: expiresAt),
-                            etag, freshness, bytes,
+                            etag, freshness.copy(canPreviewStale = freshness.canPreviewStale == true && redirects.isEmpty()), bytes,
                         ))
                     }
                 } catch (failure: ImageHttpFailure) {
@@ -146,7 +153,10 @@ internal class AndroidImageCache(
         val expiresAt = if (expiresHeader == null) previous?.httpExpiresAt else httpDate(expiresHeader)
         if (expiresHeader != null && expiresAt == null && maxAge == null) return null
         val freshness = maxAge ?: 0L.takeIf { policy.mustRevalidate && expiresAt == null }
-        return Freshness(freshness, expiresAt)
+        val canPreviewStale = if (headers[HttpHeaders.CacheControl] == null && previous != null) {
+            previous.canPreviewStale
+        } else !policy.mustRevalidate
+        return Freshness(freshness, expiresAt, canPreviewStale)
     }
 
     private fun httpDate(value: String): Long? =

@@ -1835,6 +1835,10 @@
   "androidUpdate": {
     "title": "应用更新"
   },
+  "androidAttachmentCache": {
+    "title": "附件图片缓存",
+    "description": "将此账号的附件图片保存在此设备上。达到上限时，优先删除最久未使用的图片。"
+  },
   "androidNavigationCache": {
     "title": "页面切换缓存",
     "description": "设置在内存中保留的首页、帖子详情和个人资料条目数，以及单独的频道条目数。",

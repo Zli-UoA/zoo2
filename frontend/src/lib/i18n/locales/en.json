@@ -1835,6 +1835,10 @@
   "androidUpdate": {
     "title": "App updates"
   },
+  "androidAttachmentCache": {
+    "title": "Attachment image cache",
+    "description": "Stores attachment images for this account on this device. When the limit is reached, the least recently used images are removed."
+  },
   "androidNavigationCache": {
     "title": "Navigation cache",
     "description": "Sets the number of entries kept in memory for Home, post details and profiles, and separately for channels.",

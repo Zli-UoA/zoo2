@@ -9,10 +9,9 @@ import java.security.MessageDigest
 /** Stores attachment bytes within one account. Callers check access before every lookup. */
 internal class AttachmentImageDiskCache(
     private val directory: File,
-    private val maxBytes: Long = 128L * 1024 * 1024,
-    private val maxEntries: Int = 512,
+    private var maxBytes: Long,
 ) {
-    data class Freshness(val maxAgeMillis: Long?, val httpExpiresAt: Long?)
+    data class Freshness(val maxAgeMillis: Long?, val httpExpiresAt: Long?, val canPreviewStale: Boolean?)
 
     data class Entry(
         val urlHash: String,
@@ -59,19 +58,26 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun read(id: String, freshAt: Long? = null): Entry? {
+    fun read(id: String, previewAt: Long? = null): Entry? {
         if (closed || id in blockedKeys) return null
         val file = file(id)
         return try {
             if (!file.isFile || file.length() > maxBytes) return null
             DataInputStream(file.inputStream().buffered()).use { input ->
-                val url = input.readUTF()
+                // Older entries lack this prefix and still require fresh HTTP metadata for a preview.
+                val storedUrl = input.readUTF()
+                val canPreviewStale = when {
+                    storedUrl.startsWith(StalePreviewPrefix) -> true
+                    storedUrl.startsWith(FreshPreviewPrefix) -> false
+                    else -> null
+                }
+                val url = storedUrl.removePrefix(StalePreviewPrefix).removePrefix(FreshPreviewPrefix)
                 val expiresAt = input.readLong()
-                if (freshAt != null && expiresAt <= freshAt) return null
+                if (previewAt != null && expiresAt <= previewAt && canPreviewStale != true) return null
                 val etag = input.readUTF().ifEmpty { null }
                 val maxAge = input.readLong().takeUnless { it == Long.MIN_VALUE }
                 val httpExpiry = input.readLong().takeUnless { it == Long.MIN_VALUE }
-                Entry(url, expiresAt, etag, Freshness(maxAge, httpExpiry), input.readBytes())
+                Entry(url, expiresAt, etag, Freshness(maxAge, httpExpiry, canPreviewStale), input.readBytes())
             }.also { file.setLastModified(System.currentTimeMillis()) }
         } catch (_: IOException) {
             null
@@ -83,7 +89,8 @@ internal class AttachmentImageDiskCache(
         if (!isCurrent(id, token)) return
         val metadata = java.io.ByteArrayOutputStream()
         DataOutputStream(metadata).use { output ->
-            output.writeUTF(entry.urlHash)
+            val prefix = if (entry.freshness.canPreviewStale == true) StalePreviewPrefix else FreshPreviewPrefix
+            output.writeUTF(prefix + entry.urlHash)
             output.writeLong(entry.expiresAt)
             output.writeUTF(entry.etag.orEmpty())
             output.writeLong(entry.freshness.maxAgeMillis ?: Long.MIN_VALUE)
@@ -93,18 +100,7 @@ internal class AttachmentImageDiskCache(
         if (closed || sizeOnDisk > maxBytes) return
         if (!directory.isDirectory && !directory.mkdirs()) return
         val target = file(id)
-        val files = directory.listFiles()?.filter { it != target } ?: return
-        var total = files.sumOf { it.length() } + sizeOnDisk
-        var entries = files.size + 1
-        for (candidate in files.sortedBy { it.lastModified() }) {
-            if (total <= maxBytes && entries <= maxEntries) break
-            val size = candidate.length()
-            if (candidate.delete()) {
-                total -= size
-                entries--
-            }
-        }
-        if (total > maxBytes || entries > maxEntries) return
+        if (!trimToBudget(excluding = target, reservedBytes = sizeOnDisk)) return
         val temporary = directory.resolve("${target.name}.tmp")
         try {
             temporary.outputStream().buffered().use { output ->
@@ -120,11 +116,33 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
+    fun resize(bytes: Long) {
+        if (closed) return
+        maxBytes = bytes
+        trimToBudget()
+    }
+
+    private fun trimToBudget(excluding: File? = null, reservedBytes: Long = 0): Boolean {
+        if (!directory.exists()) return true
+        val files = directory.listFiles()?.filter { it != excluding } ?: return false
+        var total = files.sumOf { it.length() } + reservedBytes
+        if (maxBytes > 0 && total <= maxBytes) return true
+        for (candidate in files.sortedBy { it.lastModified() }) {
+            if (maxBytes > 0 && total <= maxBytes) break
+            val size = candidate.length()
+            if (candidate.delete()) total -= size
+        }
+        return total <= maxBytes
+    }
+
+    @Synchronized
     fun remove(id: String, token: Any) {
         if (isCurrent(id, token)) file(id).delete()
     }
 
     companion object {
+        private const val StalePreviewPrefix = "preview:"
+        private const val FreshPreviewPrefix = "fresh:"
         fun digest(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
             .joinToString("") { "%02x".format(it) }
     }

@@ -76,7 +76,7 @@ internal suspend fun timelineImage(
     fun canUseCached(): Boolean = !access.isDenied(id) && access.accessVersion(id) == previewVersion
     val cached = if (onCached != null && !retry && !previouslyDenied) {
         suspend fun decode(key: String): ImageBitmap? = try {
-            platform.freshAttachmentImage(key)?.let { platform.imageFrames(it).first() }
+            platform.cachedAttachmentPreview(key)?.let { platform.imageFrames(it).first() }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
