@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -153,6 +155,10 @@ internal fun ConnectedScreens(
     val recipientLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
         { id -> usersById[id]?.let(::author)?.ifBlank { null } ?: id }) { key, args -> session.t(key, *args) }
     val currentThread = session.thread
+    val typingUsers by state.typing.users.collectAsState()
+    val typingLine = TypingPresence.names(typingUsers) { id -> usersById[id]?.let(::author).orEmpty().ifBlank { id } }
+        .takeIf { it.isNotEmpty() }
+        ?.let { session.t("messages.typing", "names" to it.joinToString(session.t("messages.typingSeparator"))) }
     var threadLoadFailed by remember(channelId, currentThread) { mutableStateOf(false) }
     var threadRetry by remember(channelId, currentThread) { mutableIntStateOf(0) }
     val threadDetail = state.threadDetails.takeIf { it.text("id") == currentThread } ?: obj()
@@ -450,6 +456,9 @@ internal fun ConnectedScreens(
             }.value
         }
     } else null
+    // スレッドに返信できるか（アーカイブ済み・親が削除済み・参加が必要で未参加なら返信できない）。入力欄と入力中の通知で共有する。
+    val canReplyInThread = canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
+        (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined")
     val screen = when {
         showFullCall -> checkNotNull(callScreen)
         state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
@@ -536,9 +545,8 @@ internal fun ConnectedScreens(
             channel.text("channel_name"),
             thread.first(),
             thread.drop(1),
-            state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
-                (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), threadFocus,
+            state.input("$channelId:$currentThread", canReplyInThread,
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines, typing = typingLine), threadFocus,
             focusRequest = focusRequest.takeIf { threadFocus != null },
             loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || pageStates[PageScope.Replies(currentThread.orEmpty())]?.loaded == true,
@@ -548,7 +556,7 @@ internal fun ConnectedScreens(
             "thread:$currentThread", session.t("threads.title"), env.online, threadLoadFailed) { threadRetry++ }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
             conversationMessages, state.input(channelId.orEmpty(), canPost,
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines, typing = typingLine),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || mainPageReady,
@@ -561,7 +569,28 @@ internal fun ConnectedScreens(
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
-        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
+        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
+            threadsFailed = state.joinedThreads.error)
+    }
+    // 参加中のスレッド。チャンネル一覧を表示している間だけ、開いたときと 60 秒ごとに取り直す（iOS と同じ）。
+    val showingChannels = screen is AndroidScreen.Channels && env.online && env.visible
+    LaunchedEffect(state, showingChannels) {
+        while (showingChannels) {
+            state.joinedThreads.refresh()
+            delay(60_000)
+        }
+    }
+    // 入力中（Web の useTyping）。会話かスレッドを表示していて、書き込めるときだけ送受信する。
+    val typingScope = when (screen) {
+        is AndroidScreen.Conversation -> channelId?.let { it to null }
+        is AndroidScreen.Thread -> channelId?.takeIf { canReplyInThread }?.let { id -> currentThread?.let { id to it } }
+        else -> null
+    }?.takeIf { canPost && env.online && env.visible }
+    LaunchedEffect(state, typingScope) {
+        val (id, parent) = typingScope ?: return@LaunchedEffect
+        val key = id + (parent?.let { ":$it" } ?: "")
+        // 開いた時点の下書きでは送らず、本文が変わったときだけ入力中にする。
+        state.typing.run(id, parent, snapshotFlow { state.draftText(key) }.drop(1).map { it.isNotBlank() })
     }
     val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
         focusMessage == null && positionForHistory?.hasUnread == true
@@ -787,7 +816,8 @@ internal fun ConnectedScreens(
             confirmButton = { TextButton(onClick = phone::clearError) { Text(session.t("common.close")) } },
         )
     }
-    val recentEmojis = remember(session) { mutableStateListOf<String>() }
+    // 最近使った絵文字（標準とカスタム）。アカウント単位で端末に残す（iOS と同じ）。
+    val recentEmojis = remember(session) { mutableStateListOf<String>().apply { addAll(platform.readRecentEmojis()) } }
     if (pickerOpen) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
@@ -811,10 +841,12 @@ internal fun ConnectedScreens(
             },
             dismiss = dismiss,
         ) { choice ->
-            if (choice.image == null && choice.glyph.isNotBlank()) {
+            // Emoji Kitchen の組み合わせは、部品の一覧から選び直すので残さない。
+            if (!choice.value.startsWith("kitchen:") && (choice.image != null || choice.glyph.isNotBlank())) {
                 recentEmojis.remove(choice.value)
                 recentEmojis.add(0, choice.value)
-                if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
+                while (recentEmojis.size > MAX_RECENT_EMOJIS) recentEmojis.removeAt(recentEmojis.lastIndex)
+                platform.writeRecentEmojis(recentEmojis.toList())
             }
             if (reaction != null) {
                 dismiss()
@@ -865,6 +897,8 @@ internal fun ConnectedScreens(
     }
 }
 
+
+private const val MAX_RECENT_EMOJIS = 24
 
 private fun currentConversationDay(): Pair<ZoneId, LocalDate> {
     val zone = ZoneId.systemDefault()

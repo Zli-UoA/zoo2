@@ -53,6 +53,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -64,6 +66,10 @@ internal data class InputState(val text: String = "", val expanded: Boolean = fa
     /** 暗号化チャンネルの送信画面の表示（増えた配布先と、鍵を配れない相手。#565）。何もなければ空。 */
     val notices: List<String> = emptyList(),
     val lastSend: String? = null,
+    /** 「○○が入力中…」。誰も入力していなければ null。 */
+    val typing: String? = null,
+    /** センシティブにした添付の ID。添付ごとに指定できない場面（暗号化チャンネルなど）では null。 */
+    val sensitiveFiles: Set<String>? = null,
 )
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
@@ -77,6 +83,7 @@ internal fun ConversationInput(
     onMention: (String) -> Unit = {},
     onSelection: (TextRange) -> Unit = {},
     onRemoveFile: (String) -> Unit = {},
+    onToggleFileSensitive: (String) -> Unit = {},
     hideIdleHandle: Boolean = false,
     canResize: Boolean = true,
     onResizeChanged: (Boolean) -> Unit = {},
@@ -170,11 +177,20 @@ internal fun ConversationInput(
             .background(colors.inputSurface).padding(bottom = AndroidControlSize.inputEdgeInset),
             contents = listOf(
                 {
-                    if (state.notices.isNotEmpty()) {
-                        Column(Modifier.fillMaxWidth().testTag("encryption-recipients").verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
-                            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-                            verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            state.notices.forEach { Text(it, color = colors.inputHint, fontSize = 12.sp) }
+                    if (state.notices.isNotEmpty() || state.typing != null) Column(Modifier.fillMaxWidth()) {
+                        if (state.notices.isNotEmpty()) {
+                            Column(Modifier.fillMaxWidth().testTag("encryption-recipients").verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
+                                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                                verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                state.notices.forEach { Text(it, color = colors.inputHint, fontSize = 12.sp) }
+                            }
+                        }
+                        state.typing?.let { typing ->
+                            Text(typing, Modifier.fillMaxWidth().testTag("typing-indicator")
+                                .padding(horizontal = 16.dp).padding(top = 6.dp)
+                                .semantics { liveRegion = LiveRegionMode.Polite },
+                                color = colors.inputHint, fontSize = 12.sp, maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         }
                     }
                 },
@@ -266,9 +282,25 @@ internal fun ConversationInput(
                     Column(Modifier.fillMaxWidth()) {
                         if (state.files.isNotEmpty()) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
-                                .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(if (state.sensitiveFiles != null) 20.dp else 8.dp)) {
                                 state.files.forEach { (id, name) ->
-                                    TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                                    // 目のボタンは名前の左に詰めて置き、添付どうしの間を広げて、どの添付の指定か分かるようにする。
+                                    Row(verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
+                                        state.sensitiveFiles?.let { sensitive ->
+                                            val hidden = id in sensitive
+                                            // 読み上げは「添付名: センシティブ」と、スイッチのオン・オフ（言語は翻訳辞書に従う）。
+                                            UiIconButton(if (hidden) UiIcon.EyeOff else UiIcon.Eye,
+                                                "$name: ${androidLabel("attachments.sensitiveShort", "センシティブ")}",
+                                                if (hidden) colors.foreground else colors.inputHint, { onToggleFileSensitive(id) },
+                                                modifier = Modifier.testTag("file-sensitive").semantics {
+                                                    toggleableState = androidx.compose.ui.state.ToggleableState(hidden)
+                                                    role = androidx.compose.ui.semantics.Role.Switch
+                                                })
+                                        }
+                                        TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                                    }
                                 }
                             }
                         }

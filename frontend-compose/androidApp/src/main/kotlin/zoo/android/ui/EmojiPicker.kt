@@ -95,23 +95,30 @@ internal fun EmojiPicker(
         val catalog = unicode.associateBy { it.value }
         recent.mapNotNull(catalog::get)
     }
-    val choices = remember(tab, unicode, custom, recentUnicode, kitchen, first) {
+    val recentCustom = remember(recent, custom) {
+        val catalog = custom.associateBy { it.value }
+        recent.mapNotNull(catalog::get)
+    }
+    val choices = remember(tab, unicode, custom, recentUnicode, recentCustom, kitchen, first) {
         when (tab) {
             EmojiTab.Unicode -> (recentUnicode + unicode)
                 .distinctBy { it.value }
-            EmojiTab.Custom -> custom
+            EmojiTab.Custom -> (recentCustom + custom).distinctBy { it.value }
             EmojiTab.Kitchen -> kitchen?.let { catalog -> first?.let(catalog.combinations) ?: catalog.components }.orEmpty()
         }
     }
     val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
-    val sections = remember(filtered, tab, query, unicode, recentUnicode, recentCategory) {
+    val sections = remember(filtered, tab, query, unicode, custom, recentUnicode, recentCustom, recentCategory) {
         when {
             query.isNotBlank() || tab == EmojiTab.Kitchen -> listOf("" to filtered)
             tab == EmojiTab.Unicode -> buildList {
                 if (recentUnicode.isNotEmpty()) add(recentCategory to recentUnicode)
                 addAll(unicode.groupBy { it.category }.toList())
             }
-            else -> filtered.groupBy { it.category }.toList()
+            else -> buildList {
+                if (recentCustom.isNotEmpty()) add(recentCategory to recentCustom)
+                addAll(custom.groupBy { it.category }.toList())
+            }
         }
     }
     ModalBottomSheet(

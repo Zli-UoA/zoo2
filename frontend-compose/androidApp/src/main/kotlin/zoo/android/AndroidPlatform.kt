@@ -115,6 +115,24 @@ internal class AndroidPlatform(
     }
     private val dictionaries = mutableMapOf<String, Row>()
 
+    /** アカウント単位の、端末だけに置く入力の状態（会話の下書き、最近使った絵文字）。ログアウトで消す。 */
+    private val accountInput = activity.getSharedPreferences("account-input-${cacheDirectory.name}", 0)
+
+    fun readDraft(key: String): String = accountInput.getString("draft:$key", "").orEmpty()
+
+    fun writeDraft(key: String, text: String) {
+        accountInput.edit().apply { if (text.isEmpty()) remove("draft:$key") else putString("draft:$key", text) }.apply()
+    }
+
+    fun readRecentEmojis(): List<String> =
+        accountInput.getString("recent-emojis", null)?.let { saved ->
+            runCatching { json.parseToJsonElement(saved).jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull } }.getOrNull()
+        }.orEmpty()
+
+    fun writeRecentEmojis(values: List<String>) {
+        accountInput.edit().putString("recent-emojis", JsonArray(values.map(::JsonPrimitive)).toString()).apply()
+    }
+
     private fun hash(value: String) =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
             "%02x".format(it)
@@ -152,6 +170,7 @@ internal class AndroidPlatform(
         cache.clear()
         encryptionHistory.clear()
         files.clear()
+        accountInput.edit().clear().commit()
     }
 
     override fun uuid() = UUID.randomUUID().toString()
