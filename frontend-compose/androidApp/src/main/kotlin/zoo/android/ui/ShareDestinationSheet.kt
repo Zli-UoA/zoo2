@@ -32,8 +32,9 @@ internal fun ShareDestinationSheet(
         containerColor = colors.background, contentColor = colors.foreground,
         dragHandle = { BottomSheetDefaults.DragHandle(color = colors.inputBoundary) },
     ) {
-        LazyColumn(Modifier.fillMaxWidth().imePadding(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
+        LazyColumn(Modifier.fillMaxWidth().imePadding(), contentPadding = PaddingValues(bottom = 16.dp)) {
             item {
+                Column(Modifier.padding(horizontal = 20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("共有先", Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.emphasis, fontSize = 22.sp)
                     UiIconButton(UiIcon.Close, "閉じる", colors.secondary, cancel, enabled = !busy, modifier = Modifier.size(36.dp))
@@ -57,13 +58,14 @@ internal fun ShareDestinationSheet(
                 }
                 error?.let { Text(it, color = colors.unread, fontSize = 14.sp) }
                 ProgressStrip(busy, colors.foreground)
+                }
             }
             if ("ホーム".contains(query.trim(), true)) item("home") {
                 ShareTarget("ホーム", UiIcon.Home, colors, busy) { select(null) }
             }
             val matches = sections.map { section -> section.copy(channels = section.channels.filter { it.title.contains(query.trim(), true) }) }
             for (section in matches.filter { it.channels.isNotEmpty() }) {
-                item { Text(section.label, Modifier.padding(top = 12.dp, bottom = 4.dp), color = colors.secondary, fontSize = 13.sp) }
+                item { Text(section.label, Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp), color = colors.secondary, fontSize = 13.sp) }
                 items(section.channels, key = { "channel-" + it.id }) {
                     ShareTarget(it.title, if (it.direct) UiIcon.Person else UiIcon.Channels, colors, busy) { select(it.id) }
                 }
@@ -77,7 +79,7 @@ internal fun ShareDestinationSheet(
 @Composable
 private fun ShareTarget(label: String, icon: UiIcon, colors: AndroidColors, busy: Boolean, click: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(enabled = !busy, role = Role.Button, onClickLabel = "下書きを開く", onClick = click)
-        .heightIn(min = 48.dp).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+        .heightIn(min = 48.dp).padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(Modifier.size(32.dp).background(if (icon == UiIcon.Home) colors.headerLight else colors.inputSurface,
             if (icon == UiIcon.Person) CircleShape else RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {

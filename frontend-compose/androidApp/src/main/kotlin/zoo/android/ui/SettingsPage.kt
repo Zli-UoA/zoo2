@@ -40,7 +40,7 @@ internal fun SettingsPage(
 ) {
     PageHeader(title, colors, onBack = onBack)
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
         for (group in groups) {
@@ -48,7 +48,7 @@ internal fun SettingsPage(
             Column(if (choices) Modifier.selectableGroup() else Modifier) {
                 if (group.title.isNotBlank()) Text(
                     group.title,
-                    Modifier.padding(bottom = 4.dp),
+                    Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp),
                     color = colors.secondary,
                     fontSize = 13.sp,
                     fontWeight = AndroidWeights.label,
@@ -61,7 +61,7 @@ internal fun SettingsPage(
                         is SettingsEntry.Toggle -> Modifier.toggleable(entry.enabled, role = Role.Switch) { toggle(entry.id, it) }
                     }
                     Row(
-                        Modifier.fillMaxWidth().then(action).heightIn(min = AndroidControlSize.target).padding(vertical = 8.dp),
+                        Modifier.fillMaxWidth().then(action).heightIn(min = AndroidControlSize.target).padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -83,7 +83,7 @@ internal fun SettingsPage(
                     if (entry is SettingsEntry.Toggle && entry.id == "swipe" && entry.enabled) {
                         var tried by rememberSaveable { mutableStateOf(false) }
                         Row(Modifier.fillMaxWidth().then(swipeReplyGesture { tried = true })
-                            .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
+                            .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             UiGlyph(UiIcon.Bubble, colors.secondary, AndroidControlSize.inlineIcon)
                             Text(if (tried) "返信ジェスチャーを認識しました" else "ここを左にスワイプして試す",

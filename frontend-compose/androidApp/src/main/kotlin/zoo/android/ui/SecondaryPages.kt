@@ -77,9 +77,9 @@ internal fun DirectoryPage(
     submit: String?, canSubmit: Boolean, encryption: Boolean?, onSubmit: () -> Unit, onEncryption: () -> Unit,
 ) {
     PageHeader(title, colors, onBack = back)
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(vertical = 16.dp)) {
         BasicTextField(
-            query, search, modifier = Modifier.fillMaxWidth().background(colors.inputSurface, CircleShape).padding(14.dp),
+            query, search, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).background(colors.inputSurface, CircleShape).padding(14.dp),
             singleLine = true, textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
@@ -93,7 +93,7 @@ internal fun DirectoryPage(
             items(results, key = { it.id }) { item ->
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                        .clickable(enabled = item.unavailable == null, role = Role.Button) { select(item.id) },
+                        .clickable(enabled = item.unavailable == null, role = Role.Button) { select(item.id) }.padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -110,13 +110,13 @@ internal fun DirectoryPage(
             }
         }
         if (encryption != null) {
-            Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(onClick = onEncryption),
+            Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(onClick = onEncryption).padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("エンドツーエンド暗号化", Modifier.weight(1f), color = colors.foreground)
                 androidx.compose.material3.Switch(encryption, onCheckedChange = null)
             }
         }
-        if (submit != null) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        if (submit != null) Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp), contentAlignment = Alignment.CenterEnd) {
             TextAction(submit, colors, canSubmit, icon = UiIcon.Bubble, click = onSubmit)
         }
     }

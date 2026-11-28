@@ -493,7 +493,7 @@ class AndroidSamplesTest {
                     val postBounds = ui.onNodeWithTag("timeline-entry-1", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     val bodyBounds = ui.onNode(firstPost and hasText(homePosts.first().body), useUnmergedTree = true)
                         .getUnclippedBoundsInRoot()
-                    check(controls.first().left == bodyBounds.left && controls.last().right == postBounds.right)
+                    check(controls.first().left == bodyBounds.left && controls.last().right == postBounds.right - 16.dp)
                     val gaps = controls.zipWithNext { left, right -> (right.left - left.right).value }
                     check(gaps.max() - gaps.min() <= 1f)
                     ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("再投稿"),
