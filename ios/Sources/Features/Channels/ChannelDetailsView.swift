@@ -28,6 +28,10 @@ struct ChannelDetailsView: View {
                     LabeledContent("種類", value: channel.is_dm ? "ダイレクトメッセージ" : channel.is_private ? "非公開チャンネル" : "公開チャンネル")
                     if channel.archive_at != nil { Label("アーカイブ済み", systemImage: "archivebox") }
                     if channel.encrypted == true { Label("暗号化された会話", systemImage: "lock.shield") }
+                    if let url = MessageLink.url(serverURL: workspace.client.serverURL, channelID: channel.id), channel.deleted_at == nil {
+                        Button("チャンネルリンクをコピー", systemImage: "link") { UIPasteboard.general.string = url.absoluteString }
+                            .accessibilityIdentifier("copy-channel-link")
+                    }
                     Toggle("ピン留め", isOn: Binding(get: { requestedPin ?? pinned }, set: { value in
                         requestedPin = value
                         Task {

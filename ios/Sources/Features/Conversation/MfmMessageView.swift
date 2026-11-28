@@ -33,7 +33,7 @@ struct MfmMessageView: View {
             .reduce(into: [String: String]()) { result, channel in
                 result[channel.channel_name] = workspace.client.serverURL + "/channels/" + channel.id
             }
-        let imageKeys = state.document.emojiCodes.sorted().map { code in MfmRenderKey.Emoji(code: code, image: images[code].map(ObjectIdentifier.init)) }
+        let imageKeys = state.document.emojiCodes.sorted().map { code in MfmRenderKey.Emoji(code: code, image: images[code].map(ObjectIdentifier.init), registered: urlsByCode[code] != nil) }
         let key = MfmRenderKey(fontSize: fontSize, width: state.width, dark: colorScheme == .dark,
                                emojis: imageKeys, mentions: mentions, channels: channels,
                                restrictedMentions: message.e2eeMentions != nil || message.ciphertext != nil,
@@ -96,21 +96,8 @@ struct MfmMessageView: View {
             return .handled
         }
         guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.user == nil, url.password == nil else { return .discarded }
-        if let target = Self.channelTarget(url, serverURL: workspace.client.serverURL) {
-            Task { _ = await workspace.openMessage(channelID: target.channelID, messageID: target.messageID) }
-            return .handled
-        }
         openURL(url)
         return .handled
     }
 
-    static func channelTarget(_ url: URL, serverURL: String) -> (channelID: String, messageID: String?)? {
-        guard let server = URL(string: serverURL), url.scheme == server.scheme,
-              url.host == server.host, (url.port ?? (url.scheme == "https" ? 443 : 80)) == (server.port ?? (server.scheme == "https" ? 443 : 80)) else { return nil }
-        let path = url.pathComponents
-        guard path.count == 3, path[1] == "channels", UUID(uuidString: path[2]) != nil else { return nil }
-        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let message = query.first(where: { $0.name == "message" })?.value ?? query.first(where: { $0.name == "thread" })?.value
-        return (path[2], message.flatMap { UUID(uuidString: $0) == nil ? nil : $0 })
-    }
 }

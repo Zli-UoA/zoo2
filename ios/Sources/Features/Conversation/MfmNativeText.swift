@@ -3,7 +3,7 @@ import SwiftMath
 import UIKit
 
 struct MfmRenderKey: Equatable {
-    struct Emoji: Equatable { let code: String; let image: ObjectIdentifier? }
+    struct Emoji: Equatable { let code: String; let image: ObjectIdentifier?; var registered = false }
     let fontSize: CGFloat
     let width: CGFloat
     let dark: Bool
@@ -210,7 +210,7 @@ private final class MfmTextBuilder {
 
     private func symbols(_ value: String, style: Style) -> Text {
         let parts = MessageContent.parse(value, mention: { _ in nil }) { code in
-            images[code] == nil ? nil : URL(string: "zoo-emoji://image/" + code.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)
+            (images[code] == nil && !key.emojis.contains { $0.code == code && $0.registered }) ? nil : URL(string: "zoo-emoji://image/" + code.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)
         }
         let runs = parts.map { part -> Text in
             switch part {
@@ -218,7 +218,10 @@ private final class MfmTextBuilder {
                 if let image = images[name] { return emoji(image, name: name, style: style) }
                 return literal(name, style: style)
             case .text(let text), .mention(let text, _): return literal(text, style: style)
-            case .link(let text, _): return literal(text, style: style)
+            case .link(let text, let url):
+                var linked = style
+                if linked.link == nil { linked.link = Self.safeURL(url.absoluteString) }
+                return literal(text, style: linked)
             }
         }
         return join(runs[...])
@@ -358,7 +361,15 @@ private final class MfmTextBuilder {
                     let magnitude = max(1, max(abs(function.number("x", fallback: 1, range: -5...5)), abs(function.number("y", fallback: 1, range: -5...5))))
                     style.scale *= min(magnitude, 8 / style.scale)
                 }
-                if function.name == "blur", !key.revealed.contains(node.id) { style.link = URL(string: "zoo-mfm-blur://reveal/\(node.id)") }
+                if function.name == "blur", !key.revealed.contains(node.id) {
+                    let url = URL(string: "zoo-mfm-blur://reveal/\(node.id)")!
+                    style.link = url
+                    let precedingLabel = accessibilityLabel, precedingLinks = imageLinks
+                    let content = inline(node.children, style: style)
+                    accessibilityLabel = precedingLabel + "ぼかしあり"
+                    imageLinks = precedingLinks + [MfmImageLink(url: url, label: "ぼかしを解除")]
+                    return content
+                }
             }
         case .quote, .center, .heading: break
         }
@@ -435,9 +446,13 @@ private final class MfmTextBuilder {
         let previousLabel = accessibilityLabel
         let previousLinks = imageLinks
         let innerInteractions = MfmInteractionMap()
+        let readingText = literal(reading, style: readingStyle)
+        accessibilityLabel = previousLabel
+        let baseText = inline(children, style: baseStyle)
+        let baseLabel = String(accessibilityLabel.dropFirst(previousLabel.count))
         let content = MfmRubyLayout(interactions: innerInteractions) {
-            literal(reading, style: readingStyle)
-            inline(children, style: baseStyle).textRenderer(MfmNativeEffects(time: 0, reducedMotion: true, interactions: innerInteractions))
+            readingText
+            baseText.textRenderer(MfmNativeEffects(time: 0, reducedMotion: true, interactions: innerInteractions))
         }
             .fixedSize(horizontal: false, vertical: true)
             .environment(\.colorScheme, key.dark ? .dark : .light)
@@ -461,7 +476,7 @@ private final class MfmTextBuilder {
         }
         guard let image = output else { return literal(node.source, style: style) }
         rasters[cacheKey] = image
-        let label = children.map(\.plainText).joined() + "（" + reading + "）"
+        let label = baseLabel + "（" + reading + "）"
         rasterLabels[cacheKey] = label
         rasterRegions[cacheKey] = innerInteractions.snapshot()
         rasterActions[cacheKey] = innerActions

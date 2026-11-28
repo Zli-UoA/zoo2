@@ -9,6 +9,7 @@ enum MfmInput {
     }
     struct Query {
         let range: Range<String.Index>
+        let utf16Range: NSRange
         let text: String
     }
     static let candidates: [Candidate] = {
@@ -31,7 +32,7 @@ enum MfmInput {
               prefix.range(of: #"https?://\S*$"#, options: [.regularExpression, .caseInsensitive]) == nil,
               !protected.matches(in: prefix, range: full).contains(where: { NSIntersectionRange($0.range, match.range).length > 0 }),
               let original = Range(match.range, in: text) else { return nil }
-        return Query(range: original, text: prefix[name].lowercased())
+        return Query(range: original, utf16Range: match.range, text: prefix[name].lowercased())
     }
 
     static func options(_ query: String) -> [Candidate] {

@@ -49,7 +49,7 @@ struct MessageList: View {
     let parentID: String?
     let isVisible: Bool
     let focusComposerOnAppear: Bool
-    @FocusState.Binding var composerFocused: Bool
+    @Binding var composerFocused: Bool
     let openThread: (String) -> Void
     @Environment(\.scenePhase) private var scenePhase
     @State private var followingLatest = false

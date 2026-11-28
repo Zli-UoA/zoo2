@@ -121,6 +121,10 @@ final class PreviewChatClient: ChatClient {
             allMessages[0].content = "<center>[中央リンク](https://ui.test.invalid/channels/55555555-5555-4555-8555-555555555555)</center>"
         }
 
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-plain-link") {
+            allMessages[0].content = serverURL + "/channels/55555555-5555-4555-8555-555555555555"
+        }
+
         if ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
             // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。
             let encryptedID = "77777777-7777-4777-8777-777777777777"

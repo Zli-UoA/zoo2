@@ -48,10 +48,18 @@ struct MessageActionsView: View {
     private var canEdit: Bool { canDelete && currentMessage?.e2eeLegacy != true }
     /// 削除は、旧平文の自分のメッセージでもできる（制限は編集だけ）。
     private var canDelete: Bool { store.canPost && canRetainEditor }
+    private var canCopyLinks: Bool { store.active && !store.blocked && currentMessage != nil }
+    private func copyLink(thread: Bool) {
+        guard canCopyLinks, let current = currentMessage,
+              let url = MessageLink.url(serverURL: workspace.client.serverURL, channelID: store.channel.id,
+                messageID: thread ? nil : current.id, threadID: thread ? (current.parent_id ?? current.id) : current.parent_id) else { return }
+        UIPasteboard.general.string = url.absoluteString
+        dismiss()
+    }
     private var detents: Set<PresentationDetent> {
         if dynamicTypeSize.isAccessibilitySize || page == .edit { return [.large] }
         if page == .reactions { return [.medium, .large] }
-        let height = 56 + (store.canPost ? stampSize + 12 : 0) + (canOpenThread ? 96 : 0)
+        let height = 56 + (canCopyLinks ? 96 : 0) + (store.canPost ? stampSize + 12 : 0) + (canOpenThread ? 96 : 0)
         return [.height(height + (currentMessage?.content.isEmpty == false ? 48 : 0) + (canDelete ? 98 : 0)), .large]
     }
 
@@ -126,6 +134,12 @@ struct MessageActionsView: View {
                             dismiss()
                         } label: { actionLabel("メッセージをコピー", icon: "document.on.document") }
                             .accessibilityIdentifier("message-action-copy")
+                    }
+                    if canCopyLinks {
+                        Button { copyLink(thread: false) } label: { actionLabel("メッセージリンクをコピー", icon: "link") }
+                            .accessibilityIdentifier("message-action-copy-link")
+                        Button { copyLink(thread: true) } label: { actionLabel("スレッドリンクをコピー", icon: "bubble.left.and.bubble.right") }
+                            .accessibilityIdentifier("message-action-copy-thread-link")
                     }
                     if canEdit {
                         Button {

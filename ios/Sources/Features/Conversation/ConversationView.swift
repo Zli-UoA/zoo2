@@ -4,7 +4,7 @@ struct ConversationView: View {
     @Bindable var store: ConversationStore
     let workspace: WorkspaceStore
     let route: ChatRoute
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var didRequestInitialFocus = false
     @State private var threadDidAppear = false
     @State private var navigationContentWidth: CGFloat?
@@ -126,6 +126,20 @@ struct ConversationView: View {
                     }
                 }
             }
+            if let parentID {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu("スレッドの操作", systemImage: "ellipsis") {
+                        Button("スレッドリンクをコピー", systemImage: "link") {
+                            guard store.active, !store.blocked,
+                                  let url = MessageLink.url(serverURL: workspace.client.serverURL, channelID: store.channel.id, threadID: parentID) else { return }
+                            UIPasteboard.general.string = url.absoluteString
+                        }
+                        .disabled(!store.active || store.blocked)
+                        .accessibilityIdentifier("copy-thread-link")
+                    }
+                    .accessibilityIdentifier("thread-link-actions")
+                }
+            }
             if parentID == nil, store.canCall, !composerFocused {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("音声通話", systemImage: "headphones") {
@@ -155,7 +169,9 @@ struct ConversationView: View {
                 .frame(width: 0, height: 0)
             }
         }
-        .onChange(of: isVisible && store.canPost) { _, _ in
+        .onDisappear { composerFocused = false }
+        .onChange(of: isVisible && store.canPost) { _, allowed in
+            if !allowed { composerFocused = false }
             requestInitialFocus()
             consumeFocusRequest()
         }

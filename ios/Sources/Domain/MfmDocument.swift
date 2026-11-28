@@ -236,7 +236,11 @@ private final class MfmScanner {
             for (open, close, kind) in formats where has(open, at: at, end: end) {
                 if open.utf16.count == 1 && at > from && ((48...57).contains(units[at - 1]) || (65...90).contains(units[at - 1]) || (97...122).contains(units[at - 1])) { continue }
                 guard let stop = closing(close, from: at + open.utf16.count, end: end, open: open.hasPrefix("<") ? open : nil, depth: depth), stop > at + open.utf16.count else { continue }
-                if open.utf16.count == 1 && units[(at + 1)..<stop].contains(10) { continue }
+                if open.utf16.count == 1 {
+                    let first = UnicodeScalar(units[at + 1]), last = UnicodeScalar(units[stop - 1])
+                    if first.map({ CharacterSet.whitespacesAndNewlines.contains($0) }) == true ||
+                       last.map({ CharacterSet.whitespacesAndNewlines.contains($0) }) == true || units[(at + 1)..<stop].contains(10) { continue }
+                }
                 appendText(until: at)
                 let children = parse(from: at + open.utf16.count, end: stop, depth: depth + 1, blocks: false)
                 append(node(kind, "", argument: open == "***" ? "tada" : "", children: children, start: at, end: stop + close.utf16.count), stop: stop + close.utf16.count)

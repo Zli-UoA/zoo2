@@ -6,9 +6,9 @@ import UIKit
 
 @MainActor @Suite("ネイティブMFM")
 struct MfmTests {
-    private func key(width: CGFloat = 320, dark: Bool = false, size: CGFloat = 17) -> MfmRenderKey {
+    private func key(width: CGFloat = 320, dark: Bool = false, size: CGFloat = 17, revealed: Set<Int> = []) -> MfmRenderKey {
         MfmRenderKey(fontSize: size, width: width, dark: dark, emojis: [], mentions: ["you": true], channels: [:],
-                     restrictedMentions: false, revealed: [], locale: "ja_JP", timeZone: "Asia/Tokyo")
+                     restrictedMentions: false, revealed: revealed, locale: "ja_JP", timeZone: "Asia/Tokyo")
     }
     private func kinds(_ nodes: [MfmNode]) -> [MfmNode.Kind] { nodes.flatMap { [$0.kind] + kinds($0.children) } }
 
@@ -213,6 +213,106 @@ struct MfmTests {
         #expect(block.interactions.url(at: CGPoint(x: second.bounds.midX, y: second.bounds.midY))?.path == "/second")
     }
 
+    @Test("掛け算や空白に接した区切り記号を斜体にしない", arguments: ["5 * 3 * 4", "* 前後に空白 *", "_ 前後に空白 _"])
+    func whitespaceDelimiters(_ source: String) {
+        let document = MfmDocument(source)
+        #expect(!kinds(document.nodes).contains(.italic))
+        #expect(document.nodes.map(\.plainText).joined() == source)
+        #expect(MfmNativeState(content: source).prepare(key: key(), images: [:]).first?.accessibilityLabel == source)
+        #expect(kinds(MfmDocument("*斜体*").nodes).contains(.italic))
+    }
+
+    @Test("既存のURL検出器が返した大文字スキームをリンクとして保つ")
+    func uppercaseLinks() throws {
+        let block = try #require(MfmNativeState(content: "**資料** HTTPS://example.com/path").prepare(key: key(), images: [:]).first)
+        #expect(block.imageLinks.contains { $0.url.host == "example.com" && $0.url.path == "/path" })
+    }
+
+    @Test("登録済み絵文字の画像が未取得なら標準絵文字に置き換えない")
+    func registeredEmojiPlaceholder() throws {
+        let state = MfmNativeState(content: "**:smile:**")
+        let value = MfmRenderKey(fontSize: 17, width: 320, dark: false,
+            emojis: [.init(code: ":smile:", image: nil, registered: true)], mentions: [:], channels: [:],
+            restrictedMentions: false, revealed: [], locale: "ja_JP", timeZone: "Asia/Tokyo")
+        #expect(try #require(state.prepare(key: value, images: [:]).first).accessibilityLabel == ":smile:")
+        #expect(try #require(state.prepare(key: key(), images: [:]).first).accessibilityLabel != ":smile:")
+    }
+
+    @Test("解除前のぼかしを読み上げラベルと操作名に含めない")
+    func hiddenBlurAccessibility() throws {
+        let state = MfmNativeState(content: "前 $[blur **結末** :smile: $[ruby 漢字 かんじ]] 後")
+        let hidden = try #require(state.prepare(key: key(), images: [:]).first)
+        #expect(hidden.accessibilityLabel == "前 ぼかしあり 後")
+        #expect(hidden.imageLinks.map(\.label) == ["ぼかしを解除"])
+        let blur = try #require(state.document.nodes.first { $0.kind == .function })
+        let revealed = try #require(state.prepare(key: key(revealed: [blur.id]), images: [:]).first)
+        #expect(revealed.accessibilityLabel.contains("結末"))
+        let ruby = MfmNativeState(content: "$[ruby $[blur 結末] けつまつ]")
+        #expect(try #require(ruby.prepare(key: key(), images: [:]).first).accessibilityLabel == "ぼかしあり（けつまつ）")
+    }
+
+    @Test("スレッドと投稿のリンク先を別々に保持する")
+    func distinctThreadTarget() throws {
+        let channel = "11111111-1111-4111-8111-111111111111", parent = "22222222-2222-4222-8222-222222222222", reply = "33333333-3333-4333-8333-333333333333"
+        let url = try #require(URL(string: "https://zli.chat/channels/\(channel)?thread=\(parent)&message=\(reply)"))
+        let target = try #require(MessageLink.target(url, serverURL: "https://zli.chat"))
+        #expect(target.channelID == channel && target.threadID == parent && target.messageID == reply)
+    }
+
+    @Test("チャンネル・投稿・スレッド・返信のURLを作成して同じ移動先へ戻せる", arguments: [0, 1, 2, 3])
+    func generatedLinks(kind: Int) throws {
+        let channel = "11111111-1111-4111-8111-111111111111", parent = "22222222-2222-4222-8222-222222222222", reply = "33333333-3333-4333-8333-333333333333"
+        let message = kind == 1 ? parent : kind == 3 ? reply : nil
+        let thread = kind >= 2 ? parent : nil
+        let url = try #require(MessageLink.url(serverURL: "https://zli.chat/", channelID: channel, messageID: message, threadID: thread))
+        #expect(MessageLink.target(url, serverURL: "https://zli.chat") == MessageLink.Target(channelID: channel, messageID: message, threadID: thread))
+        #expect(url.host == "zli.chat" && !url.absoluteString.contains("//channels"))
+        #expect(MessageLink.url(serverURL: "https://zli.chat", channelID: "不正") == nil)
+        #expect(MessageLink.url(serverURL: "javascript:alert(1)", channelID: channel) == nil)
+    }
+
+    @Test("IME変換中は補完キーを無効にし、確定後に戻す")
+    func compositionPrecedesCompletion() throws {
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        let input = MfmInputTextView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        input.completionEnabled = true
+        controller.view.addSubview(input)
+        defer { input.resignFirstResponder(); window.isHidden = true; previous?.makeKeyAndVisible() }
+        #expect(input.becomeFirstResponder())
+        input.setMarkedText("かな", selectedRange: NSRange(location: 2, length: 0))
+        let action = #selector(MfmInputTextView.completeMfmKey(_:))
+        let escape = try #require(input.keyCommands?.first { $0.input == UIKeyCommand.inputEscape })
+        let enter = try #require(input.keyCommands?.first { $0.input == "\r" })
+        var received: [String] = []
+        input.handle = { received.append($0) }
+        input.completeMfmKey(escape)
+        input.completeMfmKey(enter)
+        #expect(received.isEmpty)
+        #expect(!input.canPerformAction(action, withSender: nil))
+        input.unmarkText()
+        #expect(input.keyCommands?.contains { $0.action == action } == true)
+        #expect(input.canPerformAction(action, withSender: nil))
+        input.completeMfmKey(escape)
+        input.completeMfmKey(enter)
+        #expect(received == [UIKeyCommand.inputEscape, "\r"])
+    }
+
+    @Test("日本語と絵文字の後の補完範囲を文字列の保存形式によらず保持する")
+    func unicodeCompletionRange() throws {
+        let text = "日本語😀\n本文 $je"
+        let foreign = NSMutableString(string: text) as String
+        let nativeQuery = try #require(MfmInput.query(in: text, caret: text.endIndex))
+        let foreignQuery = try #require(MfmInput.query(in: foreign, caret: foreign.endIndex))
+        #expect(nativeQuery.utf16Range == NSRange(location: "日本語😀\n本文 ".utf16.count, length: 3))
+        #expect(nativeQuery.utf16Range == foreignQuery.utf16Range)
+        #expect(nativeQuery.text == "je" && foreignQuery.text == "je")
+    }
+
     @Test("装飾中の句点付きメンションにも許可条件を適用する")
     func mentions() {
         #expect(MessageContent.mfmMentions(in: "**@you.** $[spin @other]", resolve: { $0 == "you" ? true : nil }) == ["you": true])
@@ -223,9 +323,9 @@ struct MfmTests {
         let channel = "11111111-1111-4111-8111-111111111111"
         let message = "22222222-2222-4222-8222-222222222222"
         let url = try #require(URL(string: "https://zli.chat/channels/\(channel)?thread=\(message)"))
-        let target = try #require(MfmMessageView.channelTarget(url, serverURL: "https://zli.chat:443"))
-        #expect(target.channelID == channel && target.messageID == message)
-        #expect(MfmMessageView.channelTarget(url, serverURL: "https://other.invalid") == nil)
+        let target = try #require(MessageLink.target(url, serverURL: "https://zli.chat:443"))
+        #expect(target.channelID == channel && target.threadID == message && target.messageID == nil)
+        #expect(MessageLink.target(url, serverURL: "https://other.invalid") == nil)
     }
 
     @Test("関数名を補完し、保護領域を候補から除く", arguments: [
