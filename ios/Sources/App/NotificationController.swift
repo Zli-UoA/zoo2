@@ -18,7 +18,7 @@ final class NotificationController {
     private var voipTokenRevoked = false
     private let receiptStore: any PushReceiptStore
     private let previewKeys: any NotificationPreviewKeyStorage
-    private var previewKeyError: String?
+    private(set) var previewKeyError: String?
     private let transport: HTTPTransport
     private var api: APIClient?
     private var userID: String?

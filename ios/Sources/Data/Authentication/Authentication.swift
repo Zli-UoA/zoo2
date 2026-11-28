@@ -8,6 +8,11 @@ struct TokenSet: Codable, Sendable {
     let expires: Date
 }
 
+struct LoggedOutSessionCleanupError: LocalizedError {
+    let cause: any Error
+    var errorDescription: String? { cause.localizedDescription }
+}
+
 enum TokenVault {
     private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
@@ -34,7 +39,8 @@ enum TokenVault {
 
     static func load(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete) throws -> TokenSet? {
         if try hasLogoutMarker(account) {
-            try delete(account, deleteItem: deleteItem)
+            do { try delete(account, deleteItem: deleteItem) }
+            catch { throw LoggedOutSessionCleanupError(cause: error) }
             return nil
         }
         var request = query(account)
@@ -47,7 +53,8 @@ enum TokenVault {
             throw ZooError.auth("保存したログイン情報を読み取れませんでした。端末のロックを解除して再度お試しください。")
         }
         guard let token = try JSONDecoder().decode(TokenSet?.self, from: data) else {
-            try delete(account, deleteItem: deleteItem)
+            do { try delete(account, deleteItem: deleteItem) }
+            catch { throw LoggedOutSessionCleanupError(cause: error) }
             return nil
         }
         // 既存の保存項目も移行し、通話中に画面をロックしても更新トークンを保存できるようにする。
@@ -127,22 +134,25 @@ final class Authentication {
     private(set) var refreshWaiterCount = 0
     private var pendingTokens: TokenSet?
     private let saveToken: (TokenSet, String) throws -> Void
+    private let loadToken: (String) throws -> TokenSet?
     private let deleteToken: (String) throws -> Void
     private var generation = UUID()
     var sessionID: UUID { generation }
 
     init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport(),
+         loadToken: @escaping (String) throws -> TokenSet? = { try TokenVault.load($0) },
          saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) },
          deleteToken: @escaping (String) throws -> Void = { try TokenVault.delete($0) }) {
         self.settings = settings
         self.transport = transport
         self.saveToken = saveToken
+        self.loadToken = loadToken
         self.deleteToken = deleteToken
     }
 
     private func sessionTokens() throws -> TokenSet? {
         if !loadedTokens {
-            tokens = try TokenVault.load(settings.storageKey)
+            tokens = try loadToken(settings.storageKey)
             loadedTokens = true
         }
         return tokens

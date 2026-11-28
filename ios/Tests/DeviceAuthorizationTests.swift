@@ -74,6 +74,119 @@ private final class AdvancingClock: Clock, Sendable {
 @MainActor
 @Suite(.timeLimit(.minutes(1)))
 struct DeviceAuthorizationTests {
+    private struct FailingPreviewInvalidation: NotificationPreviewKeyStorage {
+        static let message = "通知鍵を無効化できませんでした。端末のロック解除後に再試行してください。"
+        func load() -> NotificationPreviewKey? { nil }
+        func save(_ key: NotificationPreviewKey?) throws { throw ZooError.auth(Self.message) }
+    }
+
+    @Test("通常の認証読出し失敗では有効な通常通知とVoIP登録を解除しない")
+    func transientTokenReadPreservesRegistrations() async throws {
+        let transport = transport(), receipts = PreviewPushReceiptStore(), voip = PreviewPushReceiptStore()
+        defer { transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        let receipt = PushReceipt(server: settings.server, account: "利用者", token: "aabb", environment: "sandbox", secret: "テスト用解除情報")
+        var voiceReceipt = receipt
+        voiceReceipt.kind = .voip
+        try receipts.save(receipt)
+        try voip.save(voiceReceipt)
+        let keys = InMemoryNotificationPreviewKeys()
+        let key = NotificationPreviewKey(userID: UUID().uuidString, secret: receipt.secret)
+        keys.save(key)
+        let requests = Mutex(0)
+        stub { _ in requests.withLock { $0 += 1 }; return (500, [:], Data()) }
+        let auth = Authentication(settings: settings, transport: transport, loadToken: { _ in throw CocoaError(.fileReadNoPermission) })
+        let session = AppSession(settings: settings, transport: transport, authentication: auth,
+                                 notificationStore: receipts, previewKeys: keys, voipStore: voip)
+        await session.resume()
+        #expect(!session.isStarting)
+        #expect(session.error == CocoaError(.fileReadNoPermission).localizedDescription)
+        #expect(try receipts.load()?.revocationPending != true)
+        #expect(try voip.load()?.revocationPending != true)
+        #expect(keys.load() == key)
+        #expect(requests.withLock { $0 } == 0)
+    }
+
+    @Test("ログアウト済み認証の削除失敗は通知解除の応答前に警告を表示し、新しいログインだけを待たせる")
+    func loggedOutAuthenticationErrorDoesNotWaitForNetwork() async throws {
+        let transport = transport(), receipts = PreviewPushReceiptStore()
+        try receipts.save(PushReceipt(server: settings.server, account: "利用者", token: "aabb", environment: "sandbox", secret: "テスト用解除情報"))
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer {
+            release.continuation.finish(); started.continuation.finish()
+            transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID)
+        }
+        stub { request in
+            if request.url?.path == "/api/push/apns/revoke" {
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                return (200, [:], Data(#"{"ok":true}"#.utf8))
+            }
+            return (400, [:], Data())
+        }
+        let authMessage = "ログアウト済み認証の削除に失敗しました。"
+        let auth = Authentication(settings: settings, transport: transport, loadToken: { _ in
+            throw LoggedOutSessionCleanupError(cause: ZooError.auth(authMessage))
+        })
+        let session = AppSession(settings: settings, transport: transport, authentication: auth,
+                                 notificationStore: receipts, previewKeys: FailingPreviewInvalidation(), voipStore: PreviewPushReceiptStore())
+        await session.resume()
+        #expect(!session.isStarting)
+        #expect(session.error?.contains(authMessage) == true)
+        #expect(session.error?.contains(FailingPreviewInvalidation.message) == true)
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        let login = try #require(session.startLogin())
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !session.waitingForCacheCleanup, session.connecting, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(session.waitingForCacheCleanup)
+        release.continuation.finish()
+        await login.value
+    }
+
+    @Test("通知解除の応答待ちでも旧アカウントのキャッシュ消去は進み、キャッシュ読出し障害からの復旧後も消去する", arguments: [false, true])
+    func cacheCleanupDoesNotWaitForNotificationResponse(initialOpenFails: Bool) async throws {
+        let transport = transport(), receipts = PreviewPushReceiptStore()
+        let cache = try await SyncCache.open(inMemory: true)
+        let connection = SyncCache.connectionKey(settings)
+        let lease = try await cache.activate(connection: connection, user: Person(id: UUID().uuidString, user_name: "test", display_name: "テスト"))
+        try await cache.store(Data("以前の本文".utf8), resource: "messages", channelID: UUID().uuidString, lease: lease)
+        try receipts.save(PushReceipt(server: settings.server, account: "利用者", token: "aabb", environment: "sandbox", secret: "テスト用解除情報"))
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer {
+            release.continuation.finish(); started.continuation.finish()
+            transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID)
+        }
+        stub { request in
+            #expect(request.url?.path == "/api/push/apns/revoke")
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            return (200, [:], Data(#"{"ok":true}"#.utf8))
+        }
+        let opens = Mutex(0)
+        let session = AppSession(settings: settings, transport: transport,
+                                 notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys(),
+                                 syncCache: initialOpenFails ? nil : cache, openSyncCache: {
+                                     let attempt = opens.withLock { $0 += 1; return $0 }
+                                     if initialOpenFails && attempt == 1 { throw CocoaError(.fileReadNoPermission) }
+                                     return cache
+                                 }, voipStore: PreviewPushReceiptStore())
+        if initialOpenFails { await session.resume() }
+        let resuming = Task { await session.resume() }
+        defer { resuming.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while try await cache.profile(connection: connection) != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(try await cache.profile(connection: connection) == nil)
+        await #expect(throws: CancellationError.self) { try await cache.load("messages", lease: lease) }
+        release.continuation.finish()
+        await resuming.value
+    }
+
     @Test("確認URLのホスト名は大文字と小文字を区別しない")
     func acceptsEquivalentHostCase() throws {
         let response = DeviceAuthorizationResponse(device_code: "test-device", user_code: "TEST-CODE",
@@ -452,7 +565,7 @@ struct DeviceAuthorizationTests {
     @Test("キャンセル直後の再試行を古い接続タスクが妨げない")
     func appSessionCanRetryImmediatelyAfterCancellation() async throws {
         let transport = transport()
-        let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
+        let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         defer { session.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
         let destination = try #require(PushDestination(payload: ["user_id": UUID().uuidString, "channel_id": UUID().uuidString]))
         session.notifications.opened(.message(destination))
@@ -492,7 +605,7 @@ struct DeviceAuthorizationTests {
             #expect(request.url?.path == "/api/push/apns/revoke")
             throw URLError(.notConnectedToInternet)
         }
-        let controller = NotificationController(transport: transport, receiptStore: receipts, previewKeys: keys)
+        let controller = NotificationController(transport: transport, receiptStore: receipts, previewKeys: keys, voipStore: PreviewPushReceiptStore())
         let target = try #require(PushDestination(payload: ["user_id": user, "channel_id": UUID().uuidString]))
         controller.opened(.message(target))
         var delivered = ["以前の通知本文"]
@@ -521,7 +634,7 @@ struct DeviceAuthorizationTests {
             paths.withLock { $0.append(request.url?.path ?? "") }
             return (503, [:], Data())
         }
-        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: keys)
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: keys, voipStore: PreviewPushReceiptStore())
         session.notifications.received(token: Data([0xaa, 0xbb]))
         await session.resume()
         await session.resume()
@@ -572,7 +685,7 @@ struct DeviceAuthorizationTests {
             }
             return (200, [:], Data(#"{"ok":true}"#.utf8))
         }
-        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         #expect(session.isStarting)
         let resuming = Task { await session.resume() }
         var iterator = started.stream.makeAsyncIterator()
@@ -596,7 +709,7 @@ struct DeviceAuthorizationTests {
         let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
         let discoveryCount = Mutex(0)
         let session = AppSession(settings: settings, transport: transport, notificationStore: receipts,
-                                 previewKeys: InMemoryNotificationPreviewKeys())
+                                 previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         defer {
             release.continuation.finish(); started.continuation.finish(); session.logout()
             transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID)
@@ -650,7 +763,7 @@ struct DeviceAuthorizationTests {
                 throw CocoaError(.fileReadCorruptFile)
             }
             return cache
-        })
+        }, voipStore: PreviewPushReceiptStore())
         defer {
             release.continuation.finish(); started.continuation.finish(); session.logout()
             transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID)
@@ -682,7 +795,7 @@ struct DeviceAuthorizationTests {
             if attempt == 1 { throw CocoaError(.fileWriteOutOfSpace) }
         })
         let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore(),
-                                 previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+                                 previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache, voipStore: PreviewPushReceiptStore())
         defer { session.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
         stub { _ in requests.withLock { $0 += 1 }; return (400, [:], Data()) }
         await session.resume()
@@ -722,7 +835,7 @@ struct DeviceAuthorizationTests {
             revoked.continuation.yield(())
             return (200, [:], Data(#"{"ok":true}"#.utf8))
         }
-        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         await session.resume()
         var iterator = revoked.stream.makeAsyncIterator()
         _ = await iterator.next()
@@ -756,7 +869,7 @@ struct DeviceAuthorizationTests {
             _ = await iterator.next()
             return (401, [:], Data())
         }
-        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         let restoring = Task { await session.resume() }
         var iterator = started.stream.makeAsyncIterator()
         _ = await iterator.next()

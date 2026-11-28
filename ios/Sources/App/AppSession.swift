@@ -12,6 +12,7 @@ final class AppSession {
     private(set) var isStarting = true
     private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
     var error: String?
+    private var displayedNotificationWarning: String?
     let notifications: NotificationController
     @ObservationIgnored weak var systemCalls: SystemCallController?
     private let authentication: Authentication
@@ -22,6 +23,7 @@ final class AppSession {
     private let openSyncCache: @Sendable () async throws -> SyncCache
     private var syncSession: SyncSession?
     private var cacheCleanup: Task<Void, Error>?
+    private var cacheRemoval: Task<Void, Error>?
     private var needsCacheCleanup = false
     private var destinationDelivery: (id: UUID, target: PushDestination, task: Task<Bool, Never>)?
     private var validatedSession = false
@@ -31,12 +33,14 @@ final class AppSession {
          authentication: Authentication? = nil,
          notificationStore: any PushReceiptStore = KeychainPushReceiptStore(),
          previewKeys: any NotificationPreviewKeyStorage = NotificationPreviewKeyStore(), syncCache: SyncCache? = nil,
-         openSyncCache: @escaping @Sendable () async throws -> SyncCache = { try await SyncCache.open(inMemory: AppSession.isUITesting) }) {
+         openSyncCache: @escaping @Sendable () async throws -> SyncCache = { try await SyncCache.open(inMemory: AppSession.isUITesting) },
+         voipStore: any PushReceiptStore = KeychainPushReceiptStore(service: "works.zli.zoo.voip")) {
         self.syncCache = syncCache
         self.openSyncCache = openSyncCache
         self.authentication = authentication ?? Authentication(settings: settings, transport: transport)
         api = APIClient(settings: settings, auth: self.authentication, transport: transport)
-        notifications = NotificationController(transport: transport, receiptStore: notificationStore, previewKeys: previewKeys)
+        notifications = NotificationController(transport: transport, receiptStore: notificationStore,
+                                               previewKeys: previewKeys, voipStore: voipStore)
     }
 
     static func configured() -> AppSession {
@@ -44,7 +48,7 @@ final class AppSession {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-workspace") {
             URLProtocol.registerClass(PreviewEmojiURLProtocol.self)
             let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
-                                     notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
+                                     notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
             let client = PreviewChatClient()
             session.isStarting = false
             session.userID = client.currentUser.id
@@ -66,7 +70,7 @@ final class AppSession {
         }
         if isUITesting {
             let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
-                              notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
+                              notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
             session.isStarting = false
             return session
         }
@@ -314,16 +318,29 @@ final class AppSession {
             ZooShortcuts.updateAppShortcutParameters()
             SiriVocabulary.update(nil)
         }
-        var logoutErrors: [String] = []
-        if let notificationError = notifications.logout() { logoutErrors.append(notificationError) }
+        let notificationError = notifications.logout()
         do { try authentication.logout() }
-        catch { logoutErrors.append(error.localizedDescription) }
-        if !logoutErrors.isEmpty { self.error = logoutErrors.joined(separator: "\n\n") }
+        catch { self.error = error.localizedDescription }
+        updateNotificationWarning(notificationError)
         if let syncSession {
             needsCacheCleanup = true
-            cacheCleanup = syncSession.close()
+            let removal = syncSession.close()
+            cacheRemoval = removal
+            cacheCleanup = removal
         }
         self.syncSession = nil
+    }
+
+    private func updateNotificationWarning(_ warning: String?) {
+        // 自分が末尾に加えた警告だけを置き換え、認証やキャッシュのエラーは残す。
+        if let previous = displayedNotificationWarning, let current = error {
+            if current == previous { error = nil }
+            else if current.hasSuffix("\n\n" + previous) {
+                error = String(current.dropLast(previous.count + 2))
+            }
+        }
+        displayedNotificationWarning = warning
+        if let warning { error = error.map { $0 + "\n\n" + warning } ?? warning }
     }
 
     func resume() async {
@@ -334,6 +351,8 @@ final class AppSession {
         if userID == nil || !validatedSession || profileNeedsSaving {
             guard !connecting else { return }
             var epoch = generation
+            var notificationError: String?
+            var attemptedNotificationCleanup = false
             do {
                 if try authentication.hasSession {
                     await beginConnection(interactive: false).value
@@ -342,6 +361,17 @@ final class AppSession {
                     if workspace != nil { logout() }
                     else if !Self.isUITesting { SiriVocabulary.update(nil) }
                     epoch = generation
+                    // キャッシュの復旧を待たず、ログアウト中の通知鍵も起動・復帰時に無効化を再試行する。
+                    let notificationCleanup = notifications.revokeRegistration()
+                    attemptedNotificationCleanup = true
+                    notificationError = notifications.previewKeyError
+                    updateNotificationWarning(notificationError)
+                    let previous = cacheCleanup
+                    let notificationBarrier = Task<Void, Error> {
+                        _ = await previous?.result
+                        await notificationCleanup.value
+                    }
+                    cacheCleanup = notificationBarrier
                     if syncCache == nil {
                         let opened = try await openSyncCache()
                         try Task.checkCancellation()
@@ -349,16 +379,37 @@ final class AppSession {
                         syncCache = opened
                     }
                     guard generation == epoch, !connecting else { return }
-                    let previous = cacheCleanup
-                    let cleanup = Task { [self] in
-                        _ = await previous?.result
+                    let previousRemoval = cacheRemoval
+                    let removal = Task<Void, Error> { [self] in
+                        _ = await previousRemoval?.result
                         try await syncCache?.forget(connection: SyncCache.connectionKey(api.settings))
-                        await notifications.revokeRegistration().value
+                    }
+                    cacheRemoval = removal
+                    let cleanup = Task {
+                        let result = await removal.result
+                        _ = await notificationBarrier.result
+                        try result.get()
                     }
                     cacheCleanup = cleanup
                     try await cleanup.value
                 }
-            } catch { if generation == epoch { self.error = error.localizedDescription } }
+            } catch {
+                if generation == epoch {
+                    self.error = error.localizedDescription
+                    if error is LoggedOutSessionCleanupError, !attemptedNotificationCleanup, workspace == nil {
+                        let notificationCleanup = notifications.revokeRegistration()
+                        attemptedNotificationCleanup = true
+                        notificationError = notifications.previewKeyError
+                        let previous = cacheCleanup
+                        let cleanup = Task<Void, Error> {
+                            _ = await previous?.result
+                            await notificationCleanup.value
+                        }
+                        cacheCleanup = cleanup
+                    }
+                }
+            }
+            if generation == epoch, attemptedNotificationCleanup { updateNotificationWarning(notificationError) }
             return
         }
         await notifications.resume()

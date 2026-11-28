@@ -7,15 +7,67 @@ struct LogoutTests {
     @MainActor
     private final class FailingPreviewKeys: NotificationPreviewKeyStorage {
         var failing = true
+        var attempts = 0
         let message = "以前の通知本文が表示される可能性があります。端末のロック解除と空き容量の確認後に再試行してください。"
         func load() -> NotificationPreviewKey? { nil }
         func save(_ key: NotificationPreviewKey?) throws {
+            attempts += 1
             if failing { throw ZooError.auth(message) }
         }
     }
 
+    @Test("ログアウト中の起動・復帰でも通知鍵の無効化を再試行し、キャッシュ障害と警告を併記する", arguments: [false, true])
+    @MainActor func loggedOutResumeRetriesPreviewInvalidation(cacheFails: Bool) async throws {
+        let settings = ConnectionSettings(server: "https://logout.test.invalid", clientID: UUID().uuidString)
+        let transport = HTTPTransport()
+        defer { transport.session.invalidateAndCancel() }
+        let cache = try await SyncCache.open(inMemory: true)
+        let keys = FailingPreviewKeys()
+        let cacheError = CocoaError(.fileReadNoPermission)
+        let session = AppSession(settings: settings, transport: transport,
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys,
+                                 openSyncCache: {
+                                     if cacheFails { throw cacheError }
+                                     return cache
+                                 }, voipStore: PreviewPushReceiptStore())
+        await session.resume()
+        let error = try #require(session.error)
+        #expect(error.contains(keys.message))
+        #expect(error.contains(cacheError.localizedDescription) == cacheFails)
+        #expect(keys.attempts == 1)
+        keys.failing = false
+        await session.resume()
+        #expect(keys.attempts == 2)
+        #expect(session.notifications.previewKeyError == nil)
+        #expect(session.error == (cacheFails ? cacheError.localizedDescription : nil))
+    }
+
+    @Test("ログアウト後の認証確認が失敗する再起動でも通知鍵の無効化を再試行する")
+    @MainActor func authenticationReadFailureStillInvalidatesPreviews() async throws {
+        let settings = ConnectionSettings(server: "https://logout.test.invalid", clientID: UUID().uuidString)
+        let transport = HTTPTransport()
+        defer { transport.session.invalidateAndCancel() }
+        let authMessage = "ログアウト済みの認証情報を削除できませんでした。"
+        let authentication = Authentication(settings: settings, transport: transport, loadToken: { _ in
+            throw LoggedOutSessionCleanupError(cause: ZooError.auth(authMessage))
+        })
+        let keys = FailingPreviewKeys()
+        let session = AppSession(settings: settings, transport: transport, authentication: authentication,
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys, voipStore: PreviewPushReceiptStore())
+        await session.resume()
+        let error = try #require(session.error)
+        #expect(error.contains(authMessage))
+        #expect(error.contains(keys.message))
+        #expect(keys.attempts == 1)
+        keys.failing = false
+        await session.resume()
+        #expect(keys.attempts == 2)
+        #expect(session.notifications.previewKeyError == nil)
+        #expect(session.error == authMessage)
+    }
+
     @Test("通知鍵の無効化失敗をログイン画面へ伝え、認証削除の失敗も併記する", arguments: [false, true])
-    @MainActor func logoutReportsPreviewAndAuthenticationFailures(authenticationFails: Bool) throws {
+    @MainActor func logoutReportsPreviewAndAuthenticationFailures(authenticationFails: Bool) async throws {
         let settings = ConnectionSettings(server: "https://logout.test.invalid", clientID: UUID().uuidString)
         let transport = HTTPTransport()
         defer { transport.session.invalidateAndCancel() }
@@ -24,15 +76,17 @@ struct LogoutTests {
             if authenticationFails { throw ZooError.auth(authMessage) }
         })
         let keys = FailingPreviewKeys()
+        let cache = try await SyncCache.open(inMemory: true)
         let session = AppSession(settings: settings, transport: transport, authentication: authentication,
-                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys)
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys, syncCache: cache, voipStore: PreviewPushReceiptStore())
         session.logout()
         #expect(session.workspace == nil)
         let error = try #require(session.error)
         #expect(error.contains(keys.message))
         #expect(error.contains(authMessage) == authenticationFails)
         keys.failing = false
-        session.error = nil
+        await session.resume()
+        #expect(session.error == (authenticationFails ? authMessage : nil))
         session.logout()
         #expect(session.error == (authenticationFails ? authMessage : nil))
     }
