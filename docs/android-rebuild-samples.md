@@ -80,6 +80,8 @@
 
 [添付の保存と共有](images/android-design/rebuild/attachment-save-share.png) · [絵文字の完全一致検索](images/android-design/rebuild/emoji-picker-search-exact-first.png) · [会話を開けない場合・拡大文字](images/android-design/rebuild/opening-conversation-error-large.png) · [オフラインでの投稿・拡大文字](images/android-design/rebuild/post-offline-large.png)
 
+[ホームのタイムライン切り替え](images/android-design/rebuild/home-timeline-tabs.png)
+
 絵文字ピッカーは画面下部に開き、つまみを上にドラッグすると全画面へ広がる。標準絵文字は種類別、カスタム絵文字は登録カテゴリ別に並べる。検索時は一致する絵文字を関連度順に表示する。画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
 
 ```sh

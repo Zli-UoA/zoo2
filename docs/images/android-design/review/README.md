@@ -145,4 +145,10 @@ API 35のエミュレーターで、同じホームのCompose画面をライト�
 
 ![投稿操作の変更前後](post-controls-before-after.png)
 
-[152状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
+[153状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
+
+## 共通の検索欄と一覧行
+
+左から全文検索、共有先の検索結果、チャンネル検索。どの検索欄でも右端の×で入力を消去できる。
+
+![全文検索・共有先・チャンネル検索の実装比較](shared-components.png)
