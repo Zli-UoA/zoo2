@@ -305,42 +305,34 @@ class MainActivity : ComponentActivity() {
             DisposableEffect(current) {
                 var disposed = false
                 val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+                var network = connectivity.activeInternetNetwork()
                 fun updateNetworkStatus(returning: Boolean = false) {
+                    val nextNetwork = connectivity.activeInternetNetwork()
+                    val networkChanged = nextNetwork != null && network != nextNetwork
                     val wasOnline = platform.env.online
-                    platform.online(hasInternet(
-                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
-                    ))
-                    current.session.update(platform.env)
-                    if (platform.env.online && (returning || !wasOnline)) {
+                    network = nextNetwork
+                    if (returning || networkChanged) current.transport.reconnect()
+                    platform.online(nextNetwork != null)
+                    current.session.update(platform.env, networkChanged = networkChanged)
+                    if (nextNetwork != null && (returning || networkChanged || !wasOnline)) {
                         current.shapeReconnects.update { it + 1 }
                         current.phone.refreshInvites()
                     }
                 }
                 val observer = LifecycleEventObserver { _, event ->
                     val returning = event == Lifecycle.Event.ON_START && !platform.env.visible
-                    if (returning) current.transport.reconnect()
                     platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     updateNetworkStatus(returning)
                     if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
                 }
                 lifecycle.addObserver(observer)
-                platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                fun updateOnline() = runOnUiThread {
-                    if (!disposed) updateNetworkStatus()
-                }
-                val callback =
-                    object : android.net.ConnectivityManager.NetworkCallback() {
-                        override fun onAvailable(network: android.net.Network) = updateOnline()
-
-                        override fun onLost(network: android.net.Network) = updateOnline()
-
-                        override fun onCapabilitiesChanged(
-                            network: android.net.Network,
-                            caps: android.net.NetworkCapabilities,
-                        ) = updateOnline()
+                val callback = DefaultNetworkCallback {
+                    runOnUiThread {
+                        if (!disposed) updateNetworkStatus()
                     }
+                }
                 connectivity.registerDefaultNetworkCallback(callback)
-                updateOnline()
+                updateNetworkStatus()
                 onDispose {
                     disposed = true
                     lifecycle.removeObserver(observer)
@@ -454,7 +446,7 @@ class MainActivity : ComponentActivity() {
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
             session.setNavigationCacheLimit(platform.navigationCacheLimit)
-            platform.onNavigation = session::update
+            platform.onNavigation = { session.update(it) }
             // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
             val shapeReconnects = MutableStateFlow(0L)
             val e2eeApi = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http))

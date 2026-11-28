@@ -173,7 +173,23 @@ class RepositoryTest {
     }
 
     @Test
-    fun returningToForegroundRefreshesAnExistingShapeEvenWhenStillOnline() = runTest {
+    fun returningToForegroundRefreshesAnExistingShapeEvenWhenStillOnline() =
+        assertShapeReconnect("https://foreground.zoo.test") { app, foreground ->
+            app.update(foreground.copy(visible = false))
+            runCurrent()
+            app.update(foreground)
+        }
+
+    @Test
+    fun replacingTheDefaultNetworkRefreshesShapesEvenWhenStillOnline() =
+        assertShapeReconnect("https://network-change.zoo.test") { app, foreground ->
+            app.update(foreground, networkChanged = true)
+        }
+
+    private fun assertShapeReconnect(
+        base: String,
+        reconnect: TestScope.(Session, Environment) -> Unit,
+    ) = runTest {
         val requests = Channel<Url>(Channel.UNLIMITED)
         val platform = FakePlatform()
         val http = HttpClient(MockEngine) {
@@ -196,18 +212,18 @@ class RepositoryTest {
                 }
             }
         }
-        val repo = Repository(config, platform, http, backgroundScope)
+        val repo = Repository(config.copy(apiBaseUrl = base), platform, http, backgroundScope)
         val foreground = Environment(online = true, visible = true)
         val app = Session(repo, backgroundScope, foreground)
         try {
             assertEquals("-1", requests.receive().parameters["offset"])
             assertEquals("true", requests.receive().parameters["live"])
 
-            app.update(foreground.copy(visible = false))
+            app.update(foreground)
             runCurrent()
             assertTrue(requests.tryReceive().isFailure)
 
-            app.update(foreground)
+            reconnect(app, foreground)
             val resumed = requests.receive().parameters
             assertEquals("test-handle", resumed["handle"])
             assertEquals("1_0", resumed["offset"])

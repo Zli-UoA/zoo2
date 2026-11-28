@@ -1,6 +1,9 @@
 package zoo.android
 
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import org.robolectric.RuntimeEnvironment
 import kotlin.test.*
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -10,6 +13,33 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 35], manifest = Config.NONE)
 class NetworkStatusTest {
+    @Test
+    @Config(sdk = [35], manifest = Config.NONE)
+    fun unblockingTheSameDefaultNetworkRefreshesConnectivityWithoutAnAvailableEvent() {
+        val connectivity = RuntimeEnvironment.getApplication()
+            .getSystemService(ConnectivityManager::class.java)
+        val manager = shadowOf(connectivity)
+        val network = assertNotNull(connectivity.activeNetwork)
+        val networkInfo = assertNotNull(connectivity.activeNetworkInfo)
+        val caps = NetworkCapabilities()
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        manager.setNetworkCapabilities(network, caps)
+        val observed = mutableListOf<Network?>()
+        val callback = DefaultNetworkCallback { observed += connectivity.activeInternetNetwork() }
+        connectivity.registerDefaultNetworkCallback(callback)
+        try {
+            manager.setActiveNetworkInfo(null)
+            assertNull(connectivity.activeInternetNetwork())
+            manager.setActiveNetworkInfo(networkInfo)
+
+            // Android can unblock the existing default network without sending onAvailable.
+            manager.networkCallbacks.single().onBlockedStatusChanged(network, false)
+            assertEquals(listOf<Network?>(network), observed)
+        } finally {
+            connectivity.unregisterNetworkCallback(callback)
+        }
+    }
+
     @Test
     fun blockedExternalValidationDoesNotDisableAReachableServer() {
         assertFalse(hasInternet(null))

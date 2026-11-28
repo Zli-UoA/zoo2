@@ -355,7 +355,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         return bitmap
     }
 
-    fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+    fun update(next: Environment, networkChanged: Boolean = false): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)
@@ -372,7 +372,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     "chat"
                 else "sidebar"
         }
-        if (next.online && (!old.online || (!old.visible && next.visible))) repo.refresh(reconnect = true)
+        if (next.online && (networkChanged || !old.online || (!old.visible && next.visible))) repo.refresh(reconnect = true)
     }
 
     private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
