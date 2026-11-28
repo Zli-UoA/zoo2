@@ -973,17 +973,23 @@ class AndroidSamplesTest {
     @Test
     fun imageDescriptionStaysWithItsAttachment() {
         var description by mutableStateOf("")
+        var sensitive by mutableStateOf(false)
         var dark by mutableStateOf(false)
         ui.setContent {
             AndroidScreens(AndroidScreen.NewPost(InputState(), emptyList(), false,
-                attached = listOf(RecentPhoto("map", "map.png", description = description))),
+                attached = listOf(RecentPhoto("map", "map.png", description = description, sensitive = sensitive))),
                 dark, true, dispatch = { action ->
+                    if (action is AndroidUiAction.SetPhotoSensitive) sensitive = action.sensitive
                     if (action is AndroidUiAction.DescribePhoto) {
                         check(action.id == "map")
                         description = action.description
                     }
-                }, language = "ja") { _, _ -> }
+                }, language = "ja") { item, modifier ->
+                androidx.compose.foundation.Image(remember { galleryMap() }, item.label, modifier)
+            }
         }
+        ui.onNodeWithContentDescription("センシティブに指定").performClick()
+        ui.onNodeWithContentDescription("センシティブ指定を解除").assertIsDisplayed()
         ui.onNodeWithText("説明").performClick()
         ui.onAllNodes(hasSetTextAction()).onLast().performSemanticsAction(
             androidx.compose.ui.semantics.SemanticsActions.SetText
