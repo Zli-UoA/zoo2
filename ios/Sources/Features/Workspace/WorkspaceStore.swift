@@ -94,7 +94,8 @@ final class WorkspaceStore {
     private var accountGeneration = UUID()
     private(set) var loading = false
     private(set) var hasLoaded = false
-    var directoryReady: Bool { hasLoaded && (hasLoadedPins || pinsError != nil) }
+    var pinsReady: Bool { hasLoadedPins || pinsError != nil }
+    var directoryReady: Bool { hasLoaded && pinsReady }
     var directoryLoading: Bool { !directoryReady && (loading || error == nil) }
     private(set) var updatingChannels: Set<String> = []
     private var channelWrites: [String: Channel] = [:]
@@ -298,7 +299,7 @@ final class WorkspaceStore {
             do { try await Task.sleep(for: initialLoadTimeout) } catch { return }
             guard active, !Task.isCancelled, !hasLoadedPins, pinsError == nil else { return }
             // 初回の同期が遅くても、取得済みの通常一覧を操作できるようにする。
-            pinsError = "ピン留めの取得に時間がかかっています。一覧を表示し、取得を続けています。"
+            pinsError = "ピン留めの取得に時間がかかっています。"
         }
         defer { initialLoadDeadline.cancel() }
         var delay = 2

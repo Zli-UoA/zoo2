@@ -1114,10 +1114,32 @@ final class ZooUITests: XCTestCase {
         XCTAssertFalse(app.buttons["channel-section-pinned"].exists)
         XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
         XCTAssertTrue(app.buttons["channel-section-list"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["ピン留めの取得に時間がかかっています。一覧を表示し、取得を続けています。"].exists)
+        XCTAssertTrue(app.staticTexts["ピン留めの取得に時間がかかっています。"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["directory-loading"].firstMatch.exists)
         app.descendants(matching: .any)["channel-11111111-1111-4111-8111-111111111111"].firstMatch.tap()
         XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testCreatedChannelAppearsAfterInitialReadStateFailure() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-read-error"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["操作に失敗しました（503）。参加状態を取得できませんでした。"].waitForExistence(timeout: 5))
+        app.buttons["new-conversation"].tap()
+        app.buttons["チャンネルを作成"].tap()
+        let field = app.textFields["channel-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("取得失敗後の会話")
+        app.buttons["create-channel"].tap()
+        XCTAssertTrue(app.navigationBars["取得失敗後の会話"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        let row = app.buttons.containing(.staticText, identifier: "取得失敗後の会話").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
+        row.tap()
+        XCTAssertTrue(app.navigationBars["取得失敗後の会話"].waitForExistence(timeout: 5))
     }
 
     @MainActor

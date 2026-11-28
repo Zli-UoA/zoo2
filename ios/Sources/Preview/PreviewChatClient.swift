@@ -460,7 +460,10 @@ final class PreviewChatClient: ChatClient {
         return person
     }
     func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
-        allChannels.filter { $0.id != discoverableID || joinedPublic }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-read-error") {
+            throw ZooError.rejected(503, "参加状態を取得できませんでした。")
+        }
+        return allChannels.filter { $0.id != discoverableID || joinedPublic }
             .map { previewReadState($0.id) }
     }
     func emojis() async throws -> [WorkspaceEmoji] {

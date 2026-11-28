@@ -18,7 +18,7 @@ struct ConversationDirectory: View {
     private var canReopenChannel: Bool { !isSidebar && !directMessages && workspace.resumableChannel != nil }
 
     private var visible: [Channel] {
-        guard workspace.directoryReady else { return [] }
+        guard workspace.pinsReady else { return [] }
         return workspace.channels.filter {
             $0.is_dm == directMessages && $0.archive_at == nil && (workspace.joinedChannelIDs.contains($0.id) || workspace.pinnedChannelIDs.contains($0.id)) &&
             (!unreadOnly || workspace.unread.contains($0.id)) &&
