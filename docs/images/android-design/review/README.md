@@ -95,6 +95,10 @@ shared-post-link-light, typing-channel-dark, typing-channel-light, os-notificati
 
 ## リノートと引用リノート
 
+アバター画像がない場合の頭文字と表示名の縦位置。左が変更前、右が変更後。
+
+![引用元アバターと名前の位置](quote-author-alignment.png)
+
 引用リノートの作成画面では、引用カードと投稿操作列を12dp離す。左が変更前、右が変更後。
 
 ![引用カードと投稿操作列の間隔](quote-bottom-spacing.png)
