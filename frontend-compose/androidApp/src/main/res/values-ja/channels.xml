@@ -1,0 +1,7 @@
+<resources>
+    <string name="channel_mentions">メンション</string>
+    <string name="channel_replies">返信</string>
+    <string name="channel_dm">ダイレクトメッセージ</string>
+    <string name="channel_messages">チャンネルのメッセージ</string>
+    <string name="channel_reactions">リアクション</string>
+</resources>

@@ -52,16 +52,7 @@ internal class AndroidNotifications(
         manager.activeNotifications.filter { notice ->
             notice.tag?.let { it.startsWith("zoo:") && (!it.startsWith(prefix) || it.startsWith("${prefix}group:")) } == true
         }.forEach { manager.cancel(it.tag, it.id) }
-        listOf(
-            "mentions" to "androidNotifications.mentions",
-            "messages" to "androidNotifications.messages",
-            "reactions" to "androidNotifications.reactions",
-        ).forEach { (id, label) ->
-            manager.createNotificationChannel(NotificationChannel(
-                "zoo.$id", app.t(label, "actor" to ""),
-                if (id == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH,
-            ).apply { enableVibration(true) })
-        }
+        DeliveryChannel.entries.forEach { it.register(activity, manager) }
         observer = app.scope.launch {
             app.repo.notifications.synchronizedRows.collectLatest(::update)
         }
@@ -166,7 +157,7 @@ internal class AndroidNotifications(
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             .setAutoCancel(true).setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setCategory(if (kind == "reaction") Notification.CATEGORY_SOCIAL else Notification.CATEGORY_MESSAGE)
             .setExtras(android.os.Bundle().apply { decrypted?.let { putString(PUSH_DECRYPTED_BODY, it) } })
             .setDeleteIntent(action(id, "dismiss"))
             .addAction(Notification.Action.Builder(null, app.t("notifications.read"), action(id, "read")).build())

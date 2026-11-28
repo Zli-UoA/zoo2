@@ -446,11 +446,9 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
             } catch (_: SecurityException) { }
             return@synchronized null
         }
-        val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
-        if (manager.getNotificationChannel("zoo.$channel") == null) {
-            manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
-                if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
-        }
+        val delivery = deliveryChannel(kind)
+        val channel = delivery.id
+        delivery.register(context, manager)
         val intent = store.openIntent(user, id, path) ?: return@synchronized null
         val body = decryptedBody ?: data["body"].orEmpty().take(2000)
         val timestamp = System.currentTimeMillis()
@@ -481,7 +479,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
                 })
                 .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
-                .setCategory(Notification.CATEGORY_MESSAGE).build()
+                .setCategory(if (kind == "reaction") Notification.CATEGORY_SOCIAL else Notification.CATEGORY_MESSAGE).build()
         }
         try {
             manager.notify(tag, 0, posted.build(null, null))

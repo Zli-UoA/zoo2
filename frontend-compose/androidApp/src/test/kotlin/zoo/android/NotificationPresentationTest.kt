@@ -80,7 +80,8 @@ class NotificationPresentationTest {
     }
 
     @Test fun groupingCombinesMentionsAndRepliesButSeparatesChannelsAndReactions() {
-        assertEquals(notificationGroup(row("mention")), notificationGroup(row("reply")))
+        assertNotEquals(notificationGroup(row("mention")), notificationGroup(row("reply")))
+        assertNotEquals(notificationGroup(row("channel_message")), notificationGroup(row("mention")))
         assertNotEquals(notificationGroup(row()), notificationGroup(row(channel = "other")))
         assertNotEquals(notificationGroup(row()), notificationGroup(row("reaction")))
         assertNotEquals(notificationGroup(row()), notificationGroup(row("dm")))

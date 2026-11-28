@@ -7,11 +7,34 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import zoo.*
 
-internal fun notificationChannel(row: Row): String = when (row.text("notification_type")) {
-    "reaction" -> "reactions"
-    "dm" -> "messages"
-    else -> "mentions"
+internal enum class DeliveryChannel(val id: String, val label: Int) {
+    Mentions("mentions", works.zli.zoo.R.string.channel_mentions),
+    Replies("replies", works.zli.zoo.R.string.channel_replies),
+    Messages("messages", works.zli.zoo.R.string.channel_dm),
+    ChannelMessages("channel_messages", works.zli.zoo.R.string.channel_messages),
+    Reactions("reactions", works.zli.zoo.R.string.channel_reactions);
+
+    fun register(context: android.content.Context, manager: android.app.NotificationManager) {
+        val importance = when {
+            this == Reactions -> android.app.NotificationManager.IMPORTANCE_DEFAULT
+            this == Replies || this == ChannelMessages ->
+                manager.getNotificationChannel("zoo.mentions")?.importance ?: android.app.NotificationManager.IMPORTANCE_HIGH
+            else -> android.app.NotificationManager.IMPORTANCE_HIGH
+        }
+        manager.createNotificationChannel(android.app.NotificationChannel("zoo.$id", context.getString(label), importance)
+            .apply { enableVibration(true) })
+    }
 }
+
+internal fun deliveryChannel(kind: String) = when (kind) {
+    "reaction" -> DeliveryChannel.Reactions
+    "dm" -> DeliveryChannel.Messages
+    "reply" -> DeliveryChannel.Replies
+    "channel_message" -> DeliveryChannel.ChannelMessages
+    else -> DeliveryChannel.Mentions
+}
+
+internal fun notificationChannel(row: Row) = deliveryChannel(row.text("notification_type")).id
 
 // Keep reactions separate from messages, and never combine different channels/accounts.
 internal fun notificationGroup(row: Row): String =
