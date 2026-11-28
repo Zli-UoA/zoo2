@@ -531,19 +531,19 @@ internal fun ConnectedScreens(
                 .map { SelectionItem(it.text("id"), it.text("channel_name"), it.text("description")) })
         state.overlay == "dm" -> AndroidScreen.Directory("ダイレクトメッセージを作成", state.query,
             users.filter { it.text("id") != session.config.userId && author(it).contains(state.query, ignoreCase = true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true, selected = it.text("id") in state.dmTargets) },
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true, selected = it.text("id") in state.dmTargets) },
             "開始", env.online && !state.saving && state.dmTargets.isNotEmpty(), state.encryptedDm)
         state.overlay == "thread-settings" && currentThread != null ->
             AndroidScreen.SettingsDetail("スレッド設定", state.threadSettings(currentThread, canPost, member))
         state.overlay == "thread-members" -> AndroidScreen.Directory("スレッドの参加者", state.query,
             state.threadDetails.array("participants").rows().filter { author(it).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = currentThread)
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = currentThread)
         state.overlay == "add-member" -> AndroidScreen.Directory("メンバーを追加", state.query,
             users.filter { u -> channelMembers.none { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = channelId)
         state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = channelId)
         state.overlay == "create" || state.overlay == "rename" -> AndroidScreen.EditChannel(
             if (state.overlay == "create") "チャンネルを作成" else "チャンネルを編集",
             state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",
