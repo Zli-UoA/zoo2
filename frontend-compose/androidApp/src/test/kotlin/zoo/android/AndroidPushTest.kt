@@ -46,13 +46,13 @@ class AndroidPushTest {
         "url" to "/channels/$channel?message=$message", "tag" to "zoo-$id", "notificationType" to "dm",
     )
 
-    @Test fun discardsRetiredPushImageCacheAndKeepsCurrentBindingCache() {
+    @Test fun discardsLegacyPushImageCacheOnBindingReuse() {
         val store = PushBinding(context)
         val binding = store.bind("https://zoo.example", user)
         val dir = context.cacheDir.resolve("push-images/$binding").apply { mkdirs() }
         val image = dir.resolve("image").apply { writeText("cached") }
         assertEquals(binding, store.bind("https://zoo.example", user))
-        assertTrue(image.exists())
+        assertFalse(image.exists())
         assertTrue(store.clear(binding))
         assertFalse(dir.exists())
     }

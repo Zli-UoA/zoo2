@@ -325,6 +325,11 @@ internal class AndroidPlatform(
     override suspend fun refreshImage(url: String): ByteArray =
         mediaProxy.image(url, http, images, env.online, bypassCache = true)
 
+    override suspend fun discardUndecodableImage(url: String, attachmentKey: String?, bytes: ByteArray) {
+        val source = if (attachmentKey != null) url else normalizedImageSource(base, url)?.toString() ?: return
+        images.discardUndecodableImage(source, attachmentKey, bytes)
+    }
+
     override suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? =
         images.cachedAttachmentPreview(cacheKey)
 

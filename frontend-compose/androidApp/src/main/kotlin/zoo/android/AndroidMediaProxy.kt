@@ -40,7 +40,7 @@ internal data class ImageRequest(val url: String, val proxied: Boolean = false)
 internal fun sameImageOrigin(left: Url, right: Url) =
     left.protocol == right.protocol && left.host == right.host && left.port == right.port
 
-private fun normalizedImageSource(base: String, source: String): Url? {
+internal fun normalizedImageSource(base: String, source: String): Url? {
     if (source.startsWith("//")) return null
     return publicUrl(if (source.startsWith('/')) endpoint(base, source) else source)
 }

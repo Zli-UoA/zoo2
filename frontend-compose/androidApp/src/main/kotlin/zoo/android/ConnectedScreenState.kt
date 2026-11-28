@@ -936,7 +936,7 @@ internal class ConnectedScreenState(
     }
 
     private fun searchParentUnavailable(message: LinkedMessageState): Boolean =
-        message.hasCiphertext || when (val parent = message.row) {
+        message.hasCiphertext || message.accessRejected || when (val parent = message.row) {
             LinkedRow.Missing -> true
             is LinkedRow.Found -> parent.row.present("deleted_at") || parent.row.present("ciphertext")
             LinkedRow.Loading, LinkedRow.Failed -> false

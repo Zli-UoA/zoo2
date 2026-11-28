@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.net.Uri
 import android.graphics.Bitmap
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.*
@@ -22,7 +24,7 @@ internal class AndroidNotifications(
     private val manager = activity.getSystemService(NotificationManager::class.java)
     private val token = java.util.UUID.randomUUID().toString()
     private val inbox = NotificationInbox()
-    private val shown = mutableMapOf<String, Row>()
+    private val shown = mutableStateMapOf<String, Row>()
     private val summaries = mutableSetOf<String>()
     private val errors = mutableMapOf<String, String>()
     private val avatars = linkedMapOf<String, Bitmap>()
@@ -45,6 +47,8 @@ internal class AndroidNotifications(
         dismiss = { dismiss(it) },
     )
     private val observer: Job
+    private val pictureAccessObserver: Job
+    private val pictureVersions = mutableMapOf<String, Long>()
 
     init {
         active = this
@@ -55,6 +59,24 @@ internal class AndroidNotifications(
         DeliveryChannel.entries.forEach { it.register(activity, manager) }
         observer = app.scope.launch {
             app.repo.notifications.synchronizedRows.collectLatest(::update)
+        }
+        pictureAccessObserver = app.scope.launch {
+            snapshotFlow {
+                shown.values.mapNotNull { previewImage(it)?.text("id") }.associateWith(app.attachmentLinks::accessVersion)
+            }.collect { versions ->
+                for (id in pictureVersions.keys.toList() - versions.keys) {
+                    pictureVersions.remove(id)
+                    pictures.remove(id)
+                }
+                for ((id, version) in versions) {
+                    val postedVersion = pictureVersions[id] ?: continue
+                    if (version == postedVersion) continue
+                    pictureVersions.remove(id)
+                    pictures[id] = null
+                    shown.values.filter { previewImage(it)?.text("id") == id }.toList()
+                        .forEach { post(it, refreshSummary = false) }
+                }
+            }
         }
     }
 
@@ -131,7 +153,9 @@ internal class AndroidNotifications(
         val body = decrypted ?: notificationBody(row) { key, name -> app.t(key, "actor" to name) }
         val avatar = avatars[notificationAvatar(row)]
         val image = previewImage(row)
-        val picture = image?.let { pictures[it.text("id")] }
+        val picture = image?.text("id")?.takeIf {
+            !app.attachmentLinks.isDenied(it) && pictureVersions[it] == app.attachmentLinks.accessVersion(it)
+        }?.let(pictures::get)
         val self = app.repo.users.rows.value.find { it.text("id") == app.config.userId }
             ?.let(::author)?.ifEmpty { null } ?: "Zoo"
         val destination = PushBinding(activity).openIntent(app.config.userId, id,
@@ -196,6 +220,7 @@ internal class AndroidNotifications(
             fun show(bitmap: Bitmap?) {
                 if (closed) return
                 pictures[id] = bitmap
+                if (bitmap != null) pictureVersions[id] = app.attachmentLinks.accessVersion(id)
                 while (pictures.size > 8) pictures.remove(pictures.keys.first())
                 shown.values.filter { previewImage(it)?.text("id") == id }.toList()
                     .forEach { post(it, refreshSummary = false) }
@@ -215,8 +240,10 @@ internal class AndroidNotifications(
             val bitmap = try {
                 withTimeoutOrNull(8_000) {
                     val url = access.get(id, force = true)
-                    if (cached != null && access.accessVersion(id) == version) cached
+                    val authorizedVersion = access.accessVersion(id)
+                    val image = if (cached != null && authorizedVersion == version) cached
                     else decode(app.image(url, signedAttachment = true, cacheKey = key))
+                    image.takeIf { !access.isDenied(id) && access.accessVersion(id) == authorizedVersion }
                 }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { null }
@@ -330,6 +357,8 @@ internal class AndroidNotifications(
     fun close(preserveNotifications: Boolean = false) {
         closed = true
         observer.cancel()
+        pictureAccessObserver.cancel()
+        pictureVersions.clear()
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
         pictureJobs.values.forEach { it.cancel() }

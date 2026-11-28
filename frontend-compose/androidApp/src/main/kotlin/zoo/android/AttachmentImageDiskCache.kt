@@ -182,6 +182,11 @@ internal class AttachmentImageDiskCache(
         return if (maxBytes == 0L) filesByUse.isEmpty() else totalBytes <= maxBytes
     }
 
+    @Synchronized
+    fun discard(id: String, bytes: ByteArray) {
+        if (read(id)?.bytes?.contentEquals(bytes) == true) delete(file(id))
+    }
+
     private fun delete(file: File) {
         if (file.delete() || !file.exists()) totalBytes -= filesByUse.remove(file) ?: 0L
     }

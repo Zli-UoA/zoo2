@@ -44,11 +44,10 @@ internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageB
     if (publicUrl != null) return session.cachedImageBitmap(publicUrl)
     val id = media.attachmentId ?: return null
     if (session.attachmentLinks.isDenied(id)) return null
-    val links = session.attachmentLinks.cachedLinks(id) ?: return null
-    val signedThumbnail = links.thumbnail.takeIf { media.useThumbnail }
-    signedThumbnail?.let { session.cachedImageBitmap(it, signedAttachment = true, cacheKey = "$id:thumbnail") }
-        ?.let { return it }
-    return session.cachedImageBitmap(links.original, signedAttachment = true, cacheKey = "$id:original")
+    if (media.useThumbnail) {
+        session.cachedImageBitmap("", signedAttachment = true, cacheKey = "$id:thumbnail")?.let { return it }
+    }
+    return session.cachedImageBitmap("", signedAttachment = true, cacheKey = "$id:original")
 }
 
 internal suspend fun timelineImage(
@@ -72,7 +71,6 @@ internal suspend fun timelineImage(
     }
     val id = media.attachmentId ?: return null
     return coroutineScope {
-        val platform = session.platform
         val access = session.attachmentLinks
         val previewVersion = access.accessVersion(id)
         fun canUseCached(): Boolean = !access.isDenied(id) && access.accessVersion(id) == previewVersion
@@ -92,7 +90,7 @@ internal suspend fun timelineImage(
 
         val cached = if (onCached != null && !retry && canUseCached()) {
             suspend fun decode(key: String): ImageBitmap? = try {
-                platform.cachedAttachmentPreview(key)?.let { platform.imageFrames(it).first() }
+                session.cachedAttachmentBitmap(key)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {

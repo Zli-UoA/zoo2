@@ -133,6 +133,7 @@ data class LinkedMessageState(
     val hasCiphertext: Boolean = false,
     /** 取得を始めてから [LINK_LOAD_TIMEOUT] たっても終わらない。 */
     val stalled: Boolean = false,
+    val accessRejected: Boolean = false,
 )
 
 /** リンク先のメッセージを取る、1 チャンネル分の購読。 */
@@ -397,7 +398,7 @@ class LinkedMessages(
         val open = rows?.firstOrNull { it.text("id") == messageId }
         if (open != null) return LinkedMessageState(LinkedRow.Found(open), ciphertext)
         // 拒否された取得は、画面に戻っても読み込み中に戻さない。
-        if (source?.rejects(messageId) == true) return LinkedMessageState(LinkedRow.Failed, ciphertext)
+        if (source?.rejects(messageId) == true) return LinkedMessageState(LinkedRow.Failed, ciphertext, accessRejected = true)
         val key = Key(channelId, messageId)
         // 購読の上限で取得できないリンクも、読み込み中に戻さない。
         val row = results[key] ?: if (isFull(channelId)) LinkedRow.Failed else LinkedRow.Loading
@@ -472,6 +473,7 @@ class LinkedMessages(
             shown ?: LinkedRow.Loading,
             sawCiphertext(key.channelId, source = state),
             stalled = late && current == null,
+            accessRejected = current == LinkedRow.Failed,
         )
     }
 

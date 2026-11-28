@@ -40,6 +40,9 @@ internal class AndroidImageCache(
         disk.read(cacheKey)?.bytes
     }
 
+    suspend fun discardUndecodableImage(source: String, attachmentKey: String?, bytes: ByteArray) =
+        withContext(Dispatchers.IO) { disk.discard(attachmentKey ?: "public:$source", bytes) }
+
     suspend fun resizeAttachmentCache(bytes: Long) = withContext(Dispatchers.IO) { disk.resize(bytes) }
 
     suspend fun removeAttachmentImages(id: String) = withContext(Dispatchers.IO) {

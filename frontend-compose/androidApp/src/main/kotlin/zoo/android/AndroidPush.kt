@@ -64,9 +64,7 @@ internal class PushBinding(private val context: Context) {
     }
 
     fun bind(base: String, user: String): String = synchronized(lock) {
-        val active = prefs.getString("binding", null)
-        context.cacheDir.resolve("push-images").listFiles()?.filter { it.name != active }
-            ?.forEach { it.deleteRecursively() }
+        context.cacheDir.resolve("push-images").deleteRecursively()
         if (prefs.getString("base", null) == base && prefs.getString("user", null) == user) {
             prefs.getString("binding", null)?.let { return@synchronized it }
         }
@@ -358,6 +356,7 @@ class ZooMessagingService : FirebaseMessagingService() {
                 install(HttpTimeout) { requestTimeoutMillis = 3_000 }
             }
             try {
+                pushImageDirectory(this@ZooMessagingService, posted.binding).deleteRecursively()
                 val proxy = AndroidMediaProxy(this@ZooMessagingService, base)
                 val images = synchronized(PushBinding.lock) {
                     if (!PushBinding(this@ZooMessagingService).matches(posted.binding, posted.user)) {

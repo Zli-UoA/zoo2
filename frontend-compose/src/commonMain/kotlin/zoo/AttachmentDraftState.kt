@@ -160,7 +160,7 @@ class AttachmentLinks(private val app: Session) {
     private val cache = mutableMapOf<String, Pair<AttachmentImageLinks, Long>>()
     private val requests = mutableMapOf<String, Deferred<Result<AttachmentImageLinks>>>()
     private val denied = mutableStateMapOf<String, Boolean>()
-    private val accessVersions = mutableMapOf<String, Long>()
+    private val accessVersions = mutableStateMapOf<String, Long>()
 
     fun isDenied(id: String): Boolean = denied[id] == true
 

@@ -241,6 +241,21 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun discardingAnUndecodableBodyRemovesItsValidator() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("ETag", "broken").setBody("invalid"))
+            f.server.enqueue(MockResponse().setBody("replacement"))
+            f.cache().use { cache ->
+                val route = ImageRequest(f.url)
+                val bytes = cache.download(route, 1024)
+                cache.discardUndecodableImage(f.url, null, bytes)
+                assertEquals("replacement", cache.download(route, 1024, bypassCache = true).decodeToString())
+            }
+            f.server.takeRequest()
+            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
     @Test fun retainsLegacyAttachmentBodyWithAnExpiredDeadline() = runBlocking {
         Fixture().use { f ->
             val key = "legacy:thumbnail"
