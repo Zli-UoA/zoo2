@@ -260,6 +260,10 @@ class AndroidSamplesTest {
         ))
         val gallery = galleryMap()
         val cases = listOf(
+            "quote-renote" to AndroidScreen.NewPost(InputState("当日が楽しみです。"), emptyList(), false, "unlisted",
+                quoting = illustratedPost),
+            "sending-home" to AndroidScreen.Home(listOf(TimelineItem("pending", "", "次の展示も楽しみです。", "", delivery = "送信中…")) + homePosts),
+            "typing-channel" to conversation.copy(input = InputState(notices = listOf("はるさんが入力中…"))),
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
             "edit-original" to AndroidScreen.EditEntry(InputState("受付は10時半です。", expanded = true), "受付は10時です。"),
             "composer-limit" to AndroidScreen.NewPost(InputState("展示のご案内。".repeat(159)), emptyList(), false, "public"),
@@ -964,6 +968,25 @@ class AndroidSamplesTest {
         }
         ui.onNodeWithText("この投稿は表示できません").assertIsDisplayed().assertHasNoClickAction()
         ui.onNodeWithText("引用元を開く").assertDoesNotExist()
+    }
+
+    @Test
+    fun renoteMenuOpensQuoteComposerWithOriginal() {
+        val post = TimelineItem("original", "ゆい", "展示は明日からです。", "12:00", canRepost = true, canQuoteRenote = true)
+        var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Home(listOf(post)))
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { action ->
+                if (action is AndroidUiAction.ActOnEntry) {
+                    check(action.item.id == post.id && action.operation == EntryOperation.QuoteRenote)
+                    screen = AndroidScreen.NewPost(InputState("楽しみです。"), emptyList(), false, quoting = post)
+                }
+            }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithContentDescription("リノート").performClick()
+        ui.onNodeWithText("リノート").assertIsDisplayed()
+        ui.onNodeWithText("引用リノート").performClick()
+        ui.onNodeWithText("展示は明日からです。").assertIsDisplayed()
+        ui.onNodeWithText("楽しみです。").assertIsDisplayed()
     }
 
     @Test

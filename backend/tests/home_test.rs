@@ -2437,3 +2437,66 @@ async fn remote_thread_scope_preserves_audiences_previews_and_cycles() -> anyhow
     assert_eq!(cycle.as_array().unwrap().len(), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn quote_renote_roundtrips_home_and_federated_note() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    let publish =
+        |content, visibility| json!({"content":content,"apub":true,"visibility":visibility});
+    let (status, original) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish("展示のお知らせ", "public")),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut body = publish("行きます！", "public");
+    body["quote_post_id"] = original["id"].clone();
+    let (status, quoted) =
+        request(&app, "POST", Some(&user), "/api/home", Some(body.clone())).await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, timeline) = request(&app, "GET", Some(&user), "/api/home?timeline=home", None).await?;
+    let post = timeline
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == quoted["id"])
+        .unwrap();
+    assert_eq!(post["quote"]["post"]["id"], original["id"]);
+    let (_, note) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{}", quoted["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(note["quoteUrl"], post["quote"]["uri"]);
+    assert_eq!(note["_misskey_quote"], note["quoteUrl"]);
+    let (_, private) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(publish("限定", "followers")),
+    )
+    .await?;
+    body["quote_post_id"] = private["id"].clone();
+    assert_eq!(
+        request(&app, "POST", Some(&user), "/api/home", Some(body))
+            .await?
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    Ok(())
+}
