@@ -69,7 +69,7 @@ class NotificationPresentationTest {
     @Test fun reactionsDescribeTheEventAndSelectTheActorsEmoji() {
         val row = row("reaction")
         val body = notificationBody(row) { key, actor -> "$key:$actor" }
-        assertEquals("notifications.reaction:Alice\n👍\n長いメッセージ\n二行目", body)
+        assertEquals("👍 notifications.reaction:Alice\n長いメッセージ\n二行目", body)
         assertIs<Notification.BigTextStyle>(notificationStyle(row, body, "Me", null))
     }
 

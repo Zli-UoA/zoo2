@@ -33,7 +33,8 @@ internal fun notificationBody(row: Row, translate: (String, String) -> String): 
     val emoji = data["reactions"]?.rows()?.firstOrNull {
         it.text("user_id") == row.text("actor_id")
     }?.text("emoji").orEmpty()
-    return listOf(description, emoji, content).filter { it.isNotEmpty() }.joinToString("\n")
+    val event = listOf(emoji, description).filter { it.isNotEmpty() }.joinToString(" ")
+    return listOf(event, content).filter { it.isNotEmpty() }.joinToString("\n")
 }
 
 /**
