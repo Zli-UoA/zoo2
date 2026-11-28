@@ -69,6 +69,7 @@ struct MessageContentView: View {
     let message: Message
     let workspace: WorkspaceStore
     @Bindable var renderState: MessageRenderState
+    let isVisible: Bool
     @ScaledMetric(relativeTo: .body) private var emojiHeight: CGFloat = 24
     @Environment(\.scenePhase) private var scenePhase
 
@@ -79,6 +80,14 @@ struct MessageContentView: View {
     }
 
     var body: some View {
+        if MessageContent.requiresMfm(message.content) {
+            MfmMessageView(message: message, workspace: workspace, isVisible: isVisible)
+        } else {
+            plainBody
+        }
+    }
+
+    @ViewBuilder private var plainBody: some View {
         let parts = MessageContent.parse(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content, mention: { workspace.mentionIdentity($0, in: message) }) {
             workspace.emojiImageURL(for: $0, message: message)
         }
@@ -95,7 +104,6 @@ struct MessageContentView: View {
             await workspace.images.watch(states, policy: .stored)
         }
     }
-
 }
 
 @MainActor

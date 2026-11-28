@@ -10,7 +10,7 @@ enum MessageContent {
 
     private static let links = try! NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
     private static let codes = try! NSRegularExpression(pattern: #"(?=(:[^\s:]+:))"#)
-    private static let literalCode = try! NSRegularExpression(pattern: #"(?s)```.*?```|`[^`\n]*`"#)
+    private static let literalCode = try! NSRegularExpression(pattern: #"(?s)```.*?```|`[^`\n]*`|<plain>.*?</plain>"#)
     // Web 版と同じ標準短縮名を同梱し、通信できない場合も本文を読めるようにする。
     private static let shortcodes: [String: String] = {
         guard let url = Bundle.main.url(forResource: "emoji-shortcodes", withExtension: "json"),
@@ -20,6 +20,38 @@ enum MessageContent {
     }()
 
     private static let mentions = try! NSRegularExpression(pattern: #"(?:^|[\s(\[{<（「『"'。、])(@[A-Za-z0-9._-]+)(?![@A-Za-z0-9._-])"#)
+
+    static func requiresMfm(_ text: String) -> Bool {
+        text.rangeOfCharacter(from: CharacterSet(charactersIn: "*_~`<>[]\\#")) != nil ||
+        text.contains("$[") || text.contains(":@") ||
+        text.range(of: #"@[A-Za-z0-9._-]+@|(?im)^.+ (?:検索|search)$"#, options: .regularExpression) != nil
+    }
+
+    static func mfmShortcodes(in text: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for match in codes.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range(at: 1), in: text) else { continue }
+            let code = String(text[range])
+            result[code] = shortcodes[String(code.dropFirst().dropLast())]
+        }
+        return result
+    }
+
+    static func mfmMentions(in text: String, resolve: (String) -> Bool?) -> [String: Bool] {
+        let pattern = try! NSRegularExpression(pattern: #"@([A-Za-z0-9._-]+)"#)
+        var result: [String: Bool] = [:]
+        for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range(at: 1), in: text) else { continue }
+            var name = String(text[range])
+            var identity = resolve(name)
+            while identity == nil, name.hasSuffix(".") {
+                name.removeLast()
+                identity = resolve(name)
+            }
+            result[name] = identity
+        }
+        return result
+    }
 
     static func parse(_ text: String, mention: (String) -> Bool? = { _ in nil }, emojiURL: (String) -> URL?) -> [Part] {
         let full = NSRange(text.startIndex..., in: text)

@@ -45,6 +45,15 @@ struct ComposerView: View {
         }
         return MentionInput.query(in: text, caret: text.endIndex)
     }
+    private var mfmQuery: MfmInput.Query? {
+        guard focused else { return nil }
+        let text = draft.wrappedValue
+        if let range = selectedRange {
+            guard range.isEmpty else { return nil }
+            return MfmInput.query(in: text, caret: range.lowerBound)
+        }
+        return MfmInput.query(in: text, caret: text.endIndex)
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -87,7 +96,9 @@ struct ComposerView: View {
                 .overlay(alignment: expanded ? .bottomLeading : .leading) { additions }
                 .padding(expanded ? 8 : 4)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: expanded ? 24 : 28))
-                .overlay(alignment: .top) { mentionPanel }
+                .overlay(alignment: .top) {
+                    if let query = mfmQuery { mfmPanel(query) } else { mentionPanel }
+                }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(parentID == nil ? "message-composer" : "reply-composer")
                 if draft.wrappedValue.unicodeScalars.count > 40_000 {
@@ -238,6 +249,32 @@ struct ComposerView: View {
         emojiInsertionRange = selectedRange
         focused = false
         showingEmoji = true
+    }
+
+    private func mfmPanel(_ query: MfmInput.Query) -> some View {
+        let candidates = MfmInput.options(query.text)
+        let height = min(candidateHeight * CGFloat(candidates.count), 250)
+        return ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(candidates) { candidate in
+                    Button {
+                        let text = draft.wrappedValue
+                        let offset = text[..<query.range.lowerBound].utf16.count + candidate.template.utf16.count - 1
+                        insert(candidate.template, replacing: query.range)
+                        selection = TextSelection(insertionPoint: String.Index(utf16Offset: offset, in: draft.wrappedValue))
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(candidate.name).fontWeight(.semibold).foregroundStyle(.primary)
+                            Text(candidate.description).foregroundStyle(.secondary).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }.padding(.horizontal, 12).frame(height: candidateHeight).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityIdentifier("mfm-option-\(candidate.name)")
+                }
+            }
+        }
+        .frame(height: height).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 12).offset(y: -height - 6)
+        .accessibilityLabel("MFMの候補").accessibilityIdentifier("mfm-suggestions")
     }
 
     private func insertMention() {

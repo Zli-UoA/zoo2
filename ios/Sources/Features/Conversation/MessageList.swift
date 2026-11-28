@@ -476,7 +476,7 @@ struct MessageList: View {
                     .contentShape(Rectangle())
                     .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                     if !message.content.isEmpty || (attachments.isEmpty && message.e2eeNotice == nil) {
-                        MessageContentView(message: message, workspace: workspace, renderState: renderState)
+                        MessageContentView(message: message, workspace: workspace, renderState: renderState, isVisible: isVisible)
                         .font(.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("message-content-\(message.id)")
