@@ -221,7 +221,10 @@ internal class AndroidPlatform(
             name == "haptic:threshold" && env.operationHaptics ->
                 activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             name == "toggleSwipeReply" -> updateInteraction("swipe-reply", !env.swipeReply)
-            name == "toggleOperationHaptics" -> updateInteraction("operation-haptics", !env.operationHaptics)
+            name == "toggleOperationHaptics" -> {
+                updateInteraction("operation-haptics", !env.operationHaptics)
+                if (env.operationHaptics) activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            }
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
