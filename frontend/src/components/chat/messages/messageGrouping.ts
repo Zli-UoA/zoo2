@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+import { useLocalCalendar } from "../../../hooks/useLocalDay";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { isSameLocalDay, type FeedMessage } from "./messageFormat";
 
@@ -61,4 +63,13 @@ export function buildMessageItems(
       showDateSeparator,
     };
   });
+}
+
+export function useMessageItems(messages: FeedMessage[], firstUnreadId: string | null = null) {
+  const { zone } = useLocalCalendar();
+  // 日付の境界は端末のタイムゾーンに依存する。
+  return useMemo(
+    () => buildMessageItems(messages, GROUP_GAP_MS, firstUnreadId),
+    [messages, firstUnreadId, zone],
+  );
 }

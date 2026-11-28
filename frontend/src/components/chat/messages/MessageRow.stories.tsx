@@ -95,6 +95,33 @@ export const Grouped: Story = {
   args: { item: { ...item, isGroupStart: false } },
 };
 
+export const GroupedToday: Story = {
+  render: (args) => {
+    const today = new Date();
+    today.setHours(9, 4, 0, 0);
+    return (
+      <MessageRow
+        {...args}
+        item={{
+          ...item,
+          isGroupStart: false,
+          message: { ...item.message, created_at: today.toISOString() },
+        }}
+      />
+    );
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const time = await canvas.findByText("09:04");
+    await expect(time).toHaveAttribute("datetime");
+    await userEvent.hover(await canvas.findByText(/こんにちは/));
+    // Storybook sends synthetic pointer events. Focus exercises the same reveal style in the canvas.
+    const more = canvas.getByRole("button", { name: "その他の操作" });
+    more.focus();
+    await waitFor(() => expect(getComputedStyle(time).opacity).toBe("1"));
+  }),
+};
+
 export const OwnMessage: Story = {
   args: {
     isOwn: true,

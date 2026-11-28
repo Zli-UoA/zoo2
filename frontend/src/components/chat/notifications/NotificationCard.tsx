@@ -1,3 +1,4 @@
+import { PostTimestamp } from "../messages/PostTimestamp";
 import { Link } from "@tanstack/react-router";
 import {
   useEffect,
@@ -25,14 +26,11 @@ import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 import { ReactionEmoji } from "../messages/ReactionEmoji";
 import type { ChannelRow, ChannelUserRow, UserRow } from "../../../lib/electric/types";
-import { INTL_LOCALES } from "../../../lib/i18n/locale";
-import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
 import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "../dm";
 import { AppAvatar } from "../AppIdentity";
 import { MfmContent } from "../messages/MfmContent";
-import { fullTimestamp } from "../messages/messageFormat";
 import {
   quotePreview,
   notificationReactionGroups,
@@ -355,26 +353,11 @@ export function NotificationAvatar({ children, badge }: { children: ReactNode; b
 }
 
 export function NotificationTimestamp({ createdAt }: { createdAt: string }) {
-  const { locale } = useLocale();
-  const formatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat(INTL_LOCALES[locale], {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      }),
-    [locale],
-  );
   return (
-    <time
+    <PostTimestamp
+      createdAt={createdAt}
       className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-      dateTime={normalizeUtcTimestamp(createdAt)}
-      title={fullTimestamp(createdAt, locale)}
-    >
-      {formatter.format(parseUtcTimestamp(createdAt))}
-    </time>
+    />
   );
 }
 

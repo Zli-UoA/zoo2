@@ -126,6 +126,7 @@ struct Ctx {
     error: RwSignal<Option<String>>,
     profile_request: RwSignal<Option<u64>>,
     profile_checked: RwSignal<f64>,
+    calendar: RwSignal<(jiff::civil::Date, String)>,
     generation: RwSignal<u64>,
     starting: RwSignal<bool>,
     /// 同じチャンネルへの PATCH を送信順に直列化するロック。コンポーネントが再生成されても
@@ -253,6 +254,7 @@ fn App() -> impl IntoView {
         error: RwSignal::new(None),
         profile_request: RwSignal::new(None),
         profile_checked: RwSignal::new(0.0),
+        calendar: RwSignal::new(local_calendar()),
         generation: RwSignal::new(0),
         starting: RwSignal::new(false),
         notification_locks: StoredValue::new_local(HashMap::new()),
@@ -261,8 +263,26 @@ fn App() -> impl IntoView {
         notification_request: RwSignal::new(0),
     };
     provide_context(ctx);
+    Effect::new(move |_| {
+        let today = ctx.calendar.with(|calendar| calendar.0);
+        let midnight = js_sys::Date::new_with_year_month_day(
+            today.year() as u32,
+            i32::from(today.month()) - 1,
+            i32::from(today.day()) + 1,
+        );
+        let delay = (midnight.get_time() - js_sys::Date::now()).max(1.0) as u64;
+        if let Ok(timer) = set_timeout_with_handle(
+            move || refresh_calendar(ctx),
+            std::time::Duration::from_millis(delay),
+        ) {
+            on_cleanup(move || timer.clear());
+        }
+    });
     if let Ok(timer) = set_interval_with_handle(
         move || {
+            if !document().hidden() {
+                refresh_calendar(ctx);
+            }
             spawn_local(refresh_account_profiles(ctx));
         },
         std::time::Duration::from_secs(60),
@@ -322,6 +342,7 @@ fn App() -> impl IntoView {
 
     // 前面かどうかが変わったら、表示中のチャンネルと一緒に知らせる (通知を抑えるため)。
     let _ = window_event_listener(ev::focus, move |_| {
+        refresh_calendar(ctx);
         spawn_local(refresh_account_profiles(ctx));
         spawn_local(send_focus(ctx.channel.get_untracked()));
     });
@@ -960,6 +981,8 @@ fn mfm_view(content: String) -> AnyView {
 #[component]
 fn MessageView(message: Message, name: String) -> impl IntoView {
     // メッセージ部品 (`components` 列。移行前の行は `card` 列から作る)。フラグがあれば本文を出さない
+    let ctx = expect_context::<Ctx>();
+    let created_at = message.created_at;
     let doc = message.components_document();
     let hides = doc.as_ref().is_some_and(|d| d.hides_content());
     let body = (!hides).then(|| mfm_view(message.content.clone()));
@@ -968,7 +991,7 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
         <article class="message">
             <header>
                 <span class="author">{name}</span>
-                <time>{local_time(&message)}</time>
+                <time>{move || local_time(created_at, ctx.calendar.with(|calendar| calendar.0))}</time>
             </header>
             {body}
             {parts}
@@ -976,20 +999,45 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
     }
 }
 
-/// UTC の作成時刻を、WebView のタイムゾーンの `MM/DD HH:MM` にする。夏時間で今と
-/// オフセットが違う時期の投稿もずれないよう、投稿の時刻から JS の Date を作って変換する。
-fn local_time(message: &Message) -> String {
-    let Ok(zoned) = message.created_at.to_zoned(jiff::tz::TimeZone::UTC) else {
+/// WebView のローカル時刻で表示し、今日なら日付を、今年なら年を省く。
+fn local_time(utc: jiff::civil::DateTime, today: jiff::civil::Date) -> String {
+    let Ok(at) = utc.to_zoned(jiff::tz::TimeZone::UTC) else {
         return String::new();
     };
-    let date = js_sys::Date::new(&(zoned.timestamp().as_millisecond() as f64).into());
-    format!(
-        "{:02}/{:02} {:02}:{:02}",
-        date.get_month() + 1,
-        date.get_date(),
-        date.get_hours(),
-        date.get_minutes()
+    let date = js_sys::Date::new(&(at.timestamp().as_millisecond() as f64).into());
+    let Ok(local) = local_date(&date) else {
+        return String::new();
+    };
+    zoo2_client_types::timestamps::message_timestamp(
+        local.at(date.get_hours() as i8, date.get_minutes() as i8, 0, 0),
+        today,
     )
+}
+
+fn local_date(date: &js_sys::Date) -> Result<jiff::civil::Date, jiff::Error> {
+    jiff::civil::Date::new(
+        date.get_full_year() as i16,
+        (date.get_month() + 1) as i8,
+        date.get_date() as i8,
+    )
+}
+
+fn local_calendar() -> (jiff::civil::Date, String) {
+    let today = local_date(&js_sys::Date::new_0()).expect("current local date");
+    let options = js_sys::Intl::DateTimeFormat::new(&js_sys::Array::new(), &js_sys::Object::new())
+        .resolved_options();
+    let zone = js_sys::Reflect::get(&options, &"timeZone".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    (today, zone)
+}
+
+fn refresh_calendar(ctx: Ctx) {
+    let next = local_calendar();
+    if ctx.calendar.with_untracked(|current| current != &next) {
+        ctx.calendar.set(next);
+    }
 }
 
 /// 入力欄。日本語の変換中 (`isComposing`) の Enter では送らない。値は DOM が持ち、

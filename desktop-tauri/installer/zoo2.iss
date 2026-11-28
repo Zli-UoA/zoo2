@@ -7,7 +7,7 @@
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "0.4.0"
+  #define AppVersion "0.4.1"
 #endif
 ; プレリリース版 (例: 0.3.1-rc.1) でも数値専用の VersionInfo 項目へ渡せるように、
 ; ハイフン以降を除いた数値部分を AppVersionNumeric として定義する。

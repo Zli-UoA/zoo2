@@ -2,7 +2,7 @@ import { MENTION_PATTERN } from "./mentions";
 import type { MegolmCiphertext, MessageDisplayData } from "../../../lib/electric/types";
 import type { TFunction } from "i18next";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
-import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
+import { parseUtcTimestamp } from "../../../lib/timestamps";
 
 /**
  * `messageFeedQuery` の select 結果。`users` の結合がまだ届いていない行では
@@ -172,32 +172,28 @@ export function formatClock(date: Date, locale: Locale = DEFAULT_LOCALE): string
   }).format(date);
 }
 
-/** Electric の naive UTC 文字列を端末ローカルの HH:mm に変換する。 */
-export function formatTime(value: string, locale: Locale = DEFAULT_LOCALE): string {
-  return formatClock(parseUtcTimestamp(value), locale);
-}
-
-/**
- * 埋め込みカードに添える日時。「11月23日 16:30」の形で、今年でなければ年も付ける。
- * `now` を渡せるようにして、テストを現在の日時から切り離す。
- */
-export function formatEmbedTimestamp(
+/** 端末の暦で、今日なら時刻のみ、今年なら月日、別の年なら年月日を添える。 */
+export function formatTime(
   value: string,
   locale: Locale = DEFAULT_LOCALE,
   now: Date = new Date(),
 ): string {
   const date = parseUtcTimestamp(value);
-  const day = new Intl.DateTimeFormat(INTL_LOCALES[locale], {
-    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-    month: "short",
-    day: "numeric",
-  }).format(date);
-  return `${day} ${formatClock(date, locale)}`;
+  if (Number.isNaN(date.getTime())) return value;
+  const time = formatClock(date, locale);
+  if (isSameLocalDay(date, now)) return time;
+  const monthDay = `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
+  const day =
+    date.getFullYear() === now.getFullYear()
+      ? monthDay
+      : `${String(date.getFullYear()).padStart(4, "0")}/${monthDay}`;
+  return `${day} ${time}`;
 }
 
 /** タイトル属性向けの完全な日時。 */
 export function fullTimestamp(value: string, locale: Locale = DEFAULT_LOCALE): string {
-  return new Date(normalizeUtcTimestamp(value)).toLocaleString(INTL_LOCALES[locale]);
+  const date = parseUtcTimestamp(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(INTL_LOCALES[locale]);
 }
 
 /** 端末ローカルの暦日が同じか。 */
@@ -242,5 +238,6 @@ export function formatDateSeparator(
   locale: Locale,
   now: Date = new Date(),
 ): string {
-  return formatRelativeDay(parseUtcTimestamp(value), now, t, locale);
+  const date = parseUtcTimestamp(value);
+  return Number.isNaN(date.getTime()) ? value : formatRelativeDay(date, now, t, locale);
 }

@@ -67,6 +67,7 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
         lines: Vec::new(),
         ranges: Vec::new(),
     };
+    let today = Zoned::now().date();
     let mut last_date = None;
     // 暗号化チャンネルで、読み込んだうちの暗号化したメッセージを見たか（#367）。
     // 最初のものの前に「ここから暗号化されています」の区切りを出し、それより後ろの、切り替える前の形の行
@@ -102,7 +103,13 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
 
         let start = timeline.lines.len();
         let selected = ctx.selected == Some(message.id.as_str());
-        for line in message_lines(message, created.as_ref(), ctx, unencrypted_after_encrypted) {
+        for line in message_lines(
+            message,
+            created.as_ref(),
+            today,
+            ctx,
+            unencrypted_after_encrypted,
+        ) {
             for wrapped in wrap(line, width - INDENT) {
                 timeline.lines.push(gutter(wrapped, selected));
             }
@@ -117,11 +124,12 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
 fn message_lines(
     message: &Message,
     created: Option<&Zoned>,
+    today: jiff::civil::Date,
     ctx: &Context,
     unencrypted_after_encrypted: bool,
 ) -> Vec<Line<'static>> {
     let time = created
-        .map(|zoned| zoned.strftime("%H:%M").to_string())
+        .map(|at| zoo2_client_core::timestamps::message_timestamp(at.datetime(), today))
         .unwrap_or_default();
     let author = ctx.store.user(&message.user_id);
     let mut header = vec![

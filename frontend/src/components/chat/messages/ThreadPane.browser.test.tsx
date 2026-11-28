@@ -1,10 +1,11 @@
 import "../../../styles.css";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser/context";
+import { cdp, page } from "vite-plus/test/browser/context";
 
+import { useLocalCalendar } from "../../../hooks/useLocalDay";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import type { FeedMessage } from "./messageFormat";
 import { ThreadPane, type ThreadPaneProps } from "./ThreadPane";
@@ -48,6 +49,141 @@ function paneProps(overrides: Partial<ThreadPaneProps> = {}): ThreadPaneProps {
     ...overrides,
   };
 }
+
+it("regroups replies when a time zone change puts midnight between them", async () => {
+  const replies = [
+    message({ id: "r1", created_at: "2026-10-19T14:59:00Z" }),
+    message({ id: "r2", created_at: "2026-10-19T15:01:00Z" }),
+  ];
+  try {
+    await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "UTC" });
+    const view = render(
+      <LocaleProvider>
+        <ThreadPane {...paneProps({ replies })} />
+      </LocaleProvider>,
+    );
+    const separators = () => view.container.querySelectorAll('[role="separator"][aria-label]');
+    expect(separators()).toHaveLength(1);
+    await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Tokyo" });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(separators()).toHaveLength(2));
+  } finally {
+    await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "" });
+    window.dispatchEvent(new Event("focus"));
+  }
+});
+
+it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit", "middle-with-older"])(
+  "preserves the %s scroll position when grouped replies grow at midnight",
+  async (position) => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const now = new Date(2026, 9, 19, 23, 59, 59);
+    vi.setSystemTime(now);
+    try {
+      const replies = Array.from({ length: 20 }, (_, i) =>
+        message({ id: String(i), created_at: now.toISOString(), content: "reply " + i }),
+      );
+      const withOlder = [
+        message({ id: "older", created_at: new Date(now.getTime() - 3600000).toISOString() }),
+        ...replies,
+      ];
+      function CalendarPane({ newReply = false }: { newReply?: boolean }) {
+        const { midnight } = useLocalCalendar();
+        const loaded = position === "middle-with-older" && midnight > now.getTime();
+        const history = loaded ? withOlder : replies;
+        const updated = newReply
+          ? [...history, message({ id: "new", created_at: new Date().toISOString() })]
+          : history;
+        return <ThreadPane {...paneProps({ replies: updated })} />;
+      }
+      const view = render(
+        <LocaleProvider>
+          <CalendarPane />
+        </LocaleProvider>,
+      );
+      const scroll = view.container.querySelector<HTMLElement>("[data-scroll-restoration-id]")!;
+      scroll.style.cssText = "height: 180px; flex: none; overflow-anchor: none";
+      const height = scroll.scrollHeight;
+      expect(height).toBeGreaterThan(scroll.clientHeight);
+      if (position === "top-near-bottom" || position === "exact-fit") {
+        scroll.style.height = height - (position === "top-near-bottom" ? 30 : 0) + "px";
+        expect(scroll.scrollHeight - scroll.clientHeight).toBe(
+          position === "top-near-bottom" ? 30 : 0,
+        );
+      }
+      scroll.scrollTop = position === "bottom" ? height : 0;
+      const middle = scroll.querySelector<HTMLElement>('[data-message-id="8"]')!;
+      const offset = () => middle.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+      if (position.startsWith("middle")) scroll.scrollTop += offset() + 4;
+      const before = offset();
+      fireEvent.scroll(scroll);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(scroll.scrollHeight).toBeGreaterThan(height);
+      if (position === "middle-with-older")
+        expect(scroll.querySelector('[data-message-id="older"]')).toBeInTheDocument();
+      function expectReadingPosition() {
+        if (position.startsWith("middle"))
+          expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
+        else if (position === "bottom" || position === "exact-fit")
+          expect(scroll.scrollTop).toBe(scroll.scrollHeight - scroll.clientHeight);
+        else expect(scroll.scrollTop).toBe(0);
+      }
+      expectReadingPosition();
+      view.rerender(
+        <LocaleProvider>
+          <CalendarPane newReply />
+        </LocaleProvider>,
+      );
+      expect(scroll.querySelector('[data-message-id="new"]')).toBeInTheDocument();
+      expectReadingPosition();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("keeps bottom-follow off when a calendar change shrinks the remaining distance", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const today = new Date(2026, 9, 19, 12);
+  vi.setSystemTime(today);
+  try {
+    const replies = Array.from({ length: 20 }, (_, i) =>
+      message({ id: String(i), created_at: today.toISOString() }),
+    );
+    const pane = (items: FeedMessage[]) => (
+      <LocaleProvider>
+        <ThreadPane {...paneProps({ replies: items })} />
+      </LocaleProvider>
+    );
+    const view = render(pane(replies));
+    const scroll = view.container.querySelector<HTMLElement>("[data-scroll-restoration-id]")!;
+    scroll.style.cssText = "height: 180px; flex: none; overflow-anchor: none";
+    scroll.style.height = scroll.scrollHeight - 30 + "px";
+    const changeDate = (date: Date) =>
+      act(() => {
+        vi.setSystemTime(date);
+        window.dispatchEvent(new Event("focus"));
+      });
+    changeDate(new Date(2026, 9, 20, 12));
+    scroll.scrollTop = 0;
+    fireEvent.scroll(scroll);
+    expect(scroll.scrollHeight - scroll.clientHeight).toBeGreaterThan(48);
+    changeDate(today);
+    expect(scroll.scrollHeight - scroll.clientHeight).toBe(30);
+    fireEvent.scroll(scroll);
+    const updated = [...replies, message({ id: "new", created_at: today.toISOString() })];
+    view.rerender(pane(updated));
+    expect(scroll.scrollTop).toBe(0);
+    scroll.scrollTop = scroll.scrollHeight;
+    fireEvent.scroll(scroll);
+    view.rerender(pane([...updated, message({ id: "next", created_at: today.toISOString() })]));
+    expect(scroll.scrollTop).toBe(scroll.scrollHeight - scroll.clientHeight);
+    view.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 /** 呼び出し元のボタンを残したまま ThreadPane を開閉する。 */
 function Harness({ onClose }: { onClose?: () => void }) {

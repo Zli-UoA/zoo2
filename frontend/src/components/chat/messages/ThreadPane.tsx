@@ -1,6 +1,15 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, UsersIcon, XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  createRef,
+  type ReactNode,
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -23,9 +32,64 @@ import {
 } from "./ThreadParticipantsDialog";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
-import { buildMessageItems } from "./messageGrouping";
+import { useLocalCalendar } from "../../../hooks/useLocalDay";
+import { useMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
+
+type ReplyListProps = {
+  calendar: ReturnType<typeof useLocalCalendar>;
+  onPositionRestored: (scroll: HTMLElement) => void;
+  firstReplyId: string;
+  lastReplyId: string;
+  children: ReactNode;
+};
+
+type ReplyAnchor = "top" | "bottom" | { row: Element; offset: number };
+
+// 日付変更や古い返信の追加に先立って、画面上端の返信とその位置を記録する。
+class ThreadReplyList extends Component<ReplyListProps> {
+  private list = createRef<HTMLDivElement>();
+
+  getSnapshotBeforeUpdate(previous: ReplyListProps): ReplyAnchor | null {
+    const prepended =
+      previous.firstReplyId !== this.props.firstReplyId &&
+      previous.lastReplyId === this.props.lastReplyId;
+    if (previous.calendar === this.props.calendar && !prepended) return null;
+    const list = this.list.current;
+    const scroll = list?.parentElement;
+    if (!list || !scroll) return null;
+    const maxScroll = scroll.scrollHeight - scroll.clientHeight;
+    if (!prepended && maxScroll > 0 && scroll.scrollTop <= 0) return "top";
+    if (maxScroll - scroll.scrollTop <= 1) return "bottom";
+    const top = scroll.getBoundingClientRect().top;
+    for (const row of list.children) {
+      const bounds = row.getBoundingClientRect();
+      if (bounds.bottom > top) return { row, offset: bounds.top - top };
+    }
+    return null;
+  }
+
+  componentDidUpdate(_previous: ReplyListProps, _state: unknown, anchor: ReplyAnchor | null) {
+    const scroll = this.list.current?.parentElement;
+    if (!scroll || !anchor) return;
+    if (anchor === "top" || anchor === "bottom") {
+      scroll.scrollTop = anchor === "top" ? 0 : scroll.scrollHeight;
+    } else if (scroll.contains(anchor.row)) {
+      const offset = anchor.row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+      scroll.scrollTop += offset - anchor.offset;
+    }
+    this.props.onPositionRestored(scroll);
+  }
+
+  render() {
+    return (
+      <div ref={this.list} role="list">
+        {this.props.children}
+      </div>
+    );
+  }
+}
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -182,7 +246,7 @@ export function ThreadPane({
   // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
   // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
   const isWidePane = useMediaQuery("(min-width: 640px)");
-  const items = useMemo(() => buildMessageItems(replies), [replies]);
+  const items = useMessageItems(replies);
   const paneRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   // チャンネルと同様、参加してから返信する。返信がまだないメッセージも同じで、最初の返信の前に参加する
@@ -238,11 +302,20 @@ export function ThreadPane({
             disabled: membershipPending || isOffline,
           }
         : null;
+  const calendar = useLocalCalendar();
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasTargetInReplies = Boolean(
     targetMessageId && replies.some((reply) => reply.id === targetMessageId),
   );
   const atBottomRef = useRef(!hasTargetInReplies);
+  const restoredScrollTop = useRef<number | null>(null);
+  function updateBottomPosition(element: HTMLElement) {
+    atBottomRef.current = isNearBottom(
+      element.scrollTop,
+      element.scrollHeight,
+      element.clientHeight,
+    );
+  }
   const scrolledTarget = useRef<string | undefined>(undefined);
   // 表示中の対象の返信へのリンクをもう一度押したとき。URL が変わらないので、スクロール済みの印を消して、
   // 下の効果をもう一度走らせる。対象の行へスクロールしたときには、強調（点滅 → 点灯 → フェードアウト）を再生する。
@@ -255,6 +328,7 @@ export function ThreadPane({
   useLayoutEffect(() => {
     if (prevRootIdRef.current !== root.id) {
       prevRootIdRef.current = root.id;
+      restoredScrollTop.current = null;
       scrolledTarget.current = undefined;
       atBottomRef.current = !hasTargetInReplies;
     }
@@ -270,25 +344,7 @@ export function ThreadPane({
       return;
     }
     element.scrollTop = element.scrollHeight;
-  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
-
-  // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
-  const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    const previous = scrollSnapshot.current;
-    const firstId = replies[0]?.id ?? "";
-    const lastId = replies[replies.length - 1]?.id ?? "";
-    if (element) {
-      const prepended =
-        previous.firstId !== "" &&
-        firstId !== previous.firstId &&
-        lastId === previous.lastId &&
-        !atBottomRef.current;
-      if (prepended) element.scrollTop += element.scrollHeight - previous.height;
-      scrollSnapshot.current = { firstId, lastId, height: element.scrollHeight };
-    }
-  }, [replies]);
+  }, [lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   useLayoutEffect(() => {
     if (!targetMessageId) {
@@ -513,12 +569,10 @@ export function ThreadPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
-          scrollSnapshot.current.height = element.scrollHeight;
-          atBottomRef.current = isNearBottom(
-            element.scrollTop,
-            element.scrollHeight,
-            element.clientHeight,
-          );
+          if (element.scrollTop !== restoredScrollTop.current) {
+            restoredScrollTop.current = null;
+            updateBottomPosition(element);
+          }
           if (element.scrollTop <= 48 && hasOlder && !isLoadingOlder) {
             onLoadOlder?.();
           }
@@ -547,7 +601,17 @@ export function ThreadPane({
         ) : replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.empty")}</p>
         ) : (
-          <div role="list">
+          <ThreadReplyList
+            key={root.id}
+            calendar={calendar}
+            onPositionRestored={(element) => {
+              // 復元による scroll イベントで、停止中の末尾追従を再開しない。
+              restoredScrollTop.current = element.scrollTop;
+              if (atBottomRef.current) updateBottomPosition(element);
+            }}
+            firstReplyId={replies[0].id}
+            lastReplyId={replies[replies.length - 1].id}
+          >
             {items.map((item) => (
               <div key={item.message.id} data-message-id={item.message.id} role="listitem">
                 <MessageRow
@@ -601,7 +665,7 @@ export function ThreadPane({
                 />
               </div>
             ))}
-          </div>
+          </ThreadReplyList>
         )}
       </div>
 

@@ -376,31 +376,33 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     let room = (usize::from(frame.area().height).saturating_sub(fixed) / 2).max(1);
     let first = search.selected.saturating_sub(room.saturating_sub(1));
     let terms = global_search::highlight_terms(search);
+    let now = jiff::Zoned::now();
     for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
         let selected = index == search.selected;
         let place = match app.store.channel(&item.channel_id) {
             Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
             _ => format!("#{}", item.channel_name),
         };
+        let marker = Span::styled(if selected { "▶ " } else { "  " }, accent);
+        let time = global_search::result_time(&item.created_at, &now);
+        let metadata = search_result_metadata(
+            &time,
+            item.parent_id.is_some(),
+            inner,
+            marker.width(),
+            &place,
+        );
         let mut head = vec![
-            Span::styled(if selected { "▶ " } else { "  " }, accent),
+            marker,
             Span::styled(place, if selected { accent } else { Style::new() }),
         ];
         if let Some(author) = &item.author {
             head.push(Span::styled(format!("  {author}"), DIM));
         }
-        head.push(Span::styled(
-            format!(
-                "  {}",
-                global_search::result_day(&item.created_at, &jiff::tz::TimeZone::system())
-            ),
-            DIM,
-        ));
-        if item.parent_id.is_some() {
-            head.push(Span::styled("  スレッドの返信", DIM));
-        }
-        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
-        lines.push(Line::from(truncate_spans(head, inner)));
+        let reserved = metadata.as_ref().map_or(0, Span::width);
+        head = truncate_spans(head, inner.saturating_sub(reserved));
+        head.extend(metadata);
+        lines.push(Line::from(head));
         let text = item.file_name.as_deref().unwrap_or(&item.snippet);
         let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
         // 検索語に当たった部分を強調する（Web の `<mark>` と同じ）。
@@ -423,6 +425,46 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     }
     lines.extend(footer);
     draw_popup_sized(frame, "全文検索", lines, WIDTH);
+}
+
+/// 選択マークと行き先の先頭を残し、残り幅に収まる日時・返信ラベルを選ぶ。
+fn search_result_metadata(
+    time: &str,
+    reply: bool,
+    width: usize,
+    marker_width: usize,
+    place: &str,
+) -> Option<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let (prefix_width, name) = place.strip_prefix('#').map_or((0, place), |name| (1, name));
+    let first = name.graphemes(true).next().unwrap_or("");
+    let place_width = place.width();
+    let destination_width = marker_width + place_width;
+    let minimum_place = place_width.min(prefix_width + first.width() + "…".width());
+    let available = width.saturating_sub(marker_width + minimum_place);
+    let date = time.split_once(' ').map(|(date, _)| date);
+    let labels: &[&str] = if reply {
+        &[" スレッドの返信", " 返信"]
+    } else {
+        &[""]
+    };
+    for stamp in std::iter::once(time).chain(date) {
+        for &label in labels {
+            let budget = if label == " スレッドの返信" {
+                width.saturating_sub(destination_width)
+            } else {
+                available
+            };
+            if stamp.width() + label.width() < budget {
+                return Some(Span::styled(format!(" {stamp}{label}"), DIM));
+            }
+        }
+    }
+    if reply && " 返信".width() <= available {
+        return Some(Span::styled(" 返信", DIM));
+    }
+    None
 }
 
 /// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
@@ -470,17 +512,18 @@ fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
 }
 
 fn truncate_width(text: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let mut out = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
+    for cluster in text.graphemes(true) {
+        let w = cluster.width();
         if used + w > width.saturating_sub(1) {
             out.push('…');
-            return out;
+            break;
         }
         used += w;
-        out.push(ch);
+        out.push_str(cluster);
     }
     out
 }
@@ -3008,6 +3051,7 @@ mod tests {
         let text: String = out.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.width() <= 16, "{text}");
         assert!(text.ends_with('…'), "{text}");
+        assert_eq!(truncate_width("👩‍💻abcdef", 5), "👩‍💻ab…");
         let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
         assert_eq!(short.len(), 2);
         // 前の span が幅を使い切ったら、`…` も足さずに止める。
@@ -3066,6 +3110,23 @@ mod tests {
         assert_eq!(tail_width("あいうえお", 5), "…えお");
     }
 
+    #[test]
+    fn compact_search_dates_only_omit_the_year_for_this_year() {
+        for (width, year, same_year) in [
+            (15, " 2025/11/21", " 11/21"),
+            (16, " 2025/11/21", " 11/21 09:00"),
+        ] {
+            for (stamp, expected) in [("2025/11/21 09:00", year), ("11/21 09:00", same_year)] {
+                assert_eq!(
+                    search_result_metadata(stamp, false, width, 2, "#a")
+                        .unwrap()
+                        .content,
+                    expected
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn global_search_keeps_the_help_line_on_a_small_terminal() {
         let mut app = app();
@@ -3077,22 +3138,55 @@ mod tests {
             .map(|i| {
                 serde_json::from_value(json!({
                     "id": format!("m{i}"), "channel_id": "c1", "channel_name": "general",
-                    "snippet": "会議の資料", "created_at": "2026-11-21T00:00:00.000"
+                    "author": {"display_name": "Long author name 👩‍💻"}, "snippet": "会議の資料", "created_at": "2001-11-21T00:00:00.000"
                 }))
                 .unwrap()
             })
             .collect();
-        let mut terminal = Terminal::new(TestBackend::new(40, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let screen: String = (0..buffer.area.height)
-            .map(|y| {
-                (0..buffer.area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let screen = render_sized(&mut app, 40, 24);
+        let timestamp =
+            global_search::result_time(&app.global_search.items[0].created_at, &jiff::Zoned::now());
+        let selected = screen
+            .lines()
+            .find(|line| line.contains("▶ #general"))
+            .unwrap();
+        assert!(
+            selected.contains("Long") && selected.contains(&timestamp),
+            "{screen}"
+        );
+        app.global_search.items[0].parent_id = Some("parent".into());
+        let reply_screen = render_sized(&mut app, 40, 36);
+        let reply = reply_screen
+            .lines()
+            .find(|line| line.contains("▶ #"))
+            .unwrap();
+        assert!(
+            reply.contains("#general") && reply.contains(&timestamp) && reply.contains("返信"),
+            "{reply_screen}"
+        );
+        let narrow = render_sized(&mut app, 20, 40);
+        let selected = narrow.lines().find(|line| line.contains("▶ #g")).unwrap();
+        assert!(
+            !selected.contains(&timestamp[5..10]) && selected.contains("返信"),
+            "{narrow}"
+        );
+        app.global_search.items[0].channel_name = "a".into();
+        app.global_search.items[0].author = None;
+        let dated_reply = render_sized(&mut app, 22, 40);
+        assert!(
+            dated_reply.contains(&format!("▶ #a {} 返信", &timestamp[..10])),
+            "{dated_reply}"
+        );
+        app.global_search.items[0].parent_id = None;
+        let exact = render_sized(&mut app, 23, 40);
+        assert!(exact.contains(&format!("▶ #a {timestamp}")), "{exact}");
+        app.global_search.items[0].channel_name = "開発".into();
+        let wide_name = render_sized(&mut app, 24, 40);
+        let heading = wide_name.lines().find(|line| line.contains("▶ #")).unwrap();
+        assert!(
+            heading.contains("#開") && heading.contains(&timestamp[..10]),
+            "{wide_name}"
+        );
         assert!(screen.contains("Esc"), "{screen}");
     }
 

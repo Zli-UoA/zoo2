@@ -362,13 +362,18 @@ pub fn local_midnight(day: &str, tz: &jiff::tz::TimeZone) -> String {
 }
 
 /// 結果の日付。`created_at` は UTC の naive 値なので、タイムラインと同じく `tz`（端末のタイムゾーン）に直す。
-pub fn result_day(created_at: &str, tz: &jiff::tz::TimeZone) -> String {
+pub fn result_time(created_at: &str, now: &jiff::Zoned) -> String {
     created_at
         .parse::<jiff::civil::DateTime>()
         .ok()
         .and_then(|at| at.to_zoned(jiff::tz::TimeZone::UTC).ok())
-        .map(|at| at.with_time_zone(tz.clone()).date().to_string())
-        .unwrap_or_else(|| created_at.get(..10).unwrap_or(created_at).to_string())
+        .map(|at| {
+            zoo2_client_core::timestamps::message_timestamp(
+                at.with_time_zone(now.time_zone().clone()).datetime(),
+                now.date(),
+            )
+        })
+        .unwrap_or_else(|| created_at.to_owned())
 }
 
 #[cfg(test)]
@@ -407,15 +412,12 @@ mod tests {
     }
 
     #[test]
-    fn result_day_uses_the_terminal_time_zone() {
-        let jst = jiff::tz::TimeZone::fixed(jiff::tz::offset(9));
-        assert_eq!(result_day("2026-11-21T23:30:00.000", &jst), "2026-11-22");
-        assert_eq!(result_day("2026-11-21T08:00:00", &jst), "2026-11-21");
-        assert_eq!(
-            result_day("2026-11-21T23:30:00.000", &jiff::tz::TimeZone::UTC),
-            "2026-11-21"
-        );
-        assert_eq!(result_day("壊れた値", &jst), "壊れた値");
+    fn result_time_uses_the_terminal_time_zone() {
+        let now = "2026-11-22T12:00+09:00[Asia/Tokyo]".parse().unwrap();
+        assert_eq!(result_time("2026-11-21T23:30:00.000", &now), "08:30");
+        assert_eq!(result_time("2026-11-21T08:00:00", &now), "11/21 17:00");
+        assert_eq!(result_time("2026-12-31T16:00:00", &now), "2027/01/01 01:00");
+        assert_eq!(result_time("壊れた値", &now), "壊れた値");
     }
 
     #[test]

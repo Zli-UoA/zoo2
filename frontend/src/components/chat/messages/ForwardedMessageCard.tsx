@@ -1,3 +1,4 @@
+import { PostTimestamp } from "./PostTimestamp";
 import { Suspense, lazy, type ReactNode } from "react";
 import { useRouter } from "@tanstack/react-router";
 import type { TFunction } from "i18next";
@@ -16,7 +17,6 @@ import {
 } from "../../../hooks/useForwardedMessages";
 import type { ResolvedForwardMessage } from "../../../lib/api/types";
 import type { Locale } from "../../../lib/i18n/locale";
-import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
@@ -26,7 +26,6 @@ import { formatDmDisplayName, resolveDmDisplayName } from "../dm";
 import { ChannelLink } from "./ContentLink";
 import { EditedIndicator, MessageBody } from "./MessageBody";
 import { MessageAttachments } from "./MessageAttachments";
-import { formatTime, fullTimestamp } from "./messageFormat";
 import { messageLinkTarget, messageLinkUrl } from "./messageLink";
 
 const ComponentTree = lazy(() =>
@@ -198,13 +197,10 @@ export function ForwardedMessageCard({
                 APP
               </span>
             ) : null}
-            <time
+            <PostTimestamp
+              createdAt={resolved.created_at}
               className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-              dateTime={normalizeUtcTimestamp(resolved.created_at)}
-              title={fullTimestamp(resolved.created_at, locale)}
-            >
-              {formatTime(resolved.created_at, locale)}
-            </time>
+            />
           </div>
           <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
             {resolved.is_private && !resolved.is_dm ? (

@@ -1,3 +1,4 @@
+import { PostTimestamp } from "./PostTimestamp";
 import {
   BlocksIcon,
   CloudOffIcon,
@@ -9,13 +10,10 @@ import {
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { useLocale } from "../../i18n/LocaleProvider";
 import { AppAvatar } from "../AppIdentity";
 import { useChannelLinkInfo, type LinkedMessage } from "./channelLinkInfo";
 import { useChannelLabel } from "./channelLinkLabel";
 import { ChannelLink } from "./ContentLink";
-import { fullTimestamp, formatEmbedTimestamp } from "./messageFormat";
 import type { ChannelLinkTarget } from "./messageLink";
 import type { ChannelDirectory, LinkedChannel } from "./MfmChannels";
 
@@ -36,7 +34,6 @@ function MessageEmbed({
   message: LinkedMessage;
 }) {
   const { t } = useTranslation();
-  const { locale } = useLocale();
   const channelLabel = useChannelLabel()(channel);
   return (
     <ChannelLink target={target} className={linkCardClassName}>
@@ -51,13 +48,10 @@ function MessageEmbed({
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="truncate font-semibold text-foreground">{message.authorName}</span>
-          <time
-            dateTime={normalizeUtcTimestamp(message.createdAt)}
-            title={fullTimestamp(message.createdAt, locale)}
+          <PostTimestamp
+            createdAt={message.createdAt}
             className="shrink-0 text-xs text-muted-foreground"
-          >
-            {formatEmbedTimestamp(message.createdAt, locale)}
-          </time>
+          />
         </span>
         <span className="truncate text-xs text-muted-foreground">
           {message.parentId ? t("channelLink.thread", { channel: channelLabel }) : channelLabel}

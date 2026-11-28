@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -83,9 +83,12 @@ function expectHitArea(button: HTMLElement) {
   expect(button.className).toContain("[@media(hover:none)]:min-w-11");
 }
 
+let touchEmulated = false;
+
 /** CSS の `(hover: hover)` を無効にしてタッチ端末のメディアクエリを実際に効かせる。 */
 async function emulateTouch() {
   await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  touchEmulated = true;
 }
 
 function tapTouch(element: Element) {
@@ -99,7 +102,9 @@ function expectChipHitArea(button: HTMLElement) {
 }
 
 afterEach(async () => {
+  if (!touchEmulated) return;
   await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  touchEmulated = false;
 });
 
 function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
@@ -132,6 +137,74 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("refreshes historical times after switching zones with identical winter offsets", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-26T12:00:00Z"));
+    try {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "America/Denver" });
+      renderRow(buildItem({ created_at: "2026-07-01T12:00:00Z" }));
+      expect(screen.getByText("07/01 06:00")).toBeInTheDocument();
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "America/Phoenix" });
+      fireEvent.focus(window);
+      expect(screen.getByText("07/01 05:00")).toBeInTheDocument();
+    } finally {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "" });
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes visible timestamps when the zone changes without a focus event", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-10-19T14:30:00Z"));
+    try {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Tokyo" });
+      const { unmount } = renderRow(buildItem({ created_at: "2026-10-19T12:00:00Z" }));
+      expect(screen.getByText("21:00")).toBeInTheDocument();
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "Pacific/Noumea" });
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(screen.getByText("10/19 23:00")).toBeInTheDocument();
+      unmount();
+    } finally {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "" });
+      vi.useRealTimers();
+    }
+  });
+
+  it("moves a grouped timestamp from the gutter to the header at local New Year", async () => {
+    const now = new Date(2026, 11, 31, 23, 59, 59);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(now);
+    try {
+      const { container, unmount } = renderRow({
+        ...buildItem({ created_at: now.toISOString() }),
+        isGroupStart: false,
+        showDateSeparator: true,
+      });
+      const gutterTime = screen.getByText("23:59");
+      expect(container.querySelectorAll("time")).toHaveLength(1);
+      expect(getComputedStyle(gutterTime).opacity).toBe("0");
+      expect(screen.getByRole("separator")).toHaveTextContent("今日");
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(gutterTime).not.toBeInTheDocument();
+      const headerTime = screen.getByText("2026/12/31 23:59");
+      expect(getComputedStyle(headerTime).opacity).toBe("1");
+      expect(screen.getByRole("separator")).toHaveTextContent("昨日");
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows one visible timestamp alongside the badge on a grouped federated message", () => {
+    const { container } = renderRow({
+      ...buildItem({ apub: true, created_at: new Date().toISOString() }),
+      isGroupStart: false,
+    });
+    const timestamps = container.querySelectorAll("time");
+    expect(timestamps).toHaveLength(1);
+    expect(getComputedStyle(timestamps[0]!).opacity).toBe("1");
+  });
+
   it("keeps touch hit areas on the primary message actions", async () => {
     await page.viewport(390, 844);
     renderRow(buildItem(), false, {
