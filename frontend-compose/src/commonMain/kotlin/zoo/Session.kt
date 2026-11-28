@@ -222,6 +222,27 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
     var admins by mutableStateOf<Set<String>>(emptySet())
+    var recentEmojis by mutableStateOf<List<String>>(emptyList())
+        private set
+    private val emojiHistoryLock = Mutex()
+
+    fun updateEmojiHistory(emoji: String? = null) {
+        scope.launch {
+            emojiHistoryLock.withLock {
+                try {
+                    val path = "/api/users/me/recent-emojis"
+                    val values = if (emoji == null) api.request(path)
+                        else api.request(path, "POST", obj("emoji" to emoji)).jsonObject.getValue("data")
+                    recentEmojis = values.jsonArray.map { it.jsonPrimitive.content }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    if (emoji != null) recentEmojis = (listOf(emoji) + recentEmojis).distinct().take(16)
+                }
+            }
+        }
+    }
+
     var searchEngine by mutableStateOf("google")
     private val preferenceState = lazy { SearchPreferencesController(this, scope) }
     val searchPreferences

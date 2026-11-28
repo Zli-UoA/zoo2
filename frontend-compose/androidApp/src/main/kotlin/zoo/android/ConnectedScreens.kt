@@ -891,9 +891,12 @@ internal fun ConnectedScreens(
             confirmButton = { DialogAction(session.t("common.close"), UiIcon.Close, click = phone::clearError) },
         )
     }
-    val recentEmojis = remember(session) { mutableStateListOf<String>() }
     if (pickerOpen) {
+        LaunchedEffect(session) { session.updateEmojiHistory() }
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
+        val recentKitchen by produceState(emptyList<EmojiChoice>(), session.recentEmojis, emojiCatalog) {
+            value = session.recentEmojis.filter { it.startsWith("kitchen:") }.mapNotNull { emojiCatalog.kitchenChoice(it) }
+        }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
             title = if (reaction == null) "絵文字" else "リアクション",
@@ -903,7 +906,8 @@ internal fun ConnectedScreens(
                 workspaceEmojiChoices(session.workspaceEmojis, uncategorizedEmoji) +
                     (if (allowAccountEmoji) accountEmojiChoices(session.accountProfiles, session.t("reactions.accountEmojiCategory")) else emptyList())
             },
-            recent = recentEmojis.toList(),
+            recent = session.recentEmojis,
+            recentKitchen = recentKitchen,
             recentCategory = session.t("reactions.recent"),
             customLoading = session.workspaceEmojiLoading,
             customError = session.workspaceEmojiError,
@@ -916,11 +920,7 @@ internal fun ConnectedScreens(
             },
             dismiss = dismiss,
         ) { choice ->
-            if (choice.image == null && choice.glyph.isNotBlank()) {
-                recentEmojis.remove(choice.value)
-                recentEmojis.add(0, choice.value)
-                if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
-            }
+            session.updateEmojiHistory(choice.value)
             if (reaction != null) {
                 dismiss()
                 state.dispatch(reaction.copy(value = choice.value), screen, channel, rows, dmPeer, null, enableNotifications)
