@@ -285,26 +285,34 @@ class PhoneController(
     private suspend fun maintainDmPresence(channel: String, session: String, epoch: Int) {
         val path = "/api/channels/${channel.encodeURLPathPart()}/call/heartbeat"
         val body = obj("session_id" to session)
-        var failures = 0
-        while (epoch == callEpoch) {
-            delay(if (failures == 0) 10_000 else 1_000)
-            try {
-                // Allow three serialized attempts within the server's 30-second presence lease.
-                withTimeout(5_000) { request(path, "POST", body) }
-                failures = 0
-            } catch (_: TimeoutCancellationException) {
-                failures++
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (failure: Exception) {
-                val status = (failure as? ApiException)?.status
-                if (status != null && status < 500 && status != 408 && status != 429) {
-                    if (epoch == callEpoch) { hangup(); error = true }
-                    return
+        try {
+            while (epoch == callEpoch) {
+                // Leave one second of the server's 30-second lease for request delivery.
+                withTimeout(29_000) {
+                    delay(10_000)
+                    for (attempt in 1..3) {
+                        try {
+                            withTimeout(if (attempt == 1) 15_000 else 5_000) { request(path, "POST", body) }
+                            break
+                        } catch (timeout: TimeoutCancellationException) {
+                            if (attempt == 3) throw timeout
+                        } catch (cancel: CancellationException) {
+                            throw cancel
+                        } catch (failure: Exception) {
+                            val status = (failure as? ApiException)?.status
+                            val permanent = status != null && status < 500 && status != 408 && status != 429
+                            if (permanent || attempt == 3) throw failure
+                        }
+                        delay(1_000)
+                    }
                 }
-                failures++
             }
-            if (failures == 3 && epoch == callEpoch) { hangup(); error = true }
+        } catch (_: TimeoutCancellationException) {
+            if (epoch == callEpoch) { hangup(); error = true }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            if (epoch == callEpoch) { hangup(); error = true }
         }
     }
     private fun signal(channel: String, session: String, epoch: Int, payload: Row) {

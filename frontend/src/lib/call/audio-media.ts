@@ -5,7 +5,7 @@ import {
   answerAudioOffer,
   applyAudioAnswer,
 } from "./rtc-audio";
-const AUDIO_BITRATES = [2 ** 15, 2 ** 16, 2 ** 17] as const;
+const REDUCED_AUDIO_BITRATE = 2 ** 14;
 const QUALITY_SAMPLE_INTERVAL_MS = 3_000;
 
 /** Audio-only WebRTC mesh using zoo2's existing channel-call signaling protocol. */
@@ -53,8 +53,8 @@ export class AudioCallMedia {
     return this.queue;
   }
   private adaptAudioBitrate(peer: Peer, sender: RTCRtpSender) {
-    let tier = 1;
-    let appliedTier: number | undefined;
+    let reduced = false;
+    let appliedReduction = false;
     let goodSamples = 0;
     let lastReport: number | undefined;
 
@@ -69,11 +69,11 @@ export class AudioCallMedia {
             const loss = report.fractionLost;
             const rtt = report.roundTripTime;
             if (loss >= 0.05 || rtt >= 0.45) {
-              tier = 0;
+              reduced = true;
               goodSamples = 0;
-            } else if (loss <= 0.02 && rtt < 0.25) {
+            } else if (reduced && loss <= 0.02 && rtt < 0.25) {
               if (++goodSamples === 3) {
-                tier = Math.min(tier + 1, AUDIO_BITRATES.length - 1);
+                reduced = false;
                 goodSamples = 0;
               }
             } else {
@@ -84,14 +84,15 @@ export class AudioCallMedia {
           // Some WebViews do not expose remote receiver statistics.
         }
         try {
-          if (peer.pc.connectionState === "connected" && tier !== appliedTier) {
+          if (peer.pc.connectionState === "connected" && reduced !== appliedReduction) {
             const parameters = sender.getParameters();
             if (parameters.encodings.length) {
               for (const encoding of parameters.encodings) {
-                encoding.maxBitrate = AUDIO_BITRATES[tier];
+                if (reduced) encoding.maxBitrate = REDUCED_AUDIO_BITRATE;
+                else delete encoding.maxBitrate;
               }
               await sender.setParameters(parameters);
-              appliedTier = tier;
+              appliedReduction = reduced;
             }
           }
         } catch {

@@ -31,6 +31,8 @@ Webは発信・応答時のマイク・スピーカー設定と既存の効果�
 
 DMと電話で音声取得・RTCPeerConnection・SDP/ICE処理・SSE受信を共有する。AndroidはComposeがHTTP/SSEを所有し、WebViewはAPK同梱のWebRTC音声処理だけを実行する。SIP.js、SIP接続先、SIPパスワード、API認証トークンをWebViewへ渡さない。DM・電話ともAndroid Telecomへ統合する。[Android版](android.md#sipdm通話とandroid-telecom) を参照。
 
+Web・Android の SIP 通話は DM メッシュ通話と同じ送信ビットレート制御を使います。WebRTC の既定値で開始し、回線品質が悪化した場合だけ送信を 16,384 bps に抑え、回復後に既定値へ戻します。判定条件は [通話](calls.md#android-の音声ビットレート) を参照してください。
+
 ## 保存・認可・内部API
 
 回線情報は `sip_lines`・`sip_line_members`・`sip_phones` に保存し、ElectricのShape・永続クライアントキャッシュには載せない。パスワードは回線IDをAADとするAES-256-GCMで暗号化する。鍵は全レプリカとDB復元時に維持し、再暗号化せず変更しない。一覧・更新で既存パスワードを返さず、空欄更新では保持する。応答は `private, no-store`。

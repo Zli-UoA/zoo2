@@ -149,7 +149,7 @@ it("does not end a group call while another member is still negotiating", async 
   }
 });
 
-it("lowers the audio bitrate on loss and raises it after sustained recovery", async () => {
+it("reduces audio bitrate on loss and restores WebRTC defaults after sustained recovery", async () => {
   const context = new AudioContext();
   const stream = context.createMediaStreamDestination().stream;
   const pc = new RTCPeerConnection();
@@ -178,19 +178,20 @@ it("lowers the audio bitrate on loss and raises it after sustained recovery", as
     vi.spyOn(pc, "connectionState", "get").mockReturnValue("connected");
     pc.dispatchEvent(new Event("connectionstatechange"));
     await vi.advanceTimersByTimeAsync(0);
-    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 16);
+    expect(setParameters).not.toHaveBeenCalled();
 
     fractionLost = 0.1;
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 15);
+    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 14);
 
     fractionLost = 0;
     await vi.advanceTimersByTimeAsync(6_000);
-    expect(setParameters).toHaveBeenCalledTimes(2);
+    expect(setParameters).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 16);
+    expect(setParameters).toHaveBeenCalledTimes(2);
+    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBeUndefined();
     await vi.advanceTimersByTimeAsync(9_000);
-    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 17);
+    expect(setParameters).toHaveBeenCalledTimes(2);
 
     driver.close();
     const samples = timestamp;

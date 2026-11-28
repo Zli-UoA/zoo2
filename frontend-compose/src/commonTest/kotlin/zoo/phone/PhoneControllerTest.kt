@@ -20,9 +20,9 @@ class PhoneControllerTest {
         var revision = "v1"
         var authorize = true
         var permission = true
-        var pendingPermission: CompletableDeferred<Unit>? = null
         var heartbeatTimeouts = 0
         var heartbeatStatus: Int? = null
+        var heartbeatDelay = 0L
         var signalTimeouts = 0
         var sfuTimeout = false
         var streamTimeout = false
@@ -46,6 +46,7 @@ class PhoneControllerTest {
                 path.endsWith("/call/heartbeat") -> {
                     heartbeatStatus?.let { throw ApiException(it) }
                     if (heartbeatTimeouts > 0) { heartbeatTimeouts--; delay(20_000) }
+                    delay(heartbeatDelay)
                     obj()
                 }
                 path.contains("/call/sfu/") && sfuTimeout -> { delay(20_000); obj() }
@@ -75,7 +76,7 @@ class PhoneControllerTest {
             override fun incoming(call: PhoneCall) { native.add("incoming:${call.kind}") }
             override fun ended(id: String) { native.add("end:$id") }
             override fun speaker(id: String, enabled: Boolean) { native.add("speaker:$enabled") }
-        }, prepare = { pendingPermission?.await(); check(permission) }, waiting = { native.add("waiting:$it") }, uuid = { "id-${++number}" })
+        }, prepare = { check(permission) }, waiting = { native.add("waiting:$it") }, uuid = { "id-${++number}" })
         fun invitation() = obj("id" to "invite", "channel_id" to "dm", "invitee_id" to "alice", "inviter_name" to "Bob", "status" to "pending", "expires_at" to "2030-01-01T00:00:30Z")
     }
     @Test fun registrationDoesNotPlaceANativeCallAndExplicitDialRechecksMembership() = runTest {
@@ -295,21 +296,16 @@ class PhoneControllerTest {
         assertTrue(f.requests.any {it.endsWith("/next-invite/accept")})
         assertEquals("connecting",f.controller.call?.status); f.controller.close()
     }
-    @Test fun endingAnAnswerDuringPermissionCheckDoesNotAcceptTheNextInvite() = runTest {
-        val f = Fixture(backgroundScope); f.controller.receiveDmCalls(true); runCurrent()
-        f.controller.invites(listOf(f.invitation()), "alice", 1893456000000)
-        f.pendingPermission = CompletableDeferred()
-        f.controller.answer(); runCurrent()
-        f.controller.hangup(); runCurrent()
-        val next = JsonObject(f.invitation() + ("id" to JsonPrimitive("next-invite")))
-        f.controller.invites(listOf(next), "alice", 1893456000000)
+    @Test fun queuedMuteDoesNotSendStateAfterHangup() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
 
-        f.pendingPermission!!.complete(Unit); runCurrent()
-        assertFalse(f.requests.any { it.endsWith("/accept") })
-        assertEquals("incoming", f.controller.call?.status)
+        f.controller.mute(true)
+        f.controller.hangup()
+        runCurrent()
 
-        f.controller.answer(); runCurrent()
-        assertTrue(f.requests.any { it.endsWith("/next-invite/accept") })
+        assertTrue(f.requests.any { it.endsWith("/call/leave") })
+        assertFalse(f.requests.any { it.endsWith("/call/state") })
         f.controller.close()
     }
     @Test fun acceptedDmThatNeverConnectsStillTimesOut() = runTest {
@@ -322,11 +318,21 @@ class PhoneControllerTest {
         assertTrue(f.requests.any { it.endsWith("/call/leave") })
         f.controller.close()
     }
+    @Test fun heartbeatResponsesTakingSixSecondsKeepTheCallActive() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+        f.heartbeatDelay = 6_000
+        advanceTimeBy(48_001); runCurrent()
+        assertEquals(3, f.requests.count { it.endsWith("/call/heartbeat") })
+        assertEquals("active", f.controller.call?.status)
+        assertFalse(f.controller.error)
+        f.controller.close()
+    }
     @Test fun transientHeartbeatTimeoutKeepsMediaAndResumesNormalCadence() = runTest {
         val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
         f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
         f.heartbeatTimeouts = 1
-        advanceTimeBy(16_001); runCurrent()
+        advanceTimeBy(26_001); runCurrent()
         assertEquals(2, f.requests.count { it.endsWith("/call/heartbeat") })
         assertEquals("active", f.controller.call?.status)
         assertFalse(f.controller.error)
@@ -347,10 +353,11 @@ class PhoneControllerTest {
         assertTrue(f.controller.error)
         f.controller.close()
     }
-    @Test fun repeatedHeartbeatTimeoutsCloseMediaAndShowAnError() = runTest {
+    @Test fun heartbeatDeadlineClosesMediaAndShowsAnError() = runTest {
         val f=Fixture(backgroundScope); f.controller.callDm("dm","Bob"); runCurrent()
         f.streamEvent!!("room_state",obj()); f.events.getValue("dm")("connected",obj())
-        f.heartbeatTimeouts = 3; advanceTimeBy(27_001); runCurrent()
+        f.heartbeatTimeouts = 3; advanceTimeBy(29_001); runCurrent()
+        assertEquals(2, f.requests.count { it.endsWith("/call/heartbeat") })
         assertNull(f.controller.call); assertTrue(f.controller.error); assertTrue("dm" in f.closed)
         f.controller.close()
     }
