@@ -204,12 +204,17 @@ internal fun ConnectedScreens(
     val messages = messageEntries.map { state.withLinkCard(it, previewService) }
     val rowsById = remember(rows) { rows.associateBy { it.text("id") } }
     val recipientNotices by (encryption?.recipients ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap()) }).collectAsState()
-    val recipientLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
+    val encryptionLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
         { id -> usersById[id]?.let(::author)?.ifBlank { null } ?: id }) { key, args -> session.t(key, *args) }
     val currentThread = session.thread
     var threadLoadFailed by remember(channelId, currentThread) { mutableStateOf(false) }
     var threadRetry by remember(channelId, currentThread) { mutableIntStateOf(0) }
     val threadDetail = state.threadDetails.takeIf { it.text("id") == currentThread } ?: obj()
+    val recipientLines = encryptionLines + listOfNotNull(when {
+        channel?.present("archive_at") == true -> "アーカイブ済み。履歴を閲覧できます。"
+        currentThread != null && threadDetail.present("thread_archive_at") -> "このスレッドはアーカイブ済みです。"
+        else -> null
+    })
     val conversationEntries = rows.filter { it.text("parent_id").isEmpty() }.map { it.text("id") }.toSet()
     val currentReadPosition = session.channelReadPositions[channelId]
     var visitReadPosition by remember(session, channelId) { mutableStateOf<ChannelReadPosition?>(null) }
@@ -912,6 +917,16 @@ internal fun ConnectedScreens(
             text = { Text(user.title) },
             confirmButton = { DialogAction("削除", UiIcon.Delete) { channel?.let { state.removeMember(it, user.id) } } },
             dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.memberToRemove = null } },
+        )
+    }
+    state.leaveTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { state.leaveTarget = null },
+            title = { Text(if (target.second == null) "チャンネルから退出" else "スレッドから退出") },
+            text = { Text(if (target.second == null) "「${channel?.text("channel_name").orEmpty()}」が参加中の一覧から外れます。"
+                else "このスレッドの通知を終了します。チャンネルには引き続き参加します。") },
+            confirmButton = { DialogAction("退出", UiIcon.Back) { state.leave(channelId, currentThread) } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.leaveTarget = null } },
         )
     }
     val archive = state.overlay?.takeIf { it == "archive" || it == "unarchive" }

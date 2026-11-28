@@ -241,6 +241,7 @@ internal class ConnectedScreenState(
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
     val bubble = BubbleController(app)
+    var leaveTarget by mutableStateOf<Pair<String, String?>?>(null)
     var photosOpen by mutableStateOf(false)
     var recent by mutableStateOf<List<RecentPhoto>>(emptyList())
     var postDetail by mutableStateOf<List<Row>>(emptyList())
@@ -1215,7 +1216,9 @@ internal class ConnectedScreenState(
                     query = ""
                     overlay = action.id
                 }
-                action.id in setOf("thread-join", "thread-leave", "thread-unarchive") ->
+                action.id == "leave" && channel != null -> leaveTarget = channelId to null
+                action.id == "thread-leave" && channel != null && app.thread != null -> leaveTarget = channelId to app.thread
+                action.id in setOf("thread-join", "thread-unarchive") ->
                     app.thread?.let { id -> request { loadThread(id, action.id.removePrefix("thread-")) } }
                 action.id in setOf("pin", "unpin") && channel != null -> request {
                     if (action.id == "pin") app.api.request("/api/channel-pins", "POST", obj("channel_id" to channelId))
@@ -1262,7 +1265,7 @@ internal class ConnectedScreenState(
                     channelEncrypted = app.isEncryptedChannel(channelId)
                     overlay = "rename"
                 }
-                action.id in setOf("join", "leave") && channel != null -> request {
+                action.id == "join" && channel != null -> request {
                     app.api.request("/api/channels/${channelId.encodeURLParameter()}/${action.id}", "POST")
                     overlay = null
                 }
@@ -1315,6 +1318,22 @@ internal class ConnectedScreenState(
                 phone.callDm(channelId, callPeerName.orEmpty().ifBlank { channel.text("channel_name") }, callPeerId)
             }
             AndroidUiAction.SignIn, AndroidUiAction.Back -> Unit
+        }
+    }
+
+    fun leave(currentChannel: String?, currentThread: String?) {
+        val target = leaveTarget ?: return
+        leaveTarget = null
+        if (target.first != currentChannel || target.second != null && target.second != currentThread) return
+        request {
+            val thread = target.second
+            if (thread == null) {
+                app.api.request("/api/channels/${target.first.encodeURLParameter()}/leave", "POST")
+                overlay = null
+                platform.navigate("/")
+            } else {
+                loadThread(thread, "leave")
+            }
         }
     }
 
