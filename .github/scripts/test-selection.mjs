@@ -96,7 +96,7 @@ function selectPullRequest(changes, full) {
     if (path.startsWith('backend/') || /^(infra\/db\/|crates\/zoo-components\/|docs\/slack-event-coverage\.json$)/.test(path) ||
         path === 'frontend/src/lib/emoji/emoji-kitchen.json') {
       backend.check = true;
-      if (!path.startsWith('backend/tests/') && !path.startsWith('docs/')) backend.deploy = true;
+      if (!path.startsWith('backend/tests/')) backend.deploy = true;
       const test = /^backend\/tests\/([a-zA-Z0-9_]+_test)\.rs$/.exec(path);
       if (edit && test) targets.add(test[1]);
       else if (edit && Object.hasOwn(routeTestTargets, path)) {
@@ -119,7 +119,7 @@ function selectPullRequest(changes, full) {
       if (path === 'infra/frontend-nginx.conf') selected.push('offline');
       enable(path, ...selected);
     } else if (isFrontendLocale(path) && edit) {
-      enable(path, 'unit', 'browser', 'vrt', 'storybook', 'i18n');
+      enable(path, 'unit', 'browser', 'vrt', 'storybook', 'i18n', 'layout');
     } else if (Object.hasOwn(specs, path)) {
       if (/\.tsx?$/.test(path)) frontendBuild.check = true;
       enable(path, specs[path]);
@@ -194,9 +194,8 @@ export function selectWorkflowPlan(eventName, workflow, changes, base) {
   if (eventName === 'pull_request' && relevant?.length &&
       ['ci-frontend-auth-e2e', 'ci-frontend-e2ee-e2e'].includes(workflow)) {
     const suite = workflow === 'ci-frontend-auth-e2e' ? 'auth' : 'e2ee';
-    // Workflow paths express the E2E app and infrastructure inputs. Locale
-    // copy has a dedicated i18n check in CI Frontend.
-    if (relevant.some(({ path }) => !isFrontendLocale(path) && path !== 'frontend/README.md')) {
+    // Dedicated E2E tests also use translated accessible names.
+    if (relevant.some(change => !isLightweightChange(change))) {
       selection.frontend[suite] = true;
     }
   }

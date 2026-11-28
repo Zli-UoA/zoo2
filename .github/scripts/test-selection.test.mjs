@@ -342,8 +342,12 @@ test('existing copy edits keep all Web text-sensitive checks before merge', () =
   const before = '{"a11y":{"label":"本文へスキップ"}}';
   const edit = after => classifyTranslationChanges(base, changes, { git: () => before, read: () => after });
   const plan = selectSuites('pull_request', edit('{"a11y":{"label":"本文に移動"}}'));
-  for (const suite of ['unit', 'browser', 'vrt', 'storybook', 'i18n']) assert.equal(plan.frontend[suite], true);
+  for (const suite of ['unit', 'browser', 'vrt', 'storybook', 'i18n', 'layout']) assert.equal(plan.frontend[suite], true);
   assert.equal(plan.frontend.container, false);
   const addition = selectSuites('pull_request', edit('{"a11y":{"label":"本文へスキップ","new":"戻る"}}'));
   assert.ok(Object.values(addition.frontend).every(value => !value));
+});
+
+test('Slack event documentation embedded in the backend selects deploy validation', () => {
+  assert.equal(selectSuites('pull_request', [change('docs/slack-event-coverage.json')]).backend.deploy, true);
 });

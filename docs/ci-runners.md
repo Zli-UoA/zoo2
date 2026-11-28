@@ -97,7 +97,7 @@ CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR
 
 回帰テストを実行する場合は、その成功後に選別結果が後続ジョブで使われます。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
 
-PR で既存の翻訳 JSON を編集するときは、選別ジョブで JSON の構造と補間変数を検査します。既存文言を書き換えた場合は、文言を参照する単体・ブラウザー・VRT・Storybook と Playwright i18n を実行します。追加だけで既存文言が変わらない場合は軽量検査で確認します。キーの削除、補間変数の変更、翻訳ファイルの追加・削除では Web アプリ検証を実行します。共有辞書は Android CI の対象でもあります。Web の README だけの変更ではアプリテストと PR 用イメージの生成を省きます。
+PR で既存の翻訳 JSON を編集するときは、選別ジョブで JSON の構造と補間変数を検査します。既存文言を書き換えた場合は、文言を参照する単体・ブラウザー・VRT・Storybook と Playwright の i18n・レイアウト・認証・E2EE を実行します。追加だけで既存文言が変わらない場合は軽量検査で確認します。キーの削除、補間変数の変更、翻訳ファイルの追加・削除では Web アプリ検証を実行します。共有辞書は Android CI の対象でもあります。Web の README だけの変更ではアプリテストと PR 用イメージの生成を省きます。
 
 PR では変更ファイルごとに検証を選び、選んだスイートと Rust の結合テストターゲットの和集合を実行します。同じ PR に Web 実装・Playwright の spec・proxy 設定が含まれても、Vitest は Web の入力だけから関連ファイルを選びます。Storybook 設定を変更した場合は Storybook・VRT・静的カタログを選び、Service Worker の変更では PWA・オフライン CSP・コンテナを選びます。共有の DB スキーマや Rust の未分類の実装変更はバックエンドの広い検証を選び、結合テストの全件実行は該当する PR とマージキューで行います。分類できない共有入力や差分が取得できない場合は従来の広い検証に戻ります。
 

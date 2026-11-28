@@ -205,3 +205,10 @@ test('PR runs the shared Rust and cross-stack regression checks without a merge 
   assert.ok(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [changed('frontend/src/lib/e2ee/setupController.ts')]).frontend.e2ee);
   assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [changed('frontend/src/lib/i18n/locales/ja.json')]).frontend.auth, false);
 });
+
+test('visible translation changes reach dedicated E2E jobs before merge', () => {
+  const change = { status: 'M', path: 'frontend/src/lib/i18n/locales/ja.json', translationText: true };
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [change]).frontend.auth, true);
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [change]).frontend.e2ee, true);
+  assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [{ ...change, translationText: false }]).frontend.e2ee, false);
+});

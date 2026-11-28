@@ -9,6 +9,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "frontend/src/lib/i18n/locales/**"
       - "frontend/src/lib/e2ee/**"
       - "frontend/src/components/e2ee/**"
       - "frontend/src/hooks/useMessageDecryptions.ts"
@@ -62,6 +63,7 @@ on:
       - ".github/workflows/select-runner.yaml"
   pull_request:
     paths:
+      - "frontend/src/lib/i18n/locales/**"
       - "frontend/src/lib/e2ee/**"
       - "frontend/src/components/e2ee/**"
       - "frontend/src/hooks/useMessageDecryptions.ts"
