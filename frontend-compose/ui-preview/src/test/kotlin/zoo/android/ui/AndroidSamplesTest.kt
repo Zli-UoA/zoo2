@@ -1267,6 +1267,40 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun shareSearchStaysAvailableAtTheEndOfALargeList() {
+        val sections = listOf(
+            ChannelSection("参加中", (1..120).map { ChannelItem("c$it", listOf("お知らせ", "会場設営", "受付", "広報", "作品搬入").getOrNull(it - 1) ?: "展示チーム $it") }),
+            ChannelSection("ダイレクトメッセージ", (1..80).map {
+                if (it == 8 || it == 80) ChannelItem("dm$it", "はる", direct = true, handle = "@haru$it")
+                else ChannelItem("dm$it", "メンバー $it", direct = true, handle = "@member$it")
+            }),
+        )
+        var selected: String? = null
+        ui.setContent {
+            ShareDestinationSheet("週末の展示会場はこちらです。", 0, sections, AndroidColors(false), false, null, {},
+                select = { selected = it })
+        }
+        capture("share-many-destinations", bottomDialog = true)
+        ui.onNodeWithTag("share-targets").performScrollToKey("channel-dm80")
+        ui.onNodeWithText("@haru80").assertIsDisplayed()
+        val search = ui.onNodeWithTag("share-search").assertIsDisplayed()
+        capture("share-list-end", bottomDialog = true)
+        ui.onNodeWithText("DM").performClick()
+        ui.onNodeWithText("@member1").assertIsDisplayed()
+        ui.onNodeWithText("ホーム").assertDoesNotExist()
+        search.performTextInput("@HARU8")
+        ui.onNodeWithText("@haru8").assertIsDisplayed()
+        capture("share-destination-results", bottomDialog = true)
+        ui.onNodeWithText("@haru80").performClick()
+        ui.runOnIdle { assertEquals("dm80", selected) }
+        search.performTextReplacement("見つからない宛先")
+        ui.onNodeWithText("共有先が見つかりません").assertIsDisplayed()
+        ui.onNodeWithContentDescription("検索をクリア").performClick()
+        ui.onNodeWithText("すべて").performClick()
+        ui.onNodeWithText("ホーム").assertIsDisplayed()
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "ja-rJP-w320dp-h640dp-xhdpi")
     fun narrowScreenWithEnlargedTypeOffersRecovery() {
         var retries = 0
