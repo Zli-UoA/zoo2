@@ -124,7 +124,9 @@ internal class AndroidReauth(
 
     private suspend fun discover(): JsonObject {
         val issuer = connection.issuer
-        require(Url(issuer).protocol == URLProtocol.HTTPS) { "認証先は HTTPS を指定してください" }
+        if (Url(issuer).protocol != URLProtocol.HTTPS) {
+            throw LoginSettingsInvalid("認証先は HTTPS を指定してください") { it.t("android.login.issuerHttps") }
+        }
         val discovery = readDiscovery(issuer)
         if (discovery.text("issuer")?.trimEnd('/') != issuer.trimEnd('/')) {
             throw ReauthException(ReauthException.Reason.DENIED, "issuer が一致しません")
@@ -185,7 +187,7 @@ internal suspend fun readOidcDiscovery(
         throw ReauthException(ReauthException.Reason.DENIED,
             "認証先の設定を取得できません (HTTP ${response.status.value})")
     }
-    response.loginJson("認証先の設定取得")
+    response.loginJson(LoginStep.Discovery)
 }
 
 internal fun authTabCallback(code: Int, uri: String?, request: ReauthRequest): ReauthCallback =
@@ -196,6 +198,30 @@ internal fun authTabCallback(code: Int, uri: String?, request: ReauthRequest): R
             throw ReauthException(ReauthException.Reason.CALLBACK_VERIFICATION_FAILED, "認証の戻り先をブラウザーで検証できませんでした")
         else -> throw ReauthException(ReauthException.Reason.CANCELLED, "認証が取り消されました")
     }
+
+private val reauthHttpStatus = Regex("""\(HTTP ([1-5][0-9]{2})\)""")
+
+/**
+ * [ReauthException] の文言（日本語、診断ログの HTTP 状態の取り出しにも使う）を表示言語にする。
+ * ReauthException は共通コードの型なので、この画面で投げる文言ごとに対応させる。知らない文言はそのまま出す。
+ */
+internal fun reauthMessage(failure: ReauthException, text: LoginText): String {
+    val message = failure.message.orEmpty()
+    val status = reauthHttpStatus.find(message)?.groupValues?.get(1).orEmpty()
+    return when {
+        message == "この IdP は認可コードフローに対応していません" -> text.t("android.login.reauth.noAuthorizationEndpoint")
+        message == "ブラウザーを開けません" -> text.t("android.login.reauth.browserUnavailable")
+        message == "認証が時間内に終わりませんでした" -> text.t("android.login.reauth.timeout")
+        message == "認証が取り消されました" -> text.t("android.login.reauth.cancelled")
+        message == "issuer が一致しません" -> text.t("android.login.issuerMismatch")
+        message == "トークンエンドポイントがありません" -> text.t("android.login.reauth.noTokenEndpoint")
+        message == "認証の戻り先を確認できませんでした" -> text.t("android.login.reauth.invalidCallback")
+        message == "認証の戻り先をブラウザーで検証できませんでした" -> text.t("android.login.reauth.callbackVerificationFailed")
+        message.startsWith("ID トークンを受け取れませんでした") -> text.t("android.login.reauth.noIdToken", "status" to status)
+        message.startsWith("認証先の設定を取得できません") -> text.t("android.login.discoveryFailed", "status" to status)
+        else -> message
+    }
+}
 
 private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 

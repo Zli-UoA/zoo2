@@ -41,7 +41,7 @@ class IosParityLayoutSamplesTest {
             ChannelItem("dev", "開発", threads = listOf(ChannelThreadItem("t1", "リリース手順の見直し", 12))),
             ChannelItem("random", "雑談", unread = true),
         )),
-        ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "みずき", isUserName = true))),
+        ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "みずき", isUserName = true)), dm = true),
     ), selected = "dev")
 
     /** 文字と罫線を描いた、PDF のページの代わり。 */

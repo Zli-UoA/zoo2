@@ -44,6 +44,8 @@ internal fun SignInRoute(
     var editing by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var signInError by rememberSaveable { mutableStateOf("") }
+    // Wi-Fi のログイン（キャプティブポータル）が要る、と出しているとき（「それでも試す」を出す）。
+    var signInPortal by rememberSaveable { mutableStateOf(false) }
     var signInDiagnostics by rememberSaveable { mutableStateOf("") }
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
     val diagnostics = signInDiagnostics.ifBlank { restoreDiagnostics }
@@ -53,15 +55,16 @@ internal fun SignInRoute(
     BackHandler(editing && !busy && !restoring) { editing = false }
     val submit = {
         if (!busy) {
-            val allowPortalAttempt = signInError == wifiSignInMessage
+            val allowPortalAttempt = signInPortal
             busy = true
             loginJob = scope.launch {
                 signInError = ""
+                signInPortal = false
                 signInDiagnostics = ""
                 val stages = mutableListOf(LoginStage.Network)
                 try {
                     if (wifiNeedsSignIn(context) && !allowPortalAttempt) {
-                        throw LoginFailure(wifiSignInMessage)
+                        throw LoginFailure(wifiSignInMessage) { it.t("android.login.wifiSignIn") }
                     }
                     stages.add(LoginStage.Configuration)
                     val connection = LoginConnection(server.trim().trimEnd('/'), issuer.trim(), client.trim(), resource.trim())
@@ -73,10 +76,16 @@ internal fun SignInRoute(
                     throw failure
                 } catch (failure: Exception) {
                     signInDiagnostics = loginDiagnosticLog(stages, failure)
-                    signInError = when (failure) {
-                        is zoo.crypto.ReauthException, is LoginFailure, is IllegalArgumentException -> failure.message.orEmpty()
-                        else -> loginNetworkMessage(failure, wifiNeedsSignIn(context))
-                            ?: "ログインできません。接続先とネットワークを確認してください。"
+                    val text = context.loginText()
+                    val shown = loginErrorText(failure, text)
+                    if (shown != null) {
+                        signInError = shown
+                        signInPortal = failure is LoginFailure && failure.message == wifiSignInMessage
+                    } else {
+                        val captivePortal = wifiNeedsSignIn(context)
+                        signInError = loginNetworkText(failure, captivePortal, text)
+                            ?: text.t("android.login.failedGeneric")
+                        signInPortal = captivePortal
                     }
                 } finally {
                     busy = false
@@ -87,43 +96,47 @@ internal fun SignInRoute(
     }
     AndroidShell(null, dark, {}, allowRail = false) { colors ->
         if (editing && !restoring && !busy) {
-            PageHeader("接続先の設定", colors, onBack = { editing = false })
+            PageHeader(androidLabel("android.signIn.connectionSettings", "接続先の設定"), colors, onBack = { editing = false })
             Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text("Zoo サーバー URL") }, singleLine = true)
+                OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text(androidLabel("android.signIn.serverUrl", "Zoo サーバー URL")) }, singleLine = true)
                 OutlinedTextField(issuer, { issuer = it }, Modifier.fillMaxWidth(), label = { Text("OIDC issuer") }, singleLine = true)
-                OutlinedTextField(client, { client = it }, Modifier.fillMaxWidth(), label = { Text("Android 用 public client ID") }, singleLine = true)
+                OutlinedTextField(client, { client = it }, Modifier.fillMaxWidth(), label = { Text(androidLabel("android.signIn.clientId", "Android 用 public client ID")) }, singleLine = true)
                 OutlinedTextField(resource, { resource = it }, Modifier.fillMaxWidth(), label = { Text("Resource / audience") }, singleLine = true)
                 (signInError.ifBlank { error }).takeIf(String::isNotEmpty)?.let { Text(it, color = colors.foreground) }
-                if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
+                if (diagnostics.isNotBlank()) TextAction(androidLabel("android.signIn.viewDiagnostics", "診断ログを見る"), colors, icon = UiIcon.Document,
                     style = TextActionStyle.Plain) { showDiagnostics = true }
-                TextAction(if (signInError == wifiSignInMessage) "それでも試す" else "ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
+                TextAction(if (signInPortal) androidLabel("android.signIn.tryAnyway", "それでも試す") else androidLabel("auth.login", "ログイン"), colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
             }
         } else {
             val pending = restoring || busy
-            val description = if (pending) "" else signInError.ifBlank { error }.ifBlank {
-                "ブラウザーで認証を完了すると、Zooに戻ります。"
-            }
+            val browserHint = androidLabel("android.signIn.browserHint", "ブラウザーで認証を完了すると、Zooに戻ります。")
+            val description = if (pending) "" else signInError.ifBlank { error }.ifBlank { browserHint }
             BrandPage("Zoo", description, colors, loading = pending) {
                 if (restoring) {
-                    TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
+                    TextAction(androidLabel("android.signIn.openLogin", "ログイン画面を開く"), colors, icon = UiIcon.SignIn, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
                         cancelRestore?.invoke()
                     }
                 } else if (busy) {
-                    TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Plain) { loginJob?.cancel() }
+                    TextAction(androidLabel("common.cancel", "キャンセル"), colors, icon = UiIcon.Close, style = TextActionStyle.Plain) { loginJob?.cancel() }
                 } else {
-                    if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
+                    if (diagnostics.isNotBlank()) TextAction(androidLabel("android.signIn.viewDiagnostics", "診断ログを見る"), colors, icon = UiIcon.Document,
                         style = TextActionStyle.Plain) { showDiagnostics = true }
-                    retry?.let { TextAction("自動ログインを再試行", colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain) {
+                    retry?.let { TextAction(androidLabel("android.signIn.retryAutoLogin", "自動ログインを再試行"), colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain) {
                         signInError = ""
+                        signInPortal = false
                         signInDiagnostics = ""
                         showDiagnostics = false
                         it()
                     } }
                     if (client.isNotBlank()) {
-                        TextAction("接続先の設定", colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }
+                        TextAction(androidLabel("android.signIn.connectionSettings", "接続先の設定"), colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }
                     }
-                    TextAction(if (client.isBlank()) "接続先を設定" else if (signInError == wifiSignInMessage) "それでも試す" else "ログイン", colors,
+                    TextAction(
+                        if (client.isBlank()) androidLabel("android.signIn.setUpConnection", "接続先を設定")
+                        else if (signInPortal) androidLabel("android.signIn.tryAnyway", "それでも試す")
+                        else androidLabel("auth.login", "ログイン"),
+                        colors,
                         icon = if (client.isBlank()) UiIcon.Settings else UiIcon.SignIn) {
                         if (client.isBlank()) editing = true else submit()
                     }
@@ -134,23 +147,23 @@ internal fun SignInRoute(
         if (showDiagnostics && diagnostics.isNotBlank()) {
             AlertDialog(
                 onDismissRequest = { showDiagnostics = false },
-                title = { Text("ログインの診断ログ") },
+                title = { Text(androidLabel("android.signIn.diagnosticsTitle", "ログインの診断ログ")) },
                 text = {
                     SelectionContainer {
                         Text(diagnostics, Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()))
                     }
                 },
                 confirmButton = {
-                    DialogAction("コピー", UiIcon.Copy) {
+                    DialogAction(androidLabel("e2ee.copy", "コピー"), UiIcon.Copy) {
                         scope.launch {
                             clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Zoo", diagnostics)))
                             if (android.os.Build.VERSION.SDK_INT < 33) {
-                                Toast.makeText(context, "診断ログをコピーしました", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.appText("android.signIn.diagnosticsCopied"), Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
                 },
-                dismissButton = { DialogAction("閉じる", UiIcon.Close) { showDiagnostics = false } },
+                dismissButton = { DialogAction(androidLabel("common.close", "閉じる"), UiIcon.Close) { showDiagnostics = false } },
             )
         }
     }

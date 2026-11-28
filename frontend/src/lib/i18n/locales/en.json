@@ -73,7 +73,8 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "Creating…",
     "create": "Create channel",
-    "nsfw": "NSFW channel"
+    "nsfw": "NSFW channel",
+    "selectPrompt": "Select a channel"
   },
   "sync": {
     "title": "Sync status",
@@ -212,7 +213,8 @@
       "server": "The server encountered an error. Wait a moment and try again.",
       "network": "Could not connect to the server. Check your connection and try again.",
       "unexpected": "The action failed. Try again."
-    }
+    },
+    "ok": "OK"
   },
   "welcome": {
     "title": "Welcome to Zoo",
@@ -2039,5 +2041,240 @@
     "unreadTooOld": "Some older unread messages are still outside the loaded range. Load more before marking as read.",
     "loadMore": "Load more",
     "unreadChanged": "New unread messages arrived while reading. Keep this conversation unread and continue."
+  },
+  "android": {
+    "thread": {
+      "reopen": "Reopen",
+      "settingsTitle": "Thread settings",
+      "participantsTitle": "Thread participants"
+    },
+    "channel": {
+      "unarchive": "Unarchive",
+      "editNameDescription": "Edit name and description",
+      "notifyAllPosts": "All posts",
+      "notifyMentionsOnly": "Only notify for mentions",
+      "openSettings": "Open channel settings",
+      "create": "Create"
+    },
+    "settings": {
+      "profile": "Profile",
+      "editNameIcon": "Edit name and icon",
+      "viewPublicPage": "View public page",
+      "receiveDmCalls": "Receive DM calls",
+      "themeSystem": "Use device setting",
+      "openOsNotifications": "Open Android notification settings"
+    },
+    "bubble": {
+      "self": "You",
+      "description": "What you type appears in real time"
+    },
+    "dm": {
+      "createTitle": "New direct message",
+      "start": "Start"
+    },
+    "entry": {
+      "deleteConfirmTitle": "Delete?"
+    },
+    "members": {
+      "removeTitle": "Remove from channel"
+    },
+    "post": {
+      "title": "Post",
+      "new": "New post",
+      "placeholder": "What are you up to?",
+      "selectPhotos": "Choose photos",
+      "photo": "Photo",
+      "federate": "Deliver via ActivityPub",
+      "repost": "Repost",
+      "undoRepost": "Undo repost",
+      "repostedBy": "Reposted by {{name}}",
+      "moreActions": "More post actions",
+      "open": "Open post",
+      "quoteBy": "Quote · {{author}}",
+      "visibility": {
+        "direct": "Mentioned people only"
+      }
+    },
+    "profile": {
+      "title": "Profile",
+      "openOriginal": "Open public profile",
+      "posts": "Posts",
+      "noPosts": "No posts to show",
+      "unfollow": "Unfollow",
+      "cancelFollowRequest": "Cancel request"
+    },
+    "signIn": {
+      "description": "Finish signing in in your browser to return to Zoo.",
+      "openLoginPage": "Open the sign-in screen",
+      "connectionSettings": "Server settings",
+      "setUpConnection": "Set up server",
+      "serverUrl": "Zoo server URL",
+      "clientId": "Public client ID for Android",
+      "viewDiagnostics": "View diagnostic log",
+      "diagnosticsTitle": "Login diagnostic log",
+      "diagnosticsCopied": "Copied the diagnostic log",
+      "tryAnyway": "Try anyway",
+      "browserHint": "Finish authenticating in the browser to return to Zoo.",
+      "openLogin": "Open login screen",
+      "retryAutoLogin": "Retry automatic login"
+    },
+    "channels": {
+      "addMenu": "Browse or create channels",
+      "createDm": "Create a DM"
+    },
+    "channelEditor": {
+      "name": "Channel name",
+      "description": "Description",
+      "sensitive": "Contains sensitive content"
+    },
+    "message": {
+      "actions": "Message actions"
+    },
+    "emoji": {
+      "customTab": "Custom",
+      "pickFirst": "Pick the first emoji",
+      "pickCombination": "Pick a combination",
+      "loading": "Loading emojis",
+      "customLoadError": "Couldn't load custom emoji",
+      "empty": "No emojis to choose from"
+    },
+    "composer": {
+      "liveHint": "Share what you type",
+      "shrink": "Shrink the editor",
+      "grow": "Enlarge the editor",
+      "attach": "Attach",
+      "format": "Format",
+      "clearLive": "Clear input",
+      "formattingTitle": "Text formatting",
+      "codeSample": "code",
+      "quoteSample": "quote"
+    },
+    "call": {
+      "minimize": "Hide call screen",
+      "pictureInPicture": "Show call in a small window",
+      "end": "End call"
+    },
+    "notifications": {
+      "actorsMore": "{{author}} and others"
+    },
+    "media": {
+      "playVideo": "Play video",
+      "video": "Video",
+      "previewFailed": "Can't show the preview"
+    },
+    "login": {
+      "issuerHttps": "Specify an HTTPS URL for the identity provider.",
+      "issuerUrlHttps": "Specify an HTTPS issuer URL for the identity provider.",
+      "serverHttps": "Specify an HTTPS origin URL for the server.",
+      "clientRequired": "Enter the public client ID.",
+      "discoveryFailed": "Couldn't get the identity provider's configuration (HTTP {{status}})",
+      "issuerMismatch": "The issuer doesn't match",
+      "refreshUnreachable": "Can't connect to the identity provider. Check your connection and try again.",
+      "refreshUnconfirmed": "Couldn't confirm the result of the token refresh. Please log in again.",
+      "noAccessToken": "Couldn't get a token from the authorization server. Please log in again",
+      "step": {
+        "discovery": "Getting the identity provider's configuration",
+        "token": "Getting the token"
+      },
+      "invalidResponse": "{{stage}} failed (HTTP {{status}}). Check the authorization server's response",
+      "stepFailed": "{{stage}} failed ({{details}}). {{hint}}",
+      "oauthHint": {
+        "unauthorizedClient": "In AuthZ, allow the authorization code and refresh_token grants for the public client",
+        "invalidTarget": "Check the resource / audience, and the API settings and client assignment in AuthZ",
+        "invalidScope": "Check that openid profile offline_access is allowed",
+        "invalidClient": "Check the client ID and that the client is an enabled public client",
+        "accessDenied": "Login was denied in the browser. Please log in again",
+        "invalidGrant": "Your credentials are invalid or have expired. Please log in again",
+        "checkServer": "Check the authorization server's settings"
+      },
+      "wifiSignIn": "This Wi-Fi network requires sign-in. Finish connecting in Android's Wi-Fi settings, then try again.",
+      "network": {
+        "dns": "Can't resolve the server's name. Check your Wi-Fi connection.",
+        "certificate": "Can't verify the server's certificate. Check the device's date and time and your Wi-Fi connection.",
+        "timeout": "The server didn't respond in time. Switch networks or try again.",
+        "connection": "Can't connect to the server. Check your Wi-Fi connection."
+      },
+      "reauth": {
+        "noAuthorizationEndpoint": "This IdP doesn't support the authorization code flow",
+        "browserUnavailable": "Can't open the browser",
+        "timeout": "Authentication didn't finish in time",
+        "cancelled": "Authentication was cancelled",
+        "noTokenEndpoint": "There's no token endpoint",
+        "invalidCallback": "Couldn't verify the authentication callback",
+        "callbackVerificationFailed": "The browser couldn't verify the authentication callback",
+        "noIdToken": "Couldn't receive an ID token (HTTP {{status}})"
+      },
+      "store": {
+        "changed": "The saved credentials changed. Try automatic login again",
+        "superseded": "Another login was started. Start again from the login screen",
+        "removeOldFailed": "Couldn't delete the old credentials. Check the device's free storage",
+        "saveFailed": "Couldn't save the credentials. Check the device's free storage and screen lock settings",
+        "removeFailed": "Couldn't delete the saved credentials. Check the device's free storage and screen lock settings"
+      },
+      "failedGeneric": "Can't log in. Check the server settings and your network.",
+      "sessionExpired": "Your credentials have expired. Please log in again.",
+      "autoLoginFailed": "Couldn't log in automatically. Check your network and try again.",
+      "zooApiFailed": "Can't connect to Zoo (HTTP {{status}})"
+    },
+    "encryption": {
+      "preparing": "Preparing encryption on this device",
+      "saveRecoveryKey": "Write down your recovery key and keep it somewhere safe",
+      "recoveryKeyNoted": "I've saved the key",
+      "recoveryKeySaved": "Saved",
+      "passkeyAdded": "Passkey added",
+      "continueSetup": "Continue setup",
+      "setUp": "Set up encryption",
+      "uploadBackup": "Back up keys",
+      "restoreBackup": "Restore key backup",
+      "operationFailed": "Couldn't complete the encryption operation",
+      "reload": "Reload status",
+      "revocation": {
+        "noteLine": "{{name}}: {{reasons}}",
+        "reasonSeparator": ", ",
+        "deviceLine": "{{name}} ({{id}})"
+      }
+    },
+    "update": {
+      "installing": "Installing {{version}}",
+      "installed": "Updated to {{version}}",
+      "notChecked": "Updates haven't been checked yet",
+      "releaseOnly": "Automatic updates are available in signed release builds",
+      "shizukuRequired": "Start Shizuku and allow Zoo to use it",
+      "checking": "Checking for main updates",
+      "upToDate": "Up to date ({{version}})",
+      "downloading": "Downloading {{version}}",
+      "apkHttpError": "Can't get the APK (HTTP {{status}})",
+      "apkSizeMismatch": "The APK size doesn't match",
+      "apkChecksumMismatch": "The APK checksum doesn't match",
+      "apkUnreadable": "Can't read the APK",
+      "failed": "Couldn't update: {{reason}}",
+      "channelMismatch": "The update channel doesn't match",
+      "sourceMismatch": "The update source doesn't match",
+      "otherApp": "This APK is for a different app",
+      "versionMismatch": "The APK version doesn't match",
+      "signerMismatch": "The signing key doesn't match. The update must be signed with the same key as the current app",
+      "feedHttpError": "Can't get update information (HTTP {{status}})",
+      "feedTooLarge": "The update information is too large",
+      "noResultFromShizuku": "Couldn't get a result from the Shizuku installer. Restart Shizuku and try again",
+      "installerMismatch": "The Shizuku installer connection doesn't match: {{descriptor}}",
+      "shizukuDisconnected": "Lost the connection to Shizuku",
+      "installerConnectFailed": "Couldn't connect to the Shizuku installer. Restart Shizuku and try again",
+      "installFailed": "Couldn't install: {{detail}}",
+      "permissionDenied": "Permission to use Shizuku wasn't granted",
+      "version": "Version {{version}}",
+      "description": "Automatic updates are checked on unmetered connections such as Wi-Fi. Zoo reopens when the installation finishes.",
+      "shizukuGranted": "Shizuku access granted",
+      "shizukuNeeded": "Shizuku must be running and allowed",
+      "debugBuild": "Automatic updates are available in signed release builds.",
+      "grantShizuku": "Allow Shizuku",
+      "startShizukuFirst": "Start the Shizuku service, then allow it",
+      "shizukuGuide": "How to set up Shizuku",
+      "browserFailed": "Couldn't open the browser",
+      "autoUpdate": "Automatic updates",
+      "checkNow": "Check for updates now",
+      "downloadLatest": "Download the latest APK",
+      "feedFailed": "Couldn't get update information",
+      "manualInstall": "Without Shizuku, download the APK, open it and install it manually."
+    }
   }
 }

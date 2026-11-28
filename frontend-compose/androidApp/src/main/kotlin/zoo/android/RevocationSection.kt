@@ -256,7 +256,8 @@ internal fun RevocationSection(
                     body(t("e2ee.revocation.notesDescription"))
                     notes.forEach { note ->
                         val name = users.firstOrNull { it.text("id") == note.userId }?.let(::author)?.ifBlank { null } ?: note.userId
-                        body("・$name：" + note.reasons.joinToString("、") { t(noteKey(it)) })
+                        body("・" + t("android.encryption.revocation.noteLine", "name" to name,
+                            "reasons" to note.reasons.joinToString(t("android.encryption.revocation.reasonSeparator")) { t(noteKey(it)) }))
                     }
                 }
                 if (summary.versionsWithoutKey.isNotEmpty()) {
@@ -283,7 +284,10 @@ internal fun RevocationSection(
                 if (result.unsignedDevices.isNotEmpty()) {
                     heading(t("e2ee.revocation.unsignedTitle"))
                     body(t("e2ee.revocation.unsignedDescription"))
-                    result.unsignedDevices.forEach { body("・" + (it.displayName?.ifBlank { null } ?: t("e2ee.devices.unnamed")) + "（${it.deviceId}）") }
+                    result.unsignedDevices.forEach {
+                        body("・" + t("android.encryption.revocation.deviceLine",
+                            "name" to (it.displayName?.ifBlank { null } ?: t("e2ee.devices.unnamed")), "id" to it.deviceId))
+                    }
                 }
                 authzSteps(AuthzRevocationStep.AFTER, "e2ee.authz.afterTitle")
                 TextAction(t("e2ee.revocation.finish"), colors, can, TextActionStyle.Neutral) { step = RevocationStep.Idle }

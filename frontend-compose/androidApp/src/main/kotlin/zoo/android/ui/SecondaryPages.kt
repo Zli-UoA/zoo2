@@ -66,7 +66,7 @@ internal fun DirectoryPage(
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
                 Box {
-                    if (query.isEmpty()) Text("検索", color = colors.inputHint)
+                    if (query.isEmpty()) Text(androidLabel("search.action", "検索"), color = colors.inputHint)
                     field()
                 }
             },
@@ -93,7 +93,7 @@ internal fun DirectoryPage(
         if (encryption != null) {
             Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(onClick = onEncryption),
                 verticalAlignment = Alignment.CenterVertically) {
-                Text("エンドツーエンド暗号化", Modifier.weight(1f), color = colors.foreground)
+                Text(androidLabel("e2ee.title", "エンドツーエンド暗号化"), Modifier.weight(1f), color = colors.foreground)
                 androidx.compose.material3.Switch(encryption, onCheckedChange = null)
             }
         }
@@ -110,7 +110,7 @@ internal fun NewPostPage(
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val input = screen.input
-    PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
+    PageHeader(androidLabel("android.post.new", "新しい投稿"), colors, onBack = { dispatch(AndroidUiAction.Back) }) {
         screen.visibility?.let { PostAudienceButton(it, colors, dispatch) }
         screen.federate?.let { enabled ->
             FederationButton(enabled, colors) { dispatch(AndroidUiAction.OpenSetting("toggle-federation")) }
@@ -132,15 +132,15 @@ internal fun NewPostPage(
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
                 Box {
-                    if (input.text.isEmpty()) Text("いま何してる？", color = colors.inputHint)
+                    if (input.text.isEmpty()) Text(androidLabel("android.post.placeholder", "いま何してる？"), color = colors.inputHint)
                     field()
                 }
             },
         )
         if (screen.showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("最近の写真", Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
-                TextAction("写真を選択", colors, icon = UiIcon.Photo, style = TextActionStyle.Plain) {
+                Text(androidLabel("attachments.recentPhotos", "最近の写真"), Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
+                TextAction(androidLabel("android.post.selectPhotos", "写真を選択"), colors, icon = UiIcon.Photo, style = TextActionStyle.Plain) {
                     dispatch(AndroidUiAction.SystemPhotos)
                 }
             }
@@ -161,7 +161,7 @@ internal fun NewPostPage(
             items(screen.attached, key = { it.id }) { item ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
-                    TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
+                    TextAction(androidLabel("messages.delete", "削除"), colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
                 }
             }
         }
@@ -170,11 +170,11 @@ internal fun NewPostPage(
                 .padding(AndroidControlSize.postActionInset),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            UiIconButton(UiIcon.Attach, "写真", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
-            UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
+            UiIconButton(UiIcon.Attach, androidLabel("android.post.photo", "写真"), colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
+            UiIconButton(UiIcon.Emoji, androidLabel("reactions.tabEmoji", "絵文字"), colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))
             val enabled = input.canSend && (input.text.isNotBlank() || screen.attached.isNotEmpty())
-            TextAction("投稿", colors, enabled, icon = UiIcon.Send) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
+            TextAction(androidLabel("home.post", "投稿"), colors, enabled, icon = UiIcon.Send) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
         }
     }
 }
@@ -217,18 +217,18 @@ internal fun ChannelEditorPage(
         if (screen.loading) {
             androidx.compose.material3.CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally), color = colors.accent)
         } else {
-            ChannelField(screen.nameLabel, screen.name, colors, singleLine = true, hint = screen.nameHint) {
+            ChannelField(screen.nameLabel ?: androidLabel("android.channelEditor.name", "チャンネル名"), screen.name, colors, singleLine = true, hint = screen.nameHint) {
                 dispatch(AndroidUiAction.ChannelNameChanged(it))
             }
-            ChannelField(screen.descriptionLabel, screen.description, colors, singleLine = false) {
+            ChannelField(screen.descriptionLabel ?: androidLabel("android.channelEditor.description", "説明"), screen.description, colors, singleLine = false) {
                 dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
             }
         }
         screen.notice?.let { Text(it, Modifier.testTag("editor-notice"), color = colors.secondary, fontSize = 13.sp) }
         val options = listOf(
-            Triple("channel-private", "非公開", screen.privateChannel),
-            Triple("channel-encrypted", "エンドツーエンド暗号化", screen.encrypted),
-            Triple("channel-sensitive", "センシティブな内容を含む", screen.sensitive),
+            Triple("channel-private", androidLabel("slackImport.private", "非公開"), screen.privateChannel),
+            Triple("channel-encrypted", androidLabel("e2ee.title", "エンドツーエンド暗号化"), screen.encrypted),
+            Triple("channel-sensitive", androidLabel("android.channelEditor.sensitive", "センシティブな内容を含む"), screen.sensitive),
         )
         options.forEach { (id, label, selection) ->
             if (selection != null) Row(
@@ -243,7 +243,7 @@ internal fun ChannelEditorPage(
         Spacer(Modifier.weight(1f))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
             TextAction(screen.submitLabel, colors, screen.canSubmit,
-                icon = if (screen.submitLabel == "保存") UiIcon.Save else UiIcon.Add) { dispatch(AndroidUiAction.SubmitChannel) }
+                icon = if (screen.creating) UiIcon.Add else UiIcon.Save) { dispatch(AndroidUiAction.SubmitChannel) }
         }
     }
 }
@@ -303,10 +303,11 @@ private fun PostAudienceButton(visibility: String, colors: AndroidColors, dispat
 
 @Composable
 private fun FederationButton(enabled: Boolean, colors: AndroidColors, onToggle: () -> Unit) {
+    val federateLabel = androidLabel("android.post.federate", "ActivityPub で配信")
     Box(
         Modifier.size(AndroidControlSize.target).clip(CircleShape)
             .toggleable(value = enabled, role = Role.Switch, onValueChange = { onToggle() })
-            .semantics { contentDescription = "ActivityPub で配信" },
+            .semantics { contentDescription = federateLabel },
         contentAlignment = Alignment.Center,
     ) {
         // ActivityPub mark by mray, CC0. https://activitypub.rocks/images/ActivityPub-logo.svg

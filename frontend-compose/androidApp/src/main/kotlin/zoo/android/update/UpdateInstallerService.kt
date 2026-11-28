@@ -109,7 +109,7 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
                 "Install transfer failed: exit=$exit, output=$result",
                 failure,
             )
-            "インストールできませんでした: ${result.ifBlank { failure.toString() }} (exit=$exit)"
+            "$INSTALL_FAILED_PREFIX${result.ifBlank { failure.toString() }} (exit=$exit)"
         } catch (failure: Exception) {
             Log.e("ZooUpdaterService", "Install failed", failure)
             throw failure
@@ -157,9 +157,15 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
 }
 
 
+/**
+ * Shizuku のシェルのプロセスはアプリの辞書を読めないので、失敗はこの接頭辞の付いた文字列で返す。
+ * アプリ側（UpdateWorker）が接頭辞を外し、`android.update.installFailed` で訳して表示する。
+ */
+internal const val INSTALL_FAILED_PREFIX = "インストールできませんでした: "
+
 internal fun completeInstall(exitCode: Int, output: String, restart: () -> Unit): String {
     if (exitCode != 0 || output.lineSequence().none { it.trim() == "Success" }) {
-        return "インストールできませんでした: ${output.take(1000)}"
+        return "$INSTALL_FAILED_PREFIX${output.take(1000)}"
     }
     restart()
     return "Success"

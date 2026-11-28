@@ -11,7 +11,7 @@ internal suspend fun <T> installerSession(
 ): String {
     try {
         val result = install(connect())
-        check(!result.isNullOrBlank()) { "Shizuku のインストーラーから結果を取得できませんでした。Shizuku を再起動して再試行してください" }
+        if (result.isNullOrBlank()) throw UpdateStateException("android.update.noResultFromShizuku")
         return result
     } finally {
         withContext(NonCancellable) { runCatching { disconnect() } }

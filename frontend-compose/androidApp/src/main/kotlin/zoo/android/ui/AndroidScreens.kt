@@ -129,7 +129,15 @@ internal data class ChannelItem(
     val threads: List<ChannelThreadItem> = emptyList(),
 )
 internal data class ChannelThreadItem(val id: String, val title: String, val replies: Int)
-internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
+/** [dm] はダイレクトメッセージの区分（見出しの文字は翻訳するので、区分は文字で判定しない）。 */
+internal data class ChannelSection(val label: String, val channels: List<ChannelItem>, val dm: Boolean = false)
+
+/** プロフィールのフォローボタンの状態。表示する文字は ProfileHeader で翻訳する。 */
+internal enum class FollowState(val key: String, val fallback: String) {
+    Follow("home.follow", "フォロー"),
+    Unfollow("android.profile.unfollow", "フォローを解除"),
+    CancelRequest("android.profile.cancelFollowRequest", "申請を取り消す"),
+}
 
 internal sealed interface AndroidScreen {
     data class Home(
@@ -186,12 +194,14 @@ internal sealed interface AndroidScreen {
         val description: String,
         val submitLabel: String,
         val canSubmit: Boolean,
+        /** 新しく作る画面か（送信ボタンのアイコンを「追加」にする）。 */
+        val creating: Boolean = false,
         val privateChannel: Boolean? = null,
         val sensitive: Boolean? = null,
         val encrypted: Boolean? = null,
         /** 同じ形の編集画面（自分の公開プロフィール）で使う、欄の名前と説明。 */
-        val nameLabel: String = "チャンネル名",
-        val descriptionLabel: String = "説明",
+        val nameLabel: String? = null,
+        val descriptionLabel: String? = null,
         val nameHint: String? = null,
         val description2: String? = null,
         val loading: Boolean = false,
@@ -205,7 +215,7 @@ internal sealed interface AndroidScreen {
     data class EditEntry(val input: InputState) : AndroidScreen
     data class Search(val state: SearchScreenState) : AndroidScreen
     data class Profile(
-        val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null,
+        val name: String, val bio: String, val posts: List<TimelineItem>, val follow: FollowState? = null,
         val handle: String? = null, val avatar: ImageBitmap? = null,
         val originalAvailable: Boolean = false,
         val id: String = handle ?: name,
@@ -419,10 +429,10 @@ private fun RenderAndroidScreen(
             )
             is AndroidScreen.Bubble -> {
                 PageHeader(androidLabel("bubbleChat.title", "Bubble"), colors) {
-                    if (screen.participants.isNotEmpty()) UiIconButton(UiIcon.Bubble, "参加者", colors.foreground,
+                    if (screen.participants.isNotEmpty()) UiIconButton(UiIcon.Bubble, androidLabel("bubbleChat.participants", "参加者"), colors.foreground,
                         { dispatch(AndroidUiAction.OpenSetting("bubble-participants")) })
                 }
-                Text("入力中の内容がリアルタイムに表示されます", Modifier.padding(16.dp),
+                Text(androidLabel("android.bubble.description", "入力中の内容がリアルタイムに表示されます"), Modifier.padding(16.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 // 入力途中の URL で行き先を取得しないよう、Bubble（Web と同じく素の表示）ではアプリ内リンクを扱わない。
                 CompositionLocalProvider(LocalChannelLinks provides null) {
@@ -434,7 +444,7 @@ private fun RenderAndroidScreen(
                 CollapsingHeader(header = {
                     PageHeader(screen.name, colors, screen.description, onBack = back,
                         onOpen = { dispatch(AndroidUiAction.OpenChannelSettings(screen.id)) }) {
-                        if (screen.canCall) UiIconButton(UiIcon.Phone, "通話を開始", colors.foreground,
+                        if (screen.canCall) UiIconButton(UiIcon.Phone, androidLabel("call.start", "通話を開始"), colors.foreground,
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) { headerHeight, headerVisible ->
@@ -458,7 +468,7 @@ private fun RenderAndroidScreen(
                 }
             }
             is AndroidScreen.Thread -> {
-                PageHeader("スレッド", colors, onBack = back,
+                PageHeader(androidLabel("threads.title", "スレッド"), colors, onBack = back,
                     onOpen = { dispatch(AndroidUiAction.OpenSetting("thread-settings")) })
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
@@ -479,7 +489,7 @@ private fun RenderAndroidScreen(
                 }
             }
             is AndroidScreen.PostLoading -> {
-                PageHeader("投稿", colors, onBack = back)
+                PageHeader(androidLabel("android.post.title", "投稿"), colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     when {
                         !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
@@ -491,7 +501,7 @@ private fun RenderAndroidScreen(
                 }
             }
             is AndroidScreen.Post -> {
-                PageHeader("投稿", colors, onBack = back)
+                PageHeader(androidLabel("android.post.title", "投稿"), colors, onBack = back)
                 if (screen.loadFailed && screen.online) FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
                     dispatch(AndroidUiAction.RetryPost)
                 }
@@ -500,7 +510,7 @@ private fun RenderAndroidScreen(
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {
-                PageHeader("編集", colors, onBack = back)
+                PageHeader(androidLabel("messages.edit", "編集"), colors, onBack = back)
                 ConversationInput(screen.input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
                     { dispatch(AndroidUiAction.UseInputTool(it)) }, Modifier.weight(1f),
                     onSelection = { dispatch(AndroidUiAction.SelectInput(it)) }, canResize = false)
@@ -516,8 +526,8 @@ private fun RenderAndroidScreen(
                 { dispatch(AndroidUiAction.OpenSetting("encrypted-dm")) },
             )
             is AndroidScreen.Profile -> {
-                PageHeader("プロフィール", colors, onBack = back, paintBackground = false) {
-                    if (screen.originalAvailable) UiIconButton(UiIcon.External, "公開プロフィールを開く", colors.foreground,
+                PageHeader(androidLabel("android.profile.title", "プロフィール"), colors, onBack = back, paintBackground = false) {
+                    if (screen.originalAvailable) UiIconButton(UiIcon.External, androidLabel("android.profile.openOriginal", "公開プロフィールを開く"), colors.foreground,
                         { dispatch(AndroidUiAction.OpenSetting("profile-original")) })
                 }
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true, header = {
@@ -545,12 +555,12 @@ private fun RenderAndroidScreen(
             is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
             is AndroidScreen.Search -> SearchPage(screen, colors, dispatch)
             is AndroidScreen.SignIn -> BrandPage(
-                "Zoo", if (screen.restoring) "" else "ブラウザーで認証を完了すると、Zooに戻ります。",
+                "Zoo", if (screen.restoring) "" else androidLabel("android.signIn.description", "ブラウザーで認証を完了すると、Zooに戻ります。"),
                 colors, loading = screen.restoring,
             ) {
                 if (screen.restoring) {
-                    TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, style = TextActionStyle.Plain, click = back)
-                } else TextAction("ログイン", colors, icon = UiIcon.SignIn) { dispatch(AndroidUiAction.SignIn) }
+                    TextAction(androidLabel("android.signIn.openLoginPage", "ログイン画面を開く"), colors, icon = UiIcon.SignIn, style = TextActionStyle.Plain, click = back)
+                } else TextAction(androidLabel("auth.login", "ログイン"), colors, icon = UiIcon.SignIn) { dispatch(AndroidUiAction.SignIn) }
             }
             is AndroidScreen.Call -> CallPage(screen, colors, foreground && !interaction.reducedMotion,
                 remoteAudioLevel, dispatch)
@@ -593,7 +603,7 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
     CollapsingHeader(forceVisible = screen.posts.isEmpty(), header = {
         Column(Modifier.background(colors.background)) {
             PageHeader(androidLabel("home.title", "ホーム"), colors) {
-                UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
+                UiIconButton(UiIcon.Search, androidLabel("home.userSearch", "ユーザーを検索"), colors.foreground,
                     { dispatch(AndroidUiAction.OpenSetting("people")) })
             }
             if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
@@ -624,7 +634,7 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                 }
             }
             Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
-                UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
+                UiIconButton(UiIcon.Create, androidLabel("android.post.new", "新しい投稿"), Color.Black,
                     action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
             }
         }
@@ -649,11 +659,11 @@ private fun FeedLoadError(message: String, colors: AndroidColors, retry: () -> U
 private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        UiIconButton(UiIcon.Add, "チャンネルを探す・作成", colors.foreground, { expanded = true })
+        UiIconButton(UiIcon.Add, androidLabel("android.channels.addMenu", "チャンネルを探す・作成"), colors.foreground, { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
             listOf(
-                Triple("チャンネルを探す", UiIcon.Search, AndroidUiAction.Browse),
-                Triple("チャンネルを作成", UiIcon.Add, AndroidUiAction.CreateChannel),
+                Triple(androidLabel("channels.browseTitle", "チャンネルを探す"), UiIcon.Search, AndroidUiAction.Browse),
+                Triple(androidLabel("channels.createTitle", "チャンネルを作成"), UiIcon.Add, AndroidUiAction.CreateChannel),
             ).forEach { (label, icon, action) ->
                 DropdownMenuItem(
                     text = { Text(label, color = colors.foreground) },
@@ -676,9 +686,9 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(section.label, Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp,
                         fontWeight = AndroidWeights.label)
-                    val dm = section.label == "ダイレクトメッセージ"
+                    val dm = section.dm
                     UiIconButton(
-                        UiIcon.Add, if (dm) "DMを作成" else "チャンネルを作成", colors.secondary,
+                        UiIcon.Add, if (dm) androidLabel("android.channels.createDm", "DMを作成") else androidLabel("channels.createTitle", "チャンネルを作成"), colors.secondary,
                         { dispatch(if (dm) AndroidUiAction.CreateDm else AndroidUiAction.CreateChannel) },
                         iconSize = AndroidControlSize.inlineIcon,
                     )
@@ -686,12 +696,13 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
             }
             section.channels.forEach { channel -> item(key = channel.id) {
                 val current = channel.id == screen.selected
+                val unreadLabel = androidLabel("notifications.unreadStatus", "未読")
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
                         .then(if (current) Modifier.background(colors.headerLight, RoundedCornerShape(10.dp)) else Modifier)
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
                         .semantics {
-                            if (channel.unread) stateDescription = "未読"
+                            if (channel.unread) stateDescription = unreadLabel
                             selected = current
                         },
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1276,18 +1287,18 @@ private fun PostActions(
         Modifier.fillMaxWidth().height(AndroidControlSize.postToolbarHeight),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
+        UiIconButton(UiIcon.Bubble, androidLabel("home.reply", "返信"), colors.secondary,
             { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.postHeader?.audience != null,
             iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
+        UiIconButton(UiIcon.Repost, if (entry.reposted) androidLabel("android.post.undoRepost", "再投稿を取り消す") else androidLabel("android.post.repost", "再投稿"),
             if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
             enabled = entry.canRepost, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.Emoji, "リアクションを追加",
+        UiIconButton(UiIcon.Emoji, androidLabel("reactions.add", "リアクションを追加"),
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
             enabled = entry.canReact, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+        UiIconButton(UiIcon.More, androidLabel("android.post.moreActions", "その他の投稿操作"), colors.secondary, onMore, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
     }
 }
 
@@ -1296,6 +1307,8 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
     val currentOpen by rememberUpdatedState(open)
     val currentMenu by rememberUpdatedState(menu)
     val haptics = LocalHapticFeedback.current
+    val openThreadLabel = androidLabel("threads.open", "スレッドを開く")
+    val messageActionsLabel = androidLabel("android.message.actions", "メッセージの操作")
     var drag by remember { mutableFloatStateOf(0f) }
     return Modifier.offset { IntOffset(drag.roundToInt(), 0) }
         .pointerInput(haptics) {
@@ -1335,11 +1348,11 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
         })
         .semantics {
             customActions = buildList {
-                if (open != null) add(CustomAccessibilityAction("スレッドを開く") {
+                if (open != null) add(CustomAccessibilityAction(openThreadLabel) {
                     currentOpen?.invoke()
                     true
                 })
-                add(CustomAccessibilityAction("メッセージの操作") {
+                add(CustomAccessibilityAction(messageActionsLabel) {
                     currentMenu()
                     true
                 })

@@ -73,7 +73,8 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "作成中…",
     "create": "チャンネル作成",
-    "nsfw": "NSFWチャンネル"
+    "nsfw": "NSFWチャンネル",
+    "selectPrompt": "チャンネルを選んでください"
   },
   "sync": {
     "title": "同期の状態",
@@ -212,7 +213,8 @@
       "server": "サーバーでエラーが発生しました。しばらく待ってからもう一度お試しください。",
       "network": "サーバーに接続できませんでした。接続を確認してもう一度お試しください。",
       "unexpected": "操作に失敗しました。もう一度お試しください。"
-    }
+    },
+    "ok": "決定"
   },
   "welcome": {
     "title": "ようこそ Zoo へ",
@@ -2039,5 +2041,240 @@
     "unreadTooOld": "古い未読がまだ範囲外です。もっと読んでから既読にしてください。",
     "loadMore": "もっと読む",
     "unreadChanged": "表示中に新しい未読が届きました。この会話は未読のまま次へ進んでください。"
+  },
+  "android": {
+    "thread": {
+      "reopen": "再開",
+      "settingsTitle": "スレッド設定",
+      "participantsTitle": "スレッドの参加者"
+    },
+    "channel": {
+      "unarchive": "アーカイブを解除",
+      "editNameDescription": "名前と説明を編集",
+      "notifyAllPosts": "すべての投稿",
+      "notifyMentionsOnly": "メンション以外を通知しない",
+      "openSettings": "チャンネル設定を開く",
+      "create": "作成"
+    },
+    "settings": {
+      "profile": "プロフィール",
+      "editNameIcon": "名前・アイコンを編集",
+      "viewPublicPage": "公開ページを見る",
+      "receiveDmCalls": "DMの着信を受ける",
+      "themeSystem": "端末に従う",
+      "openOsNotifications": "Androidの通知設定を開く"
+    },
+    "bubble": {
+      "self": "自分",
+      "description": "入力中の内容がリアルタイムに表示されます"
+    },
+    "dm": {
+      "createTitle": "ダイレクトメッセージを作成",
+      "start": "開始"
+    },
+    "entry": {
+      "deleteConfirmTitle": "削除しますか？"
+    },
+    "members": {
+      "removeTitle": "チャンネルから削除"
+    },
+    "post": {
+      "title": "投稿",
+      "new": "新しい投稿",
+      "placeholder": "いま何してる？",
+      "selectPhotos": "写真を選択",
+      "photo": "写真",
+      "federate": "ActivityPub で配信",
+      "repost": "再投稿",
+      "undoRepost": "再投稿を取り消す",
+      "repostedBy": "{{name}}さんが再投稿",
+      "moreActions": "その他の投稿操作",
+      "open": "投稿を開く",
+      "quoteBy": "引用 · {{author}}",
+      "visibility": {
+        "direct": "宛先限定"
+      }
+    },
+    "profile": {
+      "title": "プロフィール",
+      "openOriginal": "公開プロフィールを開く",
+      "posts": "投稿",
+      "noPosts": "表示できる投稿はありません",
+      "unfollow": "フォローを解除",
+      "cancelFollowRequest": "申請を取り消す"
+    },
+    "signIn": {
+      "description": "ブラウザーで認証を完了すると、Zooに戻ります。",
+      "openLoginPage": "ログイン画面を開く",
+      "connectionSettings": "接続先の設定",
+      "setUpConnection": "接続先を設定",
+      "serverUrl": "Zoo サーバー URL",
+      "clientId": "Android 用 public client ID",
+      "viewDiagnostics": "診断ログを見る",
+      "diagnosticsTitle": "ログインの診断ログ",
+      "diagnosticsCopied": "診断ログをコピーしました",
+      "tryAnyway": "それでも試す",
+      "browserHint": "ブラウザーで認証を完了すると、Zooに戻ります。",
+      "openLogin": "ログイン画面を開く",
+      "retryAutoLogin": "自動ログインを再試行"
+    },
+    "channels": {
+      "addMenu": "チャンネルを探す・作成",
+      "createDm": "DMを作成"
+    },
+    "channelEditor": {
+      "name": "チャンネル名",
+      "description": "説明",
+      "sensitive": "センシティブな内容を含む"
+    },
+    "message": {
+      "actions": "メッセージの操作"
+    },
+    "emoji": {
+      "customTab": "カスタム",
+      "pickFirst": "最初の絵文字を選ぶ",
+      "pickCombination": "組み合わせを選ぶ",
+      "loading": "絵文字を読み込み中",
+      "customLoadError": "カスタム絵文字の読み込みに失敗しました",
+      "empty": "選べる絵文字がありません"
+    },
+    "composer": {
+      "liveHint": "入力内容を共有",
+      "shrink": "入力欄を縮める",
+      "grow": "入力欄を広げる",
+      "attach": "添付",
+      "format": "書式",
+      "clearLive": "入力を消去",
+      "formattingTitle": "文字装飾",
+      "codeSample": "コード",
+      "quoteSample": "引用"
+    },
+    "call": {
+      "minimize": "通話画面をしまう",
+      "pictureInPicture": "通話を小窓で表示",
+      "end": "通話を終了"
+    },
+    "notifications": {
+      "actorsMore": "{{author}} ほか"
+    },
+    "media": {
+      "playVideo": "動画を再生",
+      "video": "動画",
+      "previewFailed": "プレビューを表示できません"
+    },
+    "login": {
+      "issuerHttps": "認証先は HTTPS を指定してください",
+      "issuerUrlHttps": "認証先は HTTPS の issuer URL を指定してください",
+      "serverHttps": "サーバーには HTTPS の origin URL を指定してください",
+      "clientRequired": "Public client ID を指定してください",
+      "discoveryFailed": "認証先の設定を取得できません (HTTP {{status}})",
+      "issuerMismatch": "issuer が一致しません",
+      "refreshUnreachable": "認証先に接続できません。通信状態を確認して再試行してください。",
+      "refreshUnconfirmed": "トークン更新の結果を確認できませんでした。ログインし直してください。",
+      "noAccessToken": "認証サーバーからトークンを取得できませんでした。ログインし直してください",
+      "step": {
+        "discovery": "認証先の設定取得",
+        "token": "トークンの取得"
+      },
+      "invalidResponse": "{{stage}} に失敗しました (HTTP {{status}})。認証サーバーの応答を確認してください",
+      "stepFailed": "{{stage}} に失敗しました ({{details}})。{{hint}}",
+      "oauthHint": {
+        "unauthorizedClient": "AuthZ で Public client の認可コードと refresh_token の認証を許可してください",
+        "invalidTarget": "Resource / audience と、AuthZ の API 設定・クライアントへの紐付けを確認してください",
+        "invalidScope": "openid profile offline_access の利用が許可されているか確認してください",
+        "invalidClient": "Client ID と、クライアントが有効な Public client であることを確認してください",
+        "accessDenied": "ブラウザーでログインが拒否されました。もう一度ログインしてください",
+        "invalidGrant": "認証情報が無効か、期限が切れています。もう一度ログインしてください",
+        "checkServer": "認証サーバーの設定を確認してください"
+      },
+      "wifiSignIn": "Wi-Fiのログインが必要です。AndroidのWi-Fi設定から接続を完了し、再試行してください。",
+      "network": {
+        "dns": "接続先の名前を解決できません。Wi-Fiの接続状態を確認してください。",
+        "certificate": "接続先の証明書を確認できません。端末の日時とWi-Fiの接続状態を確認してください。",
+        "timeout": "接続先から時間内に応答がありませんでした。ネットワークを切り替えるか、再試行してください。",
+        "connection": "接続先に接続できません。Wi-Fiの接続状態を確認してください。"
+      },
+      "reauth": {
+        "noAuthorizationEndpoint": "この IdP は認可コードフローに対応していません",
+        "browserUnavailable": "ブラウザーを開けません",
+        "timeout": "認証が時間内に終わりませんでした",
+        "cancelled": "認証が取り消されました",
+        "noTokenEndpoint": "トークンエンドポイントがありません",
+        "invalidCallback": "認証の戻り先を確認できませんでした",
+        "callbackVerificationFailed": "認証の戻り先をブラウザーで検証できませんでした",
+        "noIdToken": "ID トークンを受け取れませんでした (HTTP {{status}})"
+      },
+      "store": {
+        "changed": "保存した認証情報が変更されました。自動ログインを再試行してください",
+        "superseded": "別のログインが開始されました。ログイン画面からやり直してください",
+        "removeOldFailed": "更新前の認証情報を削除できませんでした。端末の空き容量を確認してください",
+        "saveFailed": "認証情報を保存できませんでした。端末の空き容量とロック設定を確認してください",
+        "removeFailed": "保存した認証情報を削除できませんでした。端末の空き容量とロック設定を確認してください"
+      },
+      "failedGeneric": "ログインできません。接続先とネットワークを確認してください。",
+      "sessionExpired": "認証情報の有効期限が切れました。ログインし直してください。",
+      "autoLoginFailed": "自動ログインできませんでした。ネットワークを確認して再試行してください。",
+      "zooApiFailed": "Zoo に接続できません (HTTP {{status}})"
+    },
+    "encryption": {
+      "preparing": "この端末の暗号化を準備しています",
+      "saveRecoveryKey": "リカバリーキーを安全な場所に控えてください",
+      "recoveryKeyNoted": "キーを控えた",
+      "recoveryKeySaved": "保存済み",
+      "passkeyAdded": "パスキーを追加済み",
+      "continueSetup": "初期設定を続ける",
+      "setUp": "暗号化を設定",
+      "uploadBackup": "鍵をバックアップ",
+      "restoreBackup": "鍵のバックアップを復元",
+      "operationFailed": "暗号化の操作を完了できませんでした",
+      "reload": "状態を読み直す",
+      "revocation": {
+        "noteLine": "{{name}}：{{reasons}}",
+        "reasonSeparator": "、",
+        "deviceLine": "{{name}}（{{id}}）"
+      }
+    },
+    "update": {
+      "installing": "{{version}} をインストールしています",
+      "installed": "{{version}} への更新が完了しました",
+      "notChecked": "更新はまだ確認していません",
+      "releaseOnly": "自動更新は署名付き release 版で利用できます",
+      "shizukuRequired": "Shizuku を起動し、Zoo に使用を許可してください",
+      "checking": "main の更新を確認しています",
+      "upToDate": "最新です ({{version}})",
+      "downloading": "{{version}} をダウンロードしています",
+      "apkHttpError": "APK を取得できません (HTTP {{status}})",
+      "apkSizeMismatch": "APK のサイズが一致しません",
+      "apkChecksumMismatch": "APK のチェックサムが一致しません",
+      "apkUnreadable": "APK を解析できません",
+      "failed": "更新できませんでした: {{reason}}",
+      "channelMismatch": "更新チャンネルが一致しません",
+      "sourceMismatch": "更新元が一致しません",
+      "otherApp": "別のアプリの APK です",
+      "versionMismatch": "APK のバージョンが一致しません",
+      "signerMismatch": "署名鍵が一致しません。現在のアプリと同じ鍵で署名された更新が必要です",
+      "feedHttpError": "更新情報を取得できません (HTTP {{status}})",
+      "feedTooLarge": "更新情報が大きすぎます",
+      "noResultFromShizuku": "Shizuku のインストーラーから結果を取得できませんでした。Shizuku を再起動して再試行してください",
+      "installerMismatch": "Shizuku のインストーラーの接続先が一致しません: {{descriptor}}",
+      "shizukuDisconnected": "Shizuku との接続が切れました",
+      "installerConnectFailed": "Shizuku のインストーラーに接続できませんでした。Shizuku を再起動して再試行してください",
+      "installFailed": "インストールできませんでした: {{detail}}",
+      "permissionDenied": "Shizuku の使用が許可されませんでした",
+      "version": "バージョン {{version}}",
+      "description": "自動更新は Wi-Fi などの従量制でない接続で確認します。インストールが終わると Zoo が開き直ります。",
+      "shizukuGranted": "Shizuku の使用を許可済み",
+      "shizukuNeeded": "Shizuku の起動と使用許可が必要です",
+      "debugBuild": "自動更新は署名付きの配布版で利用できます。",
+      "grantShizuku": "Shizuku の使用を許可",
+      "startShizukuFirst": "Shizuku のサービスを起動してから許可してください",
+      "shizukuGuide": "Shizuku の導入方法",
+      "browserFailed": "ブラウザーを開けませんでした",
+      "autoUpdate": "自動更新",
+      "checkNow": "今すぐ更新を確認",
+      "downloadLatest": "最新の APK をダウンロード",
+      "feedFailed": "更新情報を取得できませんでした",
+      "manualInstall": "Shizuku を使わない場合は、APK をダウンロードして開き、手動でインストールしてください。"
+    }
   }
 }

@@ -8,10 +8,35 @@ import io.ktor.utils.io.readRemaining
 import java.net.URI
 import java.security.MessageDigest
 import kotlinx.serialization.json.*
+import zoo.android.appText
 
 internal const val MAX_APK_BYTES = 200L * 1024 * 1024
 internal const val UPDATE_BASE = "https://github.com/Zli-UoA/zoo2/releases/download/android-main/"
 internal const val UPDATE_FEED = "${UPDATE_BASE}update.json"
+
+/** 利用者に見せる更新の失敗。メッセージは翻訳キーで、表示するときに [updateFailureText] で訳す。 */
+internal interface UpdateFailureText {
+    val key: String
+    val args: List<Pair<String, String>>
+}
+
+internal class UpdateArgumentException(override val key: String, override val args: List<Pair<String, String>> = emptyList()) :
+    IllegalArgumentException(key), UpdateFailureText
+
+internal class UpdateStateException(override val key: String, override val args: List<Pair<String, String>> = emptyList()) :
+    IllegalStateException(key), UpdateFailureText
+
+internal fun requireUpdate(value: Boolean, key: String, vararg args: Pair<String, String>) {
+    if (!value) throw UpdateArgumentException(key, args.toList())
+}
+
+internal fun checkUpdate(value: Boolean, key: String, vararg args: Pair<String, String>) {
+    if (!value) throw UpdateStateException(key, args.toList())
+}
+
+internal fun android.content.Context.updateFailureText(failure: Throwable): String =
+    (failure as? UpdateFailureText)?.let { appText(it.key, *it.args.toTypedArray()) }
+        ?: failure.message.orEmpty()
 
 internal data class UpdateRelease(
     val versionCode: Long,
@@ -24,9 +49,7 @@ internal data class UpdateRelease(
         fun parse(raw: String): UpdateRelease {
             val data = Json.parseToJsonElement(raw).jsonObject
             fun text(key: String) = data.getValue(key).jsonPrimitive.content
-            require(text("channel") == "main" && text("packageName") == "works.zli.zoo") {
-                "更新チャンネルが一致しません"
-            }
+            requireUpdate(text("channel") == "main" && text("packageName") == "works.zli.zoo", "android.update.channelMismatch")
             val url = text("url")
             val uri = URI(url)
             require(
@@ -37,13 +60,12 @@ internal data class UpdateRelease(
                     uri.query == null &&
                     uri.fragment == null
             )
-            require(
+            requireUpdate(
                 url.startsWith(UPDATE_BASE) &&
                     Regex("zoo-android-main-[a-f0-9]{40}\\.apk")
-                        .matches(url.removePrefix(UPDATE_BASE))
-            ) {
-                "更新元が一致しません"
-            }
+                        .matches(url.removePrefix(UPDATE_BASE)),
+                "android.update.sourceMismatch",
+            )
             val sha = text("sha256")
             require(Regex("[a-f0-9]{64}").matches(sha))
             val size = text("size").toLong()
@@ -66,23 +88,17 @@ internal fun requireMatchingApk(
     archiveSigners: Set<String>,
     release: UpdateRelease,
 ) {
-    require(archivePackage == expectedPackage) { "別のアプリの APK です" }
-    require(archiveVersion == release.versionCode && archiveVersion > installedVersion) {
-        "APK のバージョンが一致しません"
-    }
-    require(installedSigners.isNotEmpty() && installedSigners == archiveSigners) {
-        "署名鍵が一致しません。現在のアプリと同じ鍵で署名された更新が必要です"
-    }
+    requireUpdate(archivePackage == expectedPackage, "android.update.otherApp")
+    requireUpdate(archiveVersion == release.versionCode && archiveVersion > installedVersion, "android.update.versionMismatch")
+    requireUpdate(installedSigners.isNotEmpty() && installedSigners == archiveSigners, "android.update.signerMismatch")
 }
 
 internal suspend fun fetchUpdateRelease(http: HttpClient): UpdateRelease {
     val raw =
         http.prepareGet(UPDATE_FEED).execute { response ->
-            check(response.status.value == 200) {
-                "更新情報を取得できません (HTTP ${response.status.value})"
-            }
+            checkUpdate(response.status.value == 200, "android.update.feedHttpError", "status" to response.status.value.toString())
             response.bodyAsChannel().readRemaining(16_385).readText()
         }
-    require(raw.toByteArray().size <= 16_384) { "更新情報が大きすぎます" }
+    requireUpdate(raw.toByteArray().size <= 16_384, "android.update.feedTooLarge")
     return UpdateRelease.parse(raw)
 }

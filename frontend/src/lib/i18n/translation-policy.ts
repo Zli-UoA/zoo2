@@ -16,6 +16,10 @@ const languageIndependentKeys = new Set([
   "appConsole.events.requestUrl",
   "messages.typingSeparator", // Korean also separates names with a comma and a space.
   "e2ee.deviceName.withOs", // Korean also writes the OS in half-width parentheses.
+  // Android's revocation notes: Korean uses the same half-width colon, comma and parentheses as English.
+  "android.encryption.revocation.noteLine",
+  "android.encryption.revocation.reasonSeparator",
+  "android.encryption.revocation.deviceLine",
 ]);
 
 export function englishCopyKeys(

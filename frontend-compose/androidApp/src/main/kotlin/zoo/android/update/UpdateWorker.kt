@@ -17,8 +17,10 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.withLock
 import works.zli.zoo.BuildConfig
+import zoo.android.appText
 
 internal class UpdatePreferences(context: Context) {
+    private val context = context.applicationContext
     val values = context.getSharedPreferences("android-updates", Context.MODE_PRIVATE)
     var enabled: Boolean
         get() = values.getBoolean("enabled", false)
@@ -28,18 +30,18 @@ internal class UpdatePreferences(context: Context) {
 
     fun installing(release: UpdateRelease) {
         check(values.edit().putLong("installingVersion", release.versionCode)
-            .putString("status", "${release.versionName} をインストールしています").commit())
+            .putString("status", context.appText("android.update.installing", "version" to release.versionName)).commit())
     }
 
     fun confirmInstalledUpdate(version: Long, name: String) {
         val pending = values.getLong("installingVersion", 0)
         if (pending != 0L && version >= pending) {
-            values.edit().remove("installingVersion").putString("status", "$name への更新が完了しました").apply()
+            values.edit().remove("installingVersion").putString("status", context.appText("android.update.installed", "version" to name)).apply()
         }
     }
 
     var status: String
-        get() = values.getString("status", "更新はまだ確認していません").orEmpty()
+        get() = values.getString("status", null) ?: context.appText("android.update.notChecked")
         set(value) {
             values.edit().putString("status", value).apply()
         }
@@ -94,12 +96,12 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
             val prefs = UpdatePreferences(applicationContext)
             val manual = inputData.getBoolean("manual", false)
             if (BuildConfig.DEBUG) {
-                prefs.status = "自動更新は署名付き release 版で利用できます"
+                prefs.status = applicationContext.appText("android.update.releaseOnly")
                 return@withLock Result.failure()
             }
             if (!manual && !prefs.enabled) return@withLock Result.success()
             if (!awaitShizukuReady()) {
-                prefs.status = "Shizuku を起動し、Zoo に使用を許可してください"
+                prefs.status = applicationContext.appText("android.update.shizukuRequired")
                 return@withLock Result.failure()
             }
             val directory = File(applicationContext.cacheDir, "updates").apply { mkdirs() }
@@ -113,21 +115,19 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                     }
                 }
             try {
-                prefs.status = "main の更新を確認しています"
+                prefs.status = applicationContext.appText("android.update.checking")
                 val release = fetchUpdateRelease(http)
                 val current =
                     applicationContext.packageManager.installed(applicationContext.packageName)
                 if (release.versionCode <= current.version()) {
-                    prefs.status = "最新です (${BuildConfig.VERSION_NAME})"
+                    prefs.status = applicationContext.appText("android.update.upToDate", "version" to BuildConfig.VERSION_NAME)
                     return@withLock Result.success()
                 }
-                prefs.status = "${release.versionName} をダウンロードしています"
+                prefs.status = applicationContext.appText("android.update.downloading", "version" to release.versionName)
                 val digest = MessageDigest.getInstance("SHA-256")
                 var total = 0L
                 http.prepareGet(release.url).execute { response ->
-                    check(response.status.value == 200) {
-                        "APK を取得できません (HTTP ${response.status.value})"
-                    }
+                    checkUpdate(response.status.value == 200, "android.update.apkHttpError", "status" to response.status.value.toString())
                     response.headers["Content-Length"]?.toLongOrNull()?.let {
                         require(it == release.size)
                     }
@@ -140,23 +140,20 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                                 val count = channel.readAvailable(buffer)
                                 if (count < 0) break
                                 total += count
-                                require(total <= release.size && total <= MAX_APK_BYTES) {
-                                    "APK のサイズが一致しません"
-                                }
+                                requireUpdate(total <= release.size && total <= MAX_APK_BYTES, "android.update.apkSizeMismatch")
                                 digest.update(buffer, 0, count)
                                 output.write(buffer, 0, count)
                             }
                         }
                     }
                 }
-                require(
+                requireUpdate(
                     total == release.size &&
-                        digest.digest().joinToString("") { "%02x".format(it) } == release.sha256
-                ) {
-                    "APK のチェックサムが一致しません"
-                }
+                        digest.digest().joinToString("") { "%02x".format(it) } == release.sha256,
+                    "android.update.apkChecksumMismatch",
+                )
                 val archive =
-                    applicationContext.packageManager.archive(apk) ?: error("APK を解析できません")
+                    applicationContext.packageManager.archive(apk) ?: throw UpdateStateException("android.update.apkUnreadable")
                 requireMatchingApk(
                     applicationContext.packageName,
                     current.version(),
@@ -170,13 +167,16 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                 if (!manual && !prefs.enabled) return@withLock Result.success()
                 prefs.installing(release)
                 val result = ShizukuInstaller(applicationContext).install(apk)
-                check(result == "Success") { result }
+                checkUpdate(result == "Success", "android.update.installFailed", "detail" to result.removePrefix(INSTALL_FAILED_PREFIX))
                 prefs.confirmInstalledUpdate(release.versionCode, release.versionName)
                 Result.success()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                prefs.status = "更新できませんでした: ${failure.message.orEmpty().take(1000)}"
+                prefs.status = applicationContext.appText(
+                    "android.update.failed",
+                    "reason" to applicationContext.updateFailureText(failure).take(1000),
+                )
                 if (!manual && runAttemptCount < 3) Result.retry() else Result.failure()
             } finally {
                 http.close()

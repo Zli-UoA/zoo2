@@ -142,7 +142,7 @@ internal fun RepostAttribution(actor: String, colors: AndroidColors) {
     Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         UiGlyph(UiIcon.Repost, colors.secondary, AndroidControlSize.metadataIcon)
-        Text("${actor}さんが再投稿", color = colors.secondary, fontSize = 12.sp,
+        Text(androidLabel("android.post.repostedBy", "${actor}さんが再投稿", "name" to actor), color = colors.secondary, fontSize = 12.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -162,7 +162,7 @@ internal fun TimelineQuoteCard(
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
             .clickable(role = Role.Button) { if (quote.remotePostAvailable) showOriginal = true else open() }
         val title: @Composable () -> Unit = {
-            Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
+            Text(if (quote.author.isBlank()) androidLabel("home.openQuotedPost", "引用元を開く") else androidLabel("android.post.quoteBy", "引用 · ${quote.author}", "author" to quote.author),
                 color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
                 fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
         }
@@ -326,7 +326,7 @@ internal fun TimelineMediaTile(media: TimelineMedia, colors: AndroidColors, open
             .heightIn(min = AndroidControlSize.target).padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             UiGlyph(UiIcon.Play, colors.secondary, AndroidControlSize.inlineIcon)
-            Text("動画を再生", color = colors.foreground, fontSize = 14.sp)
+            Text(androidLabel("android.media.playVideo", "動画を再生"), color = colors.foreground, fontSize = 14.sp)
         }
         return
     }

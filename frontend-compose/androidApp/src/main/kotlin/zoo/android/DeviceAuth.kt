@@ -37,17 +37,24 @@ internal class DeviceAuth(
     private var closed = false
 
     private suspend fun discover(issuer: String, client: String, audience: String): Row {
-        require(Url(issuer).protocol == URLProtocol.HTTPS) { "認証先は HTTPS を指定してください" }
+        if (Url(issuer).protocol != URLProtocol.HTTPS) {
+            throw LoginSettingsInvalid("認証先は HTTPS を指定してください") { it.t("android.login.issuerHttps") }
+        }
         clientId = client
         resource = audience
         val discovery = readDiscovery?.invoke(issuer) ?: run {
             val response = http.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
             if (response.status.value !in 200..299) {
-                throw LoginFailure("認証先の設定を取得できません (HTTP ${response.status.value})")
+                val status = response.status.value
+                throw LoginFailure("認証先の設定を取得できません (HTTP $status)") {
+                    it.t("android.login.discoveryFailed", "status" to "$status")
+                }
             }
-            response.loginJson("認証先の設定取得")
+            response.loginJson(LoginStep.Discovery)
         }
-        require(discovery.text("issuer").trimEnd('/') == issuer.trimEnd('/')) { "issuer が一致しません" }
+        if (discovery.text("issuer").trimEnd('/') != issuer.trimEnd('/')) {
+            throw LoginSettingsInvalid("issuer が一致しません") { it.t("android.login.issuerMismatch") }
+        }
         endpoint = discovery.text("token_endpoint")
         require(Url(endpoint).protocol == URLProtocol.HTTPS)
         return discovery
@@ -113,7 +120,9 @@ internal class DeviceAuth(
                             }
                         }
                     }.getOrDefault(false)
-                    if (restored) throw LoginFailure("認証先に接続できません。通信状態を確認して再試行してください。", cause = failure)
+                    if (restored) throw LoginFailure("認証先に接続できません。通信状態を確認して再試行してください。", cause = failure) {
+                        it.t("android.login.refreshUnreachable")
+                    }
                 }
                 var notify = false
                 try {
@@ -131,6 +140,7 @@ internal class DeviceAuth(
                     else "トークン更新の結果を確認できませんでした。ログインし直してください。",
                     requiresLogin = true,
                     cause = failure,
+                    display = if (failure is LoginFailure) failure.display else ({ text: LoginText -> text.t("android.login.refreshUnconfirmed") }),
                 )
             }
         }
@@ -146,10 +156,10 @@ internal class DeviceAuth(
                     fields.forEach { (k, v) -> append(k, v) }
                 },
             )
-        val result = response.loginJson("トークンの取得")
+        val result = response.loginJson(LoginStep.Token)
         val error = result.text("error")
         if (response.status.value !in 200..299 || error.isNotEmpty()) {
-            throw oauthLoginFailure("トークンの取得", response.status.value, error)
+            throw oauthLoginFailure(LoginStep.Token, response.status.value, error)
         }
         return result
     }
@@ -159,7 +169,9 @@ internal class DeviceAuth(
         synchronized(persistenceLock) {
             check(!closed) { "認証セッションは終了しています" }
             if (result.present("error") || result.text("access_token").isBlank()) {
-                throw LoginFailure("認証サーバーからトークンを取得できませんでした。ログインし直してください")
+                throw LoginFailure("認証サーバーからトークンを取得できませんでした。ログインし直してください") {
+                    it.t("android.login.noAccessToken")
+                }
             }
             token = result.text("access_token")
             refresh = result.text("refresh_token").ifEmpty { refresh }
@@ -186,22 +198,56 @@ internal class DeviceAuth(
         }
 }
 
-/** Only locally constructed messages are safe to show in the login screen. */
-internal class LoginFailure(message: String, val requiresLogin: Boolean = false, cause: Throwable? = null) :
-    IllegalStateException(message, cause)
+/** 表示言語の翻訳（`AppTranslator.t` など）。 */
+internal class LoginText(private val translate: (String, Array<out Pair<String, String>>) -> String) {
+    fun t(key: String, vararg args: Pair<String, String>): String = translate(key, args)
+}
 
-internal suspend fun HttpResponse.loginJson(stage: String): Row {
+internal fun android.content.Context.loginText(): LoginText {
+    val translator = AppTranslator(this)
+    return LoginText { key, args -> translator.t(key, *args) }
+}
+
+/**
+ * Only locally constructed messages are safe to show in the login screen.
+ * `message` は日本語のまま（診断ログの分類と HTTP 状態の取り出し、テストに使う）。画面には [display] で表示言語の文言を出す。
+ */
+internal class LoginFailure(
+    message: String,
+    val requiresLogin: Boolean = false,
+    cause: Throwable? = null,
+    val display: (LoginText) -> String = { message },
+) : IllegalStateException(message, cause)
+
+/** 接続先の設定や応答の形が正しくない（診断ログでは INVALID_RESPONSE_OR_SETTINGS）。表示は [display]。 */
+internal class LoginSettingsInvalid(message: String, val display: (LoginText) -> String) : IllegalArgumentException(message)
+
+/** ログインの段階（エラーの文言に入れる名前）。 */
+internal enum class LoginStep(val label: String) {
+    Discovery("認証先の設定取得"),
+    Token("トークンの取得");
+
+    fun text(text: LoginText): String = when (this) {
+        Discovery -> text.t("android.login.step.discovery")
+        Token -> text.t("android.login.step.token")
+    }
+}
+
+internal suspend fun HttpResponse.loginJson(stage: LoginStep): Row {
     val raw = bodyAsText()
     return try {
         json.parseToJsonElement(raw).jsonObject
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
-        throw LoginFailure("$stage に失敗しました (HTTP ${status.value})。認証サーバーの応答を確認してください")
+        val code = status.value
+        throw LoginFailure("${stage.label} に失敗しました (HTTP $code)。認証サーバーの応答を確認してください") {
+            it.t("android.login.invalidResponse", "stage" to stage.text(it), "status" to "$code")
+        }
     }
 }
 
-private fun oauthLoginFailure(stage: String, status: Int?, code: String): LoginFailure {
+private fun oauthLoginFailure(stage: LoginStep, status: Int?, code: String): LoginFailure {
     val hint =
         when (code) {
             "unauthorized_client" -> "AuthZ で Public client の認可コードと refresh_token の認証を許可してください"
@@ -216,9 +262,20 @@ private fun oauthLoginFailure(stage: String, status: Int?, code: String): LoginF
     val details =
         listOfNotNull(status?.let { "HTTP $it" }, code.takeIf { hint != null }).joinToString(" / ")
     return LoginFailure(
-        "$stage に失敗しました ($details)。${hint ?: "認証サーバーの設定を確認してください"}",
+        "${stage.label} に失敗しました ($details)。${hint ?: "認証サーバーの設定を確認してください"}",
         requiresLogin = status != null && status in 400..499 && code in setOf("invalid_grant", "invalid_client", "unauthorized_client", "access_denied", "expired_token"),
-    )
+    ) { text ->
+        val translatedHint = when (code.takeIf { hint != null }) {
+            "unauthorized_client" -> text.t("android.login.oauthHint.unauthorizedClient")
+            "invalid_target" -> text.t("android.login.oauthHint.invalidTarget")
+            "invalid_scope" -> text.t("android.login.oauthHint.invalidScope")
+            "invalid_client" -> text.t("android.login.oauthHint.invalidClient")
+            "access_denied" -> text.t("android.login.oauthHint.accessDenied")
+            "invalid_grant" -> text.t("android.login.oauthHint.invalidGrant")
+            else -> text.t("android.login.oauthHint.checkServer")
+        }
+        text.t("android.login.stepFailed", "stage" to stage.text(text), "details" to details, "hint" to translatedHint)
+    }
 }
 
 /** Read timeouts and generic IO failures may follow a successful token exchange. */
@@ -234,6 +291,18 @@ private fun Throwable.isConnectionFailure(): Boolean {
 
 
 internal const val wifiSignInMessage = "Wi-Fiのログインが必要です。AndroidのWi-Fi設定から接続を完了し、再試行してください。"
+
+/** [loginNetworkMessage] の表示言語版（比較には日本語の [wifiSignInMessage] を使う）。 */
+internal fun loginNetworkText(failure: Throwable, captivePortal: Boolean, text: LoginText): String? {
+    if (captivePortal) return text.t("android.login.wifiSignIn")
+    return when (loginNetworkIssue(failure)) {
+        LoginNetworkIssue.Dns -> text.t("android.login.network.dns")
+        LoginNetworkIssue.Certificate -> text.t("android.login.network.certificate")
+        LoginNetworkIssue.Timeout -> text.t("android.login.network.timeout")
+        LoginNetworkIssue.Connection, LoginNetworkIssue.Io -> text.t("android.login.network.connection")
+        null -> null
+    }
+}
 
 internal fun loginNetworkMessage(failure: Throwable, captivePortal: Boolean): String? {
     if (captivePortal) return wifiSignInMessage

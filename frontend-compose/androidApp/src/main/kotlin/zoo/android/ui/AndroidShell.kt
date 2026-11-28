@@ -149,10 +149,7 @@ internal fun AndroidShell(
                                 ) {
                                     UiGlyph(page.icon, if (active) colors.foreground else colors.secondary)
                                 }
-                                Text(
-                                    androidLabel(page.translationKey, page.title), color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
-                                    fontWeight = if (active) AndroidWeights.label else AndroidWeights.body,
-                                )
+                                NavigationLabel(androidLabel(page.translationKey, page.title), active, colors)
                             }
                         }
                     }
@@ -198,11 +195,25 @@ private fun NavigationRailColumn(section: TopPage?, colors: AndroidColors, onSel
                         .size(width = AndroidControlSize.target, height = AndroidControlSize.navigationIndicatorHeight),
                     contentAlignment = Alignment.Center,
                 ) { UiGlyph(page.icon, if (active) colors.foreground else colors.secondary) }
-                Text(androidLabel(page.translationKey, page.title), color = if (active) colors.foreground else colors.secondary,
-                    fontSize = 11.sp, fontWeight = if (active) AndroidWeights.label else AndroidWeights.body, maxLines = 1)
+                NavigationLabel(androidLabel(page.translationKey, page.title), active, colors)
             }
         }
     }
+}
+
+/**
+ * タブの名前。言語によって長さが変わるので 1 行に収め、入らなければ 8sp まで縮める（英語の Notifications など）。
+ */
+@Composable
+private fun NavigationLabel(text: String, active: Boolean, colors: AndroidColors) {
+    androidx.compose.foundation.text.BasicText(
+        text, Modifier.padding(horizontal = 2.dp),
+        style = androidx.compose.ui.text.TextStyle(color = if (active) colors.foreground else colors.secondary,
+            fontWeight = if (active) AndroidWeights.label else AndroidWeights.body,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center),
+        maxLines = 1,
+        autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize = 8.sp, maxFontSize = 11.sp, stepSize = 0.5.sp),
+    )
 }
 
 @Composable
@@ -226,9 +237,10 @@ internal fun PageHeader(
         if (onBack != null) {
             UiIconButton(UiIcon.Back, androidLabel("home.back", "戻る"), colors.foreground, onBack)
         } else ZooBadge(colors, Modifier.size(26.dp))
+        val openSettingsLabel = androidLabel("android.channel.openSettings", "チャンネル設定を開く")
         val titleAction = if (onOpen == null) Modifier else Modifier
             .heightIn(min = AndroidControlSize.target)
-            .clickable(role = Role.Button, onClickLabel = "チャンネル設定を開く", onClick = onOpen)
+            .clickable(role = Role.Button, onClickLabel = openSettingsLabel, onClick = onOpen)
         Row(
             Modifier.weight(1f).then(titleAction),
             verticalAlignment = Alignment.CenterVertically,
