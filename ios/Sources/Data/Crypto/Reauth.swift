@@ -3,16 +3,9 @@ import CryptoKit
 import Foundation
 import UIKit
 
-/// E2EE の直前の再認証（docs/e2ee.md の「初回設定と解錠の流れ」の 7 と「クロス署名」の API。#685）。
-///
-/// iOS はふだんのログインにデバイス認可グラントを使うので、`max_age` を付けた ID トークンを取れない。
-/// 再認証のときだけ、認可コードフロー（PKCE の S256、`max_age=0`、`state`、`nonce`）を `ASWebAuthenticationSession`
-/// で開き、`works.zli.zoo:/reauth-callback` で認可コードを受け取って、トークンエンドポイントで ID トークンに換える
-/// （Android の `Reauth.kt`、TUI の `auth/reauth.rs` と同じ要求と検査）。今のセッションのトークンは変えない。
-/// PKCE の code verifier と `nonce` はメモリーにだけ置く。
-///
-/// AuthZ の iOS のクライアントには、リダイレクト URI `works.zli.zoo:/reauth-callback` を登録し、zoo2-infra の
-/// `OIDC_REAUTH_AUDIENCES` にそのクライアント ID を足す。
+/// ログインと暗号化操作の再認証で共有する OIDC 認可コード要求。
+/// PKCE の verifier、state、nonce はメモリーにだけ保持する。
+/// AuthZ の iOS クライアントには関連付け済みドメインの HTTPS コールバックを登録する。
 struct ReauthRequest: Equatable {
     /// 認可リクエストの URL。
     let url: URL
@@ -21,8 +14,9 @@ struct ReauthRequest: Equatable {
     let nonce: String
     let verifier: String
 
-    static let callbackScheme = "works.zli.zoo"
-    static let redirectURI = "works.zli.zoo:/reauth-callback"
+    static let callbackHost = "account.zli.works"
+    static let callbackPath = "/ios/oauth/callback"
+    static let redirectURI = "https://\(callbackHost)\(callbackPath)"
     /// 利用者がログインし直すのを待つ時間（Web、TUI、Android と同じ 10 分）。
     static let timeout: Duration = .seconds(10 * 60)
 
@@ -45,7 +39,8 @@ struct ReauthRequest: Equatable {
     /// `resource` はふだんのログインと同じ値（空なら付けない）。
     static func create(authorizationEndpoint: String, clientID: String, resource: String,
                        state: String? = nil, nonce: String? = nil,
-                       verifier: String? = nil) throws -> ReauthRequest {
+                       verifier: String? = nil, forceReauth: Bool = true,
+                       scope: String = "openid profile offline_access") throws -> ReauthRequest {
         let state = try state ?? randomToken()
         let nonce = try nonce ?? randomToken()
         let verifier = try verifier ?? randomToken()
@@ -57,19 +52,19 @@ struct ReauthRequest: Equatable {
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
-            URLQueryItem(name: "scope", value: "openid profile")
+            URLQueryItem(name: "scope", value: forceReauth ? "openid profile" : scope)
         ]
         if !resource.trimmingCharacters(in: .whitespaces).isEmpty { items.append(URLQueryItem(name: "resource", value: resource)) }
         items += [
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "nonce", value: nonce),
             URLQueryItem(name: "code_challenge", value: codeChallenge(verifier)),
-            URLQueryItem(name: "code_challenge_method", value: "S256"),
-            // 既存の AuthZ のセッションがあっても、必ずログインし直させる。
-            URLQueryItem(name: "max_age", value: "0")
+            URLQueryItem(name: "code_challenge_method", value: "S256")
         ]
+        // 通常ログインでは更新トークンの同意を取り、暗号鍵の保存直前だけ再認証を要求する。
+        items.append(forceReauth ? URLQueryItem(name: "max_age", value: "0") : URLQueryItem(name: "prompt", value: "consent"))
         let existing = parts.queryItems ?? []
-        let generatedNames = Set(items.map(\.name))
+        let generatedNames = Set(items.map(\.name)).union(["max_age", "prompt"])
         guard Set(existing.map(\.name)).count == existing.count,
               existing.allSatisfy({ !generatedNames.contains($0.name) }) else { throw ZooError.invalidConfiguration }
         parts.queryItems = existing + items
@@ -79,7 +74,7 @@ struct ReauthRequest: Equatable {
 }
 
 /// 再認証の失敗。
-enum ReauthError: Error, Equatable {
+enum ReauthError: Error, Equatable, LocalizedError {
     /// AuthZ がエラーを返した、または利用者が取り消した。
     case denied(String)
     /// 時間内に終わらなかった。
@@ -88,6 +83,15 @@ enum ReauthError: Error, Equatable {
     case browserUnavailable
     /// ID トークンを受け付けられない（iss、aud、exp、nonce の不一致など）。
     case invalidIDToken(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .denied: "認証を完了できませんでした。もう一度お試しください。"
+        case .timeout: "認証が時間内に終わりませんでした。もう一度お試しください。"
+        case .browserUnavailable: "認証画面を開けませんでした。もう一度お試しください。"
+        case .invalidIDToken: "認証サーバーの応答を確認できませんでした。もう一度ログインしてください。"
+        }
+    }
 }
 
 enum ReauthCallback: Equatable {
@@ -98,11 +102,13 @@ enum ReauthCallback: Equatable {
     /// ほかのアプリが同じ URL でこのアプリを開いても、`state` を知らなければ何もできない）。
     static func parse(_ url: URL, request: ReauthRequest) -> ReauthCallback? {
         guard var callback = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let items = callback.queryItems else { return nil }
+              let items = callback.queryItems,
+              Set(items.map(\.name)).count == items.count else { return nil }
         callback.query = nil
         guard callback.string == request.redirectURI else { return nil }
         func value(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
-        guard value("state") == request.state else { return nil }
+        guard value("state") == request.state,
+              !(value("code") != nil && value("error") != nil) else { return nil }
         if let error = value("error") {
             return .error(error + (value("error_description").map { " (\($0))" } ?? ""))
         }
@@ -138,7 +144,8 @@ func validateIDToken(_ idToken: String, issuer: String, clientID: String, nonce:
 final class Reauthenticator: NSObject {
     private let auth: Authentication
     private var session: ASWebAuthenticationSession?
-    private var timedOut = false
+    private var pending: (id: UUID, continuation: CheckedContinuation<ReauthCallback, any Error>)?
+    private var timeoutTask: Task<Void, Never>?
 
     init(auth: Authentication) { self.auth = auth }
 
@@ -160,42 +167,66 @@ final class Reauthenticator: NSObject {
         case .code(let value): code = value
         case .error(let reason): throw ReauthError.denied(reason)
         }
-        let token = try await auth.exchangeReauthCode(code, verifier: request.verifier, redirectURI: request.redirectURI)
+        let token = try await auth.exchangeReauthCode(code, verifier: request.verifier, redirectURI: request.redirectURI, discovery: discovery)
         try validateIDToken(token, issuer: discovery.issuer, clientID: auth.settings.clientID, nonce: request.nonce)
         return token
     }
 
-    private func open(_ request: ReauthRequest) async throws -> ReauthCallback {
-        timedOut = false
-        // 時間内に終わらなければ、ブラウザーを閉じて `timeout` にする。
-        let timer = Task { @MainActor in
-            try await Task.sleep(for: ReauthRequest.timeout)
-            timedOut = true
-            session?.cancel()
-        }
-        defer { timer.cancel(); session = nil }
-        do {
-            return try await withCheckedThrowingContinuation { continuation in
-                let session = ASWebAuthenticationSession(url: request.url, callbackURLScheme: ReauthRequest.callbackScheme) { url, error in
-                    if let error {
-                        let cancelled = (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
-                        continuation.resume(throwing: cancelled ? ReauthError.denied("取り消しました") : ReauthError.browserUnavailable)
-                    } else if let url, let parsed = ReauthCallback.parse(url, request: request) {
-                        continuation.resume(returning: parsed)
-                    } else {
-                        continuation.resume(throwing: ReauthError.denied("リダイレクトを読めません"))
+    /// アプリ内の認証ブラウザーで、AuthZ のパスキー認証を開く。
+    func open(_ request: ReauthRequest) async throws -> ReauthCallback {
+        try Task.checkCancellation()
+        guard pending == nil else { throw ReauthError.denied("認証を実行中です") }
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                pending = (id, continuation)
+                // webcredentials の関連付けで呼出元アプリを確かめ、同じスキームを名乗る別アプリへの発行を防ぐ。
+                let browser = ASWebAuthenticationSession(url: request.url,
+                    callback: .https(host: ReauthRequest.callbackHost, path: ReauthRequest.callbackPath)) { [weak self] url, error in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if let error {
+                            let cancelled = (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
+                            self.finish(.failure(cancelled ? CancellationError() : ReauthError.browserUnavailable), id: id)
+                        } else if let url, let parsed = ReauthCallback.parse(url, request: request) {
+                            self.finish(.success(parsed), id: id)
+                        } else {
+                            self.finish(.failure(ReauthError.denied("リダイレクトを読めません")), id: id)
+                        }
                     }
                 }
-                session.presentationContextProvider = self
-                // 既存の AuthZ のセッションがあっても、max_age=0 でログインし直させる。
-                session.prefersEphemeralWebBrowserSession = false
-                self.session = session
-                if !session.start() { continuation.resume(throwing: ReauthError.browserUnavailable) }
+                browser.presentationContextProvider = self
+                browser.prefersEphemeralWebBrowserSession = false
+                session = browser
+                timeoutTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: ReauthRequest.timeout) } catch { return }
+                    self?.cancel(id: id, error: ReauthError.timeout)
+                }
+                if !browser.start() { finish(.failure(ReauthError.browserUnavailable), id: id) }
             }
-        } catch ReauthError.denied where timedOut {
-            throw ReauthError.timeout
+        } onCancel: {
+            Task { @MainActor in self.cancel(id: id, error: CancellationError()) }
         }
     }
+
+    private func cancel(id: UUID, error: any Error) {
+        guard pending?.id == id else { return }
+        let browser = session
+        // cancel の通知が来なくても待機を終え、遅れた通知を次の要求へ適用しない。
+        finish(.failure(error), id: id)
+        browser?.cancel()
+    }
+
+    private func finish(_ result: Result<ReauthCallback, any Error>, id: UUID) {
+        guard let pending, pending.id == id else { return }
+        self.pending = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        session = nil
+        pending.continuation.resume(with: result)
+    }
+
 }
 
 extension Reauthenticator: ASWebAuthenticationPresentationContextProviding {

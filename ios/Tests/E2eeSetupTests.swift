@@ -588,7 +588,7 @@ struct ReauthTests {
         #expect(items["code_challenge_method"] == "S256")
         #expect(items["scope"] == "openid profile")
         #expect(items["state"] == "s1" && items["nonce"] == "n1")
-        #expect(items["redirect_uri"] == "works.zli.zoo:/reauth-callback")
+        #expect(items["redirect_uri"] == "https://account.zli.works/ios/oauth/callback")
         #expect(items["code_challenge"] == ReauthRequest.codeChallenge(String(repeating: "v", count: 43)))
     }
 
@@ -605,15 +605,17 @@ struct ReauthTests {
 
     @Test func コールバックはstateが合うときだけ受け取る() throws {
         let request = try request()
-        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?code=abc&state=s1")!, request: request) == .code("abc"))
-        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?code=abc&state=other")!, request: request) == nil)
-        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/elsewhere?code=abc&state=s1")!, request: request) == nil)
-        for uri in ["works.zli.zoo:/reauth-callback/", "works.zli.zoo://other/reauth-callback", "works.zli.zoo:/reauth%2Dcallback"] {
+        #expect(ReauthCallback.parse(URL(string: "https://account.zli.works/ios/oauth/callback?code=abc&state=s1")!, request: request) == .code("abc"))
+        #expect(ReauthCallback.parse(URL(string: "https://account.zli.works/ios/oauth/callback?code=abc&state=other")!, request: request) == nil)
+        #expect(ReauthCallback.parse(URL(string: "https://account.zli.works/elsewhere?code=abc&state=s1")!, request: request) == nil)
+        for uri in ["https://account.zli.works/ios/oauth/callback/", "https://other.zli.works/ios/oauth/callback",
+                    "http://account.zli.works/ios/oauth/callback", "https://account.zli.works:444/ios/oauth/callback",
+                    "https://account.zli.works/ios/oauth/%63allback", "works.zli.zoo:/reauth-callback"] {
             #expect(ReauthCallback.parse(URL(string: uri + "?code=abc&state=s1")!, request: request) == nil)
         }
-        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?error=access_denied&state=s1")!, request: request)
+        #expect(ReauthCallback.parse(URL(string: "https://account.zli.works/ios/oauth/callback?error=access_denied&state=s1")!, request: request)
             == .error("access_denied"))
-        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?state=s1")!, request: request)
+        #expect(ReauthCallback.parse(URL(string: "https://account.zli.works/ios/oauth/callback?state=s1")!, request: request)
             == .error("認可コードがありません"))
     }
 
