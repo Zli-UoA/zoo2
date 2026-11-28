@@ -10,7 +10,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient, GlobalSearchClient {
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
-    func channelPins() async throws -> ChannelPins
+    func channelPins(allowOfflineFallback: Bool) async throws -> ChannelPins
     func observeChannelPinChanges(receive: @MainActor () -> Void) async throws
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins
     func members(channelID: String) async throws -> [ChannelMembership]
@@ -52,6 +52,7 @@ struct CachedWorkspace: Sendable {
 }
 
 extension ChatClient {
+    func channelPins() async throws -> ChannelPins { try await channelPins(allowOfflineFallback: true) }
     func readState(channelID: String) async throws -> ChannelReadState {
         try await readState(channelID: channelID, allowCached: true)
     }

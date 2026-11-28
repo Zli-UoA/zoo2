@@ -114,7 +114,8 @@ struct NativeChatClient: ChatClient {
     }
 
     func cachedGet<T: Codable & Sendable>(_ path: String, query: [String: String] = [:],
-                                         channelID: String? = nil, allowCached: Bool = true) async throws -> T {
+                                         channelID: String? = nil, allowCached: Bool = true,
+                                         allowOfflineFallback: Bool = true) async throws -> T {
         // 旧形式の会話単位の行には権限タグがないため、新しい名前空間だけを読む。
         let key = (channelID == nil ? "rest:" : "channel-rest:") + path
             + query.sorted { $0.key < $1.key }.map { "|\($0.key)=\($0.value)" }.joined()
@@ -137,7 +138,7 @@ struct NativeChatClient: ChatClient {
             if case ZooError.rejected(let status, _) = error, status == 403 || status == 404, let channelID {
                 try await sync?.revokeChannel(channelID)
             }
-            if allowCached, isOfflineFailure(error), let value = try await sync?.load(key, as: T.self) {
+            if allowCached, allowOfflineFallback, isOfflineFailure(error), let value = try await sync?.load(key, as: T.self) {
                 try sync?.check(channelID: channelID, channelVersion: version)
                 try sync?.checkRevocationVersion(revocationVersion)
                 return value
@@ -146,7 +147,9 @@ struct NativeChatClient: ChatClient {
         }
     }
 
-    func channelPins() async throws -> ChannelPins { try await cachedGet("api/channel-pins") }
+    func channelPins(allowOfflineFallback: Bool) async throws -> ChannelPins {
+        try await cachedGet("api/channel-pins", allowOfflineFallback: allowOfflineFallback)
+    }
     func observeChannelPinChanges(receive: @MainActor () -> Void) async throws {
         var previous: [ChannelPin]?
         try await shapes.observe("api/shapes/user_pinned_channels", query: [:], as: ChannelPin.self) { rows in

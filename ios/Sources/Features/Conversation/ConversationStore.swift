@@ -754,6 +754,20 @@ final class ConversationStore {
         }
     }
 
+    func releaseHistory() {
+        guard channel.encrypted == true else { return }
+        // 閉じた暗号化会話に取得済みの履歴を蓄積させず、送信中の処理と下書きは維持する。
+        streamGeneration = UUID()
+        feedMemory.reset()
+        feedRequest = MessageFeedRequest()
+        pageLimits = [:]; morePages = [:]; pendingHistoryKey = nil
+        loadingOlder = false; showingCachedMessages = false; loading = true
+        syncError = nil; focusedMessageID = nil
+        messages = []; remoteMessages = []
+        clearAttachments()
+        clearReactions()
+    }
+
     func shutdown() {
         feedMemory.reset()
         active = false

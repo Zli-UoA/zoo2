@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Synchronization
 import Testing
 @testable import Zoo
@@ -237,6 +238,55 @@ struct ChatPresentationAPITests {
         await task.value
         #expect(shapes.withLock { $0 } == 4)
         #expect(lists.withLock { $0 } == 2)
+    }
+
+    @Test("変更後のピン取得がタイムアウトしても古いキャッシュで同期完了にせず再試行する", .timeLimit(.minutes(1)))
+    func livePinsRetriesAfterCachedFallback() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let user = Person(id: "you", user_name: "you", display_name: "あなた")
+        let cache = try await SyncCache.open(inMemory: true)
+        let sync = SyncSession(cache: cache, lease: try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: user))
+        let workspace = WorkspaceStore(client: NativeChatClient(api: harness.api, sync: sync), user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let id = channel.id
+        let recovered = Mutex(false), requests = Mutex(0)
+        let failed = AsyncStream<Void>.makeStream()
+        defer { failed.continuation.finish() }
+        harness.stub { request in
+            if request.url?.path == "/api/channel-pins" {
+                let count = requests.withLock { $0 += 1; return $0 }
+                if count == 1 { return (200, [:], Data(#"{"pins":[{"channel_id":"old","position":0}],"version":1}"#.utf8)) }
+                if !recovered.withLock({ $0 }) {
+                    if count == 3 { failed.continuation.yield(()) }
+                    throw URLError(.timedOut)
+                }
+                return (200, [:], Data("{\"pins\":[{\"channel_id\":\"\(id)\",\"position\":0}],\"version\":2}".utf8))
+            }
+            #expect(request.url?.path == "/api/shapes/user_pinned_channels")
+            let body = "[{\"key\":\"pin\",\"headers\":{\"operation\":\"insert\"},\"value\":{\"channel_id\":\"\(id)\",\"position\":\"0\"}}]"
+            return (200, ["electric-handle": "pins", "electric-offset": "1_0", "electric-up-to-date": "true"], Data(body.utf8))
+        }
+        await workspace.loadPins()
+        try #require(workspace.pinnedChannelIDs == ["old"])
+        let task = Task { defer { failed.continuation.finish() }; await workspace.runPins() }
+        defer { task.cancel() }
+        var failures = failed.stream.makeAsyncIterator()
+        try #require(await failures.next() != nil)
+        #expect(workspace.pinnedChannelIDs == ["old"])
+        recovered.withLock { $0 = true }
+        while workspace.pinnedChannelIDs != [id] {
+            let update = AsyncStream<Void>.makeStream()
+            withObservationTracking { _ = workspace.pinnedChannelIDs } onChange: {
+                update.continuation.yield(())
+                update.continuation.finish()
+            }
+            for await _ in update.stream { break }
+            try Task.checkCancellation()
+        }
+        #expect(workspace.pinsError == nil)
+        #expect(try await sync.load("rest:api/channel-pins", as: ChannelPins.self)?.pins.map(\.channel_id) == [id])
+        task.cancel(); await task.value
     }
 
     @Test("ピンの不正な位置を0として受け入れない", arguments: ["null", "true", "1.5", "\"1.5\"", "\"9223372036854775808\"", "\"unknown\""])

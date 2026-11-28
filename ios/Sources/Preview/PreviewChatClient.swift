@@ -278,7 +278,7 @@ final class PreviewChatClient: ChatClient {
         callInvitationsChanged?.yield(callInvitations)
     }
 
-    func channelPins() async throws -> ChannelPins {
+    func channelPins(allowOfflineFallback: Bool) async throws -> ChannelPins {
         pins
     }
     func observeChannelPinChanges(receive: @MainActor () -> Void) async throws {

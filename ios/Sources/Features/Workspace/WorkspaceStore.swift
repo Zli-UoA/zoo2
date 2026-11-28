@@ -100,9 +100,14 @@ final class WorkspaceStore {
     }
     @ObservationIgnored private var tabVisit = UUID()
     var channelPath: [ChatRoute] = [] {
-        didSet { if let channelID = channelPath.first?.channelID { lastChannelID = channelID } }
+        didSet {
+            if let channelID = channelPath.first?.channelID { lastChannelID = channelID }
+            releaseClosedConversations(oldValue)
+        }
     }
-    var dmPath: [ChatRoute] = []
+    var dmPath: [ChatRoute] = [] {
+        didSet { releaseClosedConversations(oldValue) }
+    }
     var profilePath: [ProfileDestination] = []
     var publicProfile: PublicProfile?
     var profileLoadRequest: UUID?
@@ -341,7 +346,7 @@ final class WorkspaceStore {
         guard active else { return }
         let epoch = revocationGeneration
         do {
-            try await fetchPins()
+            try await fetchPins(allowOfflineFallback: true)
         } catch {
             guard active, revocationGeneration == epoch, !Task.isCancelled else { return }
             if case ZooError.expiredSession = error { report(error) }
@@ -349,9 +354,9 @@ final class WorkspaceStore {
         }
     }
 
-    private func fetchPins() async throws {
+    private func fetchPins(allowOfflineFallback: Bool = false) async throws {
         let epoch = revocationGeneration
-        let result = try await client.channelPins()
+        let result = try await client.channelPins(allowOfflineFallback: allowOfflineFallback)
         try Task.checkCancellation()
         guard active, revocationGeneration == epoch else { throw CancellationError() }
         applyPins(result)
@@ -375,7 +380,7 @@ final class WorkspaceStore {
         defer { updatingPin = false }
         do {
             if pinsVersion == nil {
-                let latest = try await client.channelPins()
+                let latest = try await client.channelPins(allowOfflineFallback: false)
                 try Task.checkCancellation()
                 guard active, revocationGeneration == epoch else { return }
                 applyPins(latest)
@@ -390,7 +395,7 @@ final class WorkspaceStore {
                     applyPins(result)
                     return
                 } catch ZooError.rejected(409, _) where attempt == 0 {
-                    let latest = try await client.channelPins()
+                    let latest = try await client.channelPins(allowOfflineFallback: false)
                     try Task.checkCancellation()
                     guard active, revocationGeneration == epoch else { return }
                     applyPins(latest)
@@ -523,6 +528,13 @@ final class WorkspaceStore {
             guard let person = people.values.first(where: { $0.user_name.caseInsensitiveCompare(username) == .orderedSame }),
                   mentions.userIDs.contains(person.id) else { return nil }
             return person.id == user.id
+        }
+    }
+
+    private func releaseClosedConversations(_ previous: [ChatRoute]) {
+        let openIDs = Set((channelPath + dmPath).map(\.channelID))
+        for id in Set(previous.map(\.channelID)).subtracting(openIDs) {
+            conversations[id]?.releaseHistory()
         }
     }
 

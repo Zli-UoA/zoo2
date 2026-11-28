@@ -25,6 +25,7 @@ final class AppSession {
     private var needsCacheCleanup = false
     private var destinationDelivery: (id: UUID, target: PushDestination, task: Task<Bool, Never>)?
     private var validatedSession = false
+    private var profileNeedsSaving = false
 
     init(settings: ConnectionSettings = ConnectionSettings(), transport: HTTPTransport = HTTPTransport(),
          notificationStore: any PushReceiptStore = KeychainPushReceiptStore(),
@@ -159,7 +160,17 @@ final class AppSession {
                 try await installWorkspace(user, cache: syncCache, epoch: epoch)
             } else if let workspace, let syncSession {
                 workspace.updateCurrentUser(user)
-                try await syncCache.updateProfile(user, lease: syncSession.lease)
+                do {
+                    try await syncCache.updateProfile(user, lease: syncSession.lease)
+                    try Task.checkCancellation()
+                    guard generation == epoch else { return }
+                    profileNeedsSaving = false
+                } catch {
+                    guard generation == epoch, !Task.isCancelled else { return }
+                    if error is CancellationError { throw error }
+                    profileNeedsSaving = true
+                    self.error = "本人情報を端末に保存できませんでした。次の接続時に再試行します。"
+                }
                 try Task.checkCancellation()
                 guard generation == epoch else { return }
             }
@@ -193,6 +204,7 @@ final class AppSession {
         workspace?.shutdown()
         let sync = SyncSession(cache: cache, lease: lease)
         syncSession = sync
+        profileNeedsSaving = false
         userID = user.id
         let client = NativeChatClient(api: api, sync: sync)
         let journal = KeychainCallSessionJournal(account: SyncCache.connectionKey(api.settings) + ":" + user.id)
@@ -296,6 +308,7 @@ final class AppSession {
         workspace = nil
         userID = nil
         validatedSession = false
+        profileNeedsSaving = false
         if !Self.isUITesting {
             ZooShortcuts.updateAppShortcutParameters()
             SiriVocabulary.update(nil)
@@ -315,7 +328,7 @@ final class AppSession {
             isStarting = false
             if !Self.isUITesting { SiriVocabulary.refreshAuthorization(workspace) }
         }
-        if userID == nil || !validatedSession {
+        if userID == nil || !validatedSession || profileNeedsSaving {
             guard !connecting else { return }
             var epoch = generation
             do {

@@ -1380,12 +1380,14 @@ struct PersistentSyncIntegrationTests {
         if encrypted { #expect(try await sync.cache.load("messages-v1:" + syncChannel, lease: sync.lease) == nil) }
     }
 
-    @Test("暗号化履歴500件は10回の追加取得で読み、表示の破棄後は最初の50件から再開する")
-    func encryptedHistoryUsesOnlyNewPages() async throws {
+    @Test("暗号化履歴500件は10回で読み、一覧へ戻った後は最初の50件から再開する", arguments: [false, true])
+    func encryptedHistoryUsesOnlyNewPages(directMessage: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let sync = try await session(harness)
         let subsets = Mutex(0)
+        let ready = AsyncStream<Bool>.makeStream()
+        defer { ready.continuation.finish() }
         harness.stub { request in
             let query = Dictionary((URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
                 .map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, new in new })
@@ -1395,19 +1397,55 @@ struct PersistentSyncIntegrationTests {
                 let last = parameters["2"].flatMap { Int($0.suffix(12)) } ?? 501
                 return (200, ["electric-handle": "h", "electric-offset": "100_0"], try subsetData(Array((last - 50)..<last)))
             }
+            if query["live"] == "true" {
+                ready.continuation.yield(true)
+                try await Task.sleep(for: .seconds(60))
+            }
             return (200, ["electric-handle": "h", "electric-offset": "100_0", "electric-up-to-date": "true"], Data("[]".utf8))
         }
         let client = NativeChatClient(api: harness.api, sync: sync)
-        let memory = MessageFeedMemory()
+        let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        workspace.e2ee = E2eeController.makePreview(userID: syncUser.id)
+        let channel = Channel(id: syncChannel, channel_name: "暗号化履歴", is_private: true, is_dm: directMessage, encrypted: true)
+        workspace.addAndOpen(channel)
+        let store = workspace.conversation(for: channel)
+        store.drafts["root"] = "保持する下書き"
+        func start() -> Task<Void, Never> {
+            Task {
+                defer { ready.continuation.yield(false) }
+                await store.run()
+            }
+        }
+        var run = start()
+        defer { run.cancel() }
+        var iterator = ready.stream.makeAsyncIterator()
         for page in 1...10 {
-            let snapshot = try await feed(client, request: MessageFeedRequest(limit: page * 50, encrypted: true, memory: memory))
-            #expect(snapshot.messages?.count == page * 50)
+            if page > 1 {
+                store.loadOlder(parentID: nil)
+                run.cancel(); await run.value
+                try #require(await iterator.next() == false)
+                run = start()
+            }
+            try #require(await iterator.next() == true)
+            #expect(store.messages.count == page * 50)
             #expect(subsets.withLock { $0 } == page)
         }
         #expect(try await sync.cache.load("messages-v1:" + syncChannel, lease: sync.lease) == nil)
-        memory.reset()
-        let reopened = try await feed(client, request: MessageFeedRequest(encrypted: true, memory: memory))
-        #expect(reopened.messages?.count == 50)
+        let thread = ChatRoute.thread(channelID: channel.id, parentID: syncRow(500)["id"]!.text!, focusComposer: false)
+        if directMessage { workspace.dmPath.append(thread); workspace.dmPath.removeLast() }
+        else { workspace.channelPath.append(thread); workspace.channelPath.removeLast() }
+        #expect(store.messages.count == 500)
+        if directMessage { workspace.dmPath = [] } else { workspace.channelPath = [] }
+        #expect(store.messages.isEmpty && !store.hasOlder(parentID: nil))
+        #expect(store.drafts["root"] == "保持する下書き")
+        run.cancel(); await run.value
+        try #require(await iterator.next() == false)
+        workspace.addAndOpen(channel)
+        #expect(workspace.conversation(for: channel) === store)
+        run = start()
+        try #require(await iterator.next() == true)
+        #expect(store.messages.count == 50)
         #expect(subsets.withLock { $0 } == 11)
     }
 
@@ -1532,6 +1570,43 @@ struct PersistentSyncIntegrationTests {
         #expect(restored.user == latest)
         #expect(try await cache.profile(connection: connection) == latest)
         #expect(app.error == nil)
+    }
+
+    @Test("本人情報の保存失敗でも検証済みの接続を使い、次の接続で保存を再試行する")
+    func profileSaveFailureKeepsValidatedSession() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let fails = Mutex(false), requests = Mutex(0)
+        let cache = try await SyncCache.open(inMemory: true, beforeSave: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let connection = SyncCache.connectionKey(harness.api.settings)
+        _ = try await cache.activate(connection: connection, user: syncUser)
+        var latest = syncUser
+        latest.is_admin = true
+        latest.display_name = "最新の本人情報"
+        let response = try JSONEncoder().encode(latest)
+        harness.stub { request in
+            #expect(request.url?.path == "/api/users/me")
+            if requests.withLock({ $0 += 1; return $0 }) == 1 { fails.withLock { $0 = true } }
+            return (200, [:], response)
+        }
+        let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
+            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+        defer { app.logout() }
+        await app.resume()
+        let workspace = try #require(app.workspace)
+        #expect(workspace.user == latest)
+        #expect(app.error?.contains("保存できませんでした") == true)
+        #expect(try await app.prepareForShortcut() === workspace)
+        #expect(app.error != nil)
+        fails.withLock { $0 = false }
+        await app.resume()
+        #expect(app.error == nil)
+        #expect(try await cache.profile(connection: connection) == latest)
+        let completedRequests = requests.withLock { $0 }
+        #expect(try await app.prepareForShortcut() === workspace)
+        #expect(requests.withLock { $0 } == completedRequests)
     }
 
     @Test("保存したログイン状態があれば通信なしでワークスペースを復元する")
