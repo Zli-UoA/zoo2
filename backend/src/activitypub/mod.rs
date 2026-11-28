@@ -122,7 +122,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
                     url.to_owned()
                 }
             });
-            let mut attachment = json!({"type":"Document","mediaType":item["media_type"],"name":item["name"],"url":url});
+            let mut attachment = json!({"type":"Document","mediaType":item["media_type"],"name":item["description"].as_str().or(item["name"].as_str()),"url":url});
             attachment["sensitive"] = json!(item["is_sensitive"] == true);
             for key in ["width", "height", "blurhash"] {
                 if !item[key].is_null() {

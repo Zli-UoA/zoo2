@@ -56,6 +56,8 @@ struct NewPost {
     #[serde(default)]
     image_ids: Vec<String>,
     #[serde(default)]
+    image_descriptions: std::collections::HashMap<String, String>,
+    #[serde(default)]
     sensitive: bool,
     #[serde(default)]
     sensitive_image_ids: Vec<String>,
@@ -100,6 +102,15 @@ async fn create(
     user: AuthUser,
     Json(mut body): Json<NewPost>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    if body.image_descriptions.len() > 10
+        || body.image_descriptions.iter().any(|(id, description)| {
+            !body.image_ids.contains(id)
+                || description.chars().count() > 1000
+                || description.contains('\0')
+        })
+    {
+        return Err(AppError::BadRequest("Invalid image description".into()));
+    }
     if body.image_ids.is_empty() {
         validate_content(&body.content)?;
     } else if body.content.chars().count() > 1000 || body.content.contains('\0') {
@@ -239,6 +250,14 @@ async fn create(
     let sensitive = body.sensitive || nsfw;
     if let Some(images) = media.as_array_mut() {
         for (image, id) in images.iter_mut().zip(&body.image_ids) {
+            if let Some(description) = body
+                .image_descriptions
+                .get(id)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                image["description"] = json!(description);
+            }
             image["is_sensitive"] = json!(sensitive || body.sensitive_image_ids.contains(id));
         }
     }
