@@ -168,8 +168,12 @@ internal fun TimelineQuoteCard(
         Column(Modifier.fillMaxWidth().then(quoteLink), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val nameWidth = if (quote.handle == null) maxWidth else maxWidth * .46f
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp, openProfile)
+                val profileAction = if (openProfile == null) Modifier else Modifier
+                    .clickable(role = Role.Button, onClick = openProfile)
+                    .semantics { contentDescription = "「${quote.author}」のプロフィールを開く" }
+                Row(Modifier.fillMaxWidth().then(profileAction).heightIn(min = 28.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
                     Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
                         Modifier.widthIn(max = nameWidth), color = colors.foreground, fontSize = entryTextSize,
                         fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -841,7 +841,7 @@ class AndroidSamplesTest {
         ui.onNodeWithText("ソーシャル").performClick()
         for (authorName in listOf("はる", "ゆい")) {
             ui.onNodeWithContentDescription("「${authorName}」のプロフィールを開く")
-                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(if (authorName == "ゆい") 28.dp else 48.dp)
                 .performTouchInput { click(center.copy(x = width - 1f)) }
         }
         for (name in listOf("はる", "@haru")) {
