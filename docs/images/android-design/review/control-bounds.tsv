@@ -15,8 +15,8 @@ article-preview-light	絵文字	true	48.0	48.0	48.0	48.0	48.0	48.0	100.0	708.0	1
 article-preview-light	送信	true	48.0	48.0	48.0	48.0	48.0	48.0	308.0	708.0	308.0	708.0	1
 article-preview-light	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
 article-preview-light	開発 Zoo の開発と通話のテストについて相談するチャンネルです。	true	270.0	48.0	270.0	48.0	270.0	48.0	74.0	4.0	74.0	4.0	1
-attachment-save-share	共有	true	58.0	40.0	58.0	40.0	58.0	48.0	132.0	124.0	132.0	120.0	6967
-attachment-save-share	保存	true	58.0	40.0	58.0	40.0	58.0	48.0	198.0	124.0	198.0	120.0	6967
+attachment-save-share	共有	true	75.0	40.0	75.0	40.0	75.0	48.0	98.0	124.0	98.0	120.0	7523
+attachment-save-share	保存	true	75.0	40.0	75.0	40.0	75.0	48.0	181.0	124.0	181.0	120.0	7523
 bubble-dark	参加者	true	48.0	48.0	48.0	48.0	48.0	48.0	296.0	4.0	296.0	4.0	1
 bubble-dark	入力中の内容を参加者に共有	true	280.0	24.0	280.0	24.0	280.0	48.0	16.0	660.0	16.0	648.0	1
 bubble-dark	入力を消去	false	48.0	48.0	48.0	48.0	48.0	48.0	308.0	648.0	308.0	648.0	1
@@ -70,15 +70,15 @@ channel-add-member-light	検索	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	72.0	
 channel-add-member-light	みずき @mizuki	true	360.0	64.0	360.0	64.0	360.0	64.0	0.0	128.0	0.0	128.0	1
 channel-add-member-light	ゆい @yui 参加済み	false	360.0	64.0	360.0	64.0	360.0	64.0	0.0	192.0	0.0	192.0	1
 channel-edit-dark	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
-channel-edit-dark		true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
-channel-edit-dark		true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
+channel-edit-dark	チャンネル名	true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
+channel-edit-dark	説明	true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
 channel-edit-dark	非公開	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	304.0	16.0	304.0	1
 channel-edit-dark	エンドツーエンド暗号化	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	368.0	16.0	368.0	1
 channel-edit-dark	センシティブな内容を含む	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	472.0	16.0	472.0	1
 channel-edit-dark	作成	true	87.0	48.0	87.0	48.0	87.0	48.0	257.0	696.0	257.0	696.0	1
 channel-edit-light	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
-channel-edit-light		true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
-channel-edit-light		true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
+channel-edit-light	チャンネル名	true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
+channel-edit-light	説明	true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
 channel-edit-light	非公開	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	304.0	16.0	304.0	1
 channel-edit-light	エンドツーエンド暗号化	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	368.0	16.0	368.0	1
 channel-edit-light	センシティブな内容を含む	true	328.0	48.0	328.0	48.0	328.0	48.0	16.0	472.0	16.0	472.0	1
@@ -136,12 +136,12 @@ channel-rich-light	送信	false	48.0	48.0	48.0	48.0	48.0	48.0	308.0	708.0	308.0	
 channel-rich-light	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
 channel-rich-light	開発 Zoo の開発と通話のテストについて相談するチャンネルです。	true	270.0	48.0	270.0	48.0	270.0	48.0	74.0	4.0	74.0	4.0	1
 channel-save-error-dark	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
-channel-save-error-dark		true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
-channel-save-error-dark		true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
+channel-save-error-dark	チャンネル名	true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
+channel-save-error-dark	説明	true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
 channel-save-error-dark	保存	true	87.0	48.0	87.0	48.0	87.0	48.0	257.0	696.0	257.0	696.0	1
 channel-save-error-light	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
-channel-save-error-light		true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
-channel-save-error-light		true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
+channel-save-error-light	チャンネル名	true	304.0	24.0	304.0	24.0	304.0	48.0	28.0	112.0	28.0	100.0	1
+channel-save-error-light	説明	true	304.0	72.0	304.0	72.0	304.0	72.0	28.0	204.0	28.0	204.0	1
 channel-save-error-light	保存	true	87.0	48.0	87.0	48.0	87.0	48.0	257.0	696.0	257.0	696.0	1
 channel-settings-dark	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	1
 channel-settings-dark	メンバー	true	360.0	48.0	360.0	48.0	360.0	48.0	0.0	164.0	0.0	164.0	1
@@ -694,26 +694,26 @@ home-timeline-tabs	検索	true	60.0	60.0	60.0	60.0	60.0	60.0	120.0	700.0	120.0	7
 home-timeline-tabs	通知	true	60.0	60.0	60.0	60.0	60.0	60.0	180.0	700.0	180.0	700.0	4644
 home-timeline-tabs	Bubble	true	60.0	60.0	60.0	60.0	60.0	60.0	240.0	700.0	240.0	700.0	4644
 home-timeline-tabs	設定	true	60.0	60.0	60.0	60.0	60.0	60.0	300.0	700.0	300.0	700.0	4644
-image-description-dark	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	7784
-image-description-dark	いま何してる？	true	328.0	336.0	328.0	336.0	328.0	336.0	16.0	72.0	16.0	72.0	7784
-image-description-dark	map.pngを添付から外す	true	26.0	26.0	26.0	26.0	48.0	48.0	83.0	431.0	72.0	420.0	7784
-image-description-dark	map.pngの説明を編集	true	44.0	36.0	44.0	36.0	48.0	48.0	16.0	524.0	14.0	518.0	7784
-image-description-dark	map.pngのセンシティブ指定を解除	true	44.0	36.0	44.0	36.0	48.0	48.0	68.0	524.0	66.0	518.0	7784
-image-description-dark		true	217.0	72.0	217.0	72.0	217.0	72.0	28.0	608.0	28.0	608.0	7784
-image-description-dark	完了	true	79.0	48.0	79.0	48.0	79.0	48.0	265.0	606.0	265.0	606.0	7784
-image-description-dark	写真	true	48.0	48.0	48.0	48.0	48.0	48.0	8.0	704.0	8.0	704.0	7784
-image-description-dark	絵文字	true	48.0	48.0	48.0	48.0	48.0	48.0	56.0	704.0	56.0	704.0	7784
-image-description-dark	投稿	true	87.0	48.0	87.0	48.0	87.0	48.0	265.0	704.0	265.0	704.0	7784
-image-description-light	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	7784
-image-description-light	いま何してる？	true	328.0	336.0	328.0	336.0	328.0	336.0	16.0	72.0	16.0	72.0	7784
-image-description-light	map.pngを添付から外す	true	26.0	26.0	26.0	26.0	48.0	48.0	83.0	431.0	72.0	420.0	7784
-image-description-light	map.pngの説明を編集	true	44.0	36.0	44.0	36.0	48.0	48.0	16.0	524.0	14.0	518.0	7784
-image-description-light	map.pngのセンシティブ指定を解除	true	44.0	36.0	44.0	36.0	48.0	48.0	68.0	524.0	66.0	518.0	7784
-image-description-light		true	217.0	72.0	217.0	72.0	217.0	72.0	28.0	608.0	28.0	608.0	7784
-image-description-light	完了	true	79.0	48.0	79.0	48.0	79.0	48.0	265.0	606.0	265.0	606.0	7784
-image-description-light	写真	true	48.0	48.0	48.0	48.0	48.0	48.0	8.0	704.0	8.0	704.0	7784
-image-description-light	絵文字	true	48.0	48.0	48.0	48.0	48.0	48.0	56.0	704.0	56.0	704.0	7784
-image-description-light	投稿	true	87.0	48.0	87.0	48.0	87.0	48.0	265.0	704.0	265.0	704.0	7784
+image-description-dark	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	8342
+image-description-dark	いま何してる？	true	328.0	336.0	328.0	336.0	328.0	336.0	16.0	72.0	16.0	72.0	8342
+image-description-dark	map.pngを添付から外す	true	26.0	26.0	26.0	26.0	48.0	48.0	83.0	431.0	72.0	420.0	8342
+image-description-dark	map.pngの説明を編集	true	44.0	36.0	44.0	36.0	48.0	48.0	16.0	524.0	14.0	518.0	8342
+image-description-dark	map.pngのセンシティブ指定を解除	true	44.0	36.0	44.0	36.0	48.0	48.0	68.0	524.0	66.0	518.0	8342
+image-description-dark	画像の説明 · map.png	true	217.0	72.0	217.0	72.0	217.0	72.0	28.0	608.0	28.0	608.0	8342
+image-description-dark	完了	true	79.0	48.0	79.0	48.0	79.0	48.0	265.0	606.0	265.0	606.0	8342
+image-description-dark	写真	true	48.0	48.0	48.0	48.0	48.0	48.0	8.0	704.0	8.0	704.0	8342
+image-description-dark	絵文字	true	48.0	48.0	48.0	48.0	48.0	48.0	56.0	704.0	56.0	704.0	8342
+image-description-dark	投稿	true	87.0	48.0	87.0	48.0	87.0	48.0	265.0	704.0	265.0	704.0	8342
+image-description-light	戻る	true	48.0	48.0	48.0	48.0	48.0	48.0	16.0	4.0	16.0	4.0	8342
+image-description-light	いま何してる？	true	328.0	336.0	328.0	336.0	328.0	336.0	16.0	72.0	16.0	72.0	8342
+image-description-light	map.pngを添付から外す	true	26.0	26.0	26.0	26.0	48.0	48.0	83.0	431.0	72.0	420.0	8342
+image-description-light	map.pngの説明を編集	true	44.0	36.0	44.0	36.0	48.0	48.0	16.0	524.0	14.0	518.0	8342
+image-description-light	map.pngのセンシティブ指定を解除	true	44.0	36.0	44.0	36.0	48.0	48.0	68.0	524.0	66.0	518.0	8342
+image-description-light	画像の説明 · map.png	true	217.0	72.0	217.0	72.0	217.0	72.0	28.0	608.0	28.0	608.0	8342
+image-description-light	完了	true	79.0	48.0	79.0	48.0	79.0	48.0	265.0	606.0	265.0	606.0	8342
+image-description-light	写真	true	48.0	48.0	48.0	48.0	48.0	48.0	8.0	704.0	8.0	704.0	8342
+image-description-light	絵文字	true	48.0	48.0	48.0	48.0	48.0	48.0	56.0	704.0	56.0	704.0	8342
+image-description-light	投稿	true	87.0	48.0	87.0	48.0	87.0	48.0	265.0	704.0	265.0	704.0	8342
 login-dark	ログイン	true	118.0	48.0	118.0	48.0	118.0	48.0	121.0	688.0	121.0	688.0	1
 login-light	ログイン	true	118.0	48.0	118.0	48.0	118.0	48.0	121.0	688.0	121.0	688.0	1
 login-restoring-dark	ログイン画面を開く	true	195.5	48.0	195.5	48.0	195.5	48.0	82.5	688.0	82.5	688.0	1

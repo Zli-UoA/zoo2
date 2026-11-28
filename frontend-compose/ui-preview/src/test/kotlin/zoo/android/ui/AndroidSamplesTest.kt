@@ -629,8 +629,10 @@ class AndroidSamplesTest {
         }
         ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second }
         ui.onNodeWithContentDescription("公開範囲：パブリック").performClick()
-        for (audience in listOf("パブリック", "ホーム", "フォロワー")) {
-            ui.onNodeWithText(audience).assertIsDisplayed()
+        ui.onNodeWithText("パブリック").assertIsSelected()
+        captureMenu("post-audience-menu")
+        for (audience in listOf("ホーム", "フォロワー")) {
+            ui.onNodeWithText(audience).assertIsDisplayed().assertIsNotSelected()
         }
         ui.onNodeWithText("ローカルのみ").assertDoesNotExist()
         ui.onNodeWithText("ホーム").performClick()
@@ -672,6 +674,7 @@ class AndroidSamplesTest {
         ui.onNodeWithTag("global-search-field").performTextReplacement("会議")
         ui.onNodeWithTag("search-filter-type").performClick()
         ui.onNode(hasText("すべて") and isSelected()).assertExists()
+        captureMenu("search-type-menu")
         ui.onNodeWithText("メッセージ").performClick()
         ui.onNodeWithText("メッセージ").assertDoesNotExist()
         ui.onNodeWithText("みずき", useUnmergedTree = true).performClick()
@@ -1347,6 +1350,30 @@ class AndroidSamplesTest {
         paint.color = android.graphics.Color.WHITE
         canvas.drawCircle(259f, 114f, 5f, paint)
         return bitmap.asImageBitmap()
+    }
+
+    @Test
+    fun recoveryFieldMasksInputAndRespectsDisabledState() {
+        var value by mutableStateOf("")
+        var enabled by mutableStateOf(true)
+        ui.setContent { RecoveryKeyField("リカバリーキー", value, enabled, AndroidColors(false)) { value = it } }
+        val field = ui.onNodeWithContentDescription("リカバリーキー")
+        field.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+        field.performTextInput("sample")
+        ui.runOnIdle { assertEquals("sample", value); enabled = false }
+        field.assertIsNotEnabled()
+    }
+
+    private fun captureMenu(name: String) {
+        ui.runOnIdle {
+            val popup = android.view.inspector.WindowInspector.getGlobalWindowViews().last { it.javaClass.simpleName == "PopupLayout" }
+            val bitmap = Bitmap.createBitmap(popup.width, popup.height, Bitmap.Config.ARGB_8888)
+            try {
+                popup.draw(Canvas(bitmap))
+                val out = File("build/reports/android-ui").apply { mkdirs() }
+                out.resolve("$name.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            } finally { bitmap.recycle() }
+        }
     }
 
     private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {
