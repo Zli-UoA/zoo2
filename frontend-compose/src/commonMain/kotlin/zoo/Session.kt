@@ -541,6 +541,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
         encryptedAttachments: List<JsonObject> = emptyList(),
         messageId: String = platform.uuid(),
+        onAccepted: (() -> Unit)? = null,
     ): Boolean {
         try { encryptedChannels.remember() }
         catch (failure: CancellationException) { throw failure }
@@ -617,7 +618,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
-            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row, onAccepted = onAccepted)
             // 移行中、未移行の子スレッドへの返信はサーバーで最上位の親へ正規化される。
             // 開いているスレッドを確定した親へ移し、送った返信が画面から外れないようにする。
             val resolved = ((result as? JsonObject)?.get("data") as? JsonObject)

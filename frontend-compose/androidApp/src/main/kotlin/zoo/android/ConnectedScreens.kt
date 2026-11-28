@@ -104,6 +104,9 @@ internal fun ConnectedScreens(
         }
     }
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
+    LaunchedEffect(messageTable) {
+        messageTable?.replicatedRows?.collect(state::reconcileOutgoing)
+    }
     if (channelId != null) DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
     val rows = if (messageTable == null) emptyList() else {
         val messages by messageTable.rows.collectAsState()
@@ -149,8 +152,8 @@ internal fun ConnectedScreens(
                 busy = true
                 scope.launch {
                     try {
-                        state.receiveShare(incoming, dest)
-                        finishShare()
+                        error = state.receiveShare(incoming, dest)
+                        if (error == null) finishShare()
                     } catch (e: CancellationException) { throw e }
                     catch (_: Exception) { error = "共有内容を開けませんでした" }
                     finally { busy = false }
@@ -580,7 +583,7 @@ internal fun ConnectedScreens(
         )
         state.overlay == "edit-entry" -> AndroidScreen.EditEntry(
             InputState(state.editDraft, expanded = true, canSend = env.online && !state.saving && state.editDraft.isNotBlank(),
-                selection = state.editSelection, characterLimit = if (state.editing?.item?.postHeader != null) 1000 else 40_000), original = state.editing?.item?.body)
+                selection = state.editSelection, characterLimit = 40_000), original = state.editing?.item?.body)
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()

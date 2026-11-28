@@ -677,6 +677,7 @@ class SyncedTable(
         body: JsonElement? = null,
         row: Row? = null,
         key: String? = row?.let(::rowKey),
+        onAccepted: (() -> Unit)? = null,
     ): JsonElement {
         // changes_only は購読を始めた時点より前の変更を送らない。最初のページが反映されるまで待つ。
         // 待った後で、キーの保留を検査してから登録する（間に中断点を置かない）。
@@ -685,6 +686,11 @@ class SyncedTable(
         if (key != null) optimistic.update { it + (key to row) }
         try {
             val result = api.request(path, method, body)
+            // Android renders a server-acknowledged row until replicatedRows confirms its ID.
+            if (onAccepted != null) {
+                onAccepted()
+                return result
+            }
             val txid = (result as? JsonObject)?.get("txid")?.jsonPrimitive?.contentOrNull
             if (txid == null && config.txidMode != "awaitMatch") return result
             if (txid != null && config.txidMode == "awaitTxId") {

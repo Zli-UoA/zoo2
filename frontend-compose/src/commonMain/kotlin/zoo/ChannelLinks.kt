@@ -52,10 +52,13 @@ private fun sameOriginLink(url: String, appBaseUrl: String): Url? {
 
 private val postLinkPath = Regex("^/(?:home/posts|api/activitypub/notes)/([^/]+)/?$")
 
-fun localPostLink(url: String, appBaseUrl: String): String? =
-    sameOriginLink(url, appBaseUrl)?.encodedPath?.let { postLinkPath.matchEntire(it) }
-        ?.groupValues?.get(1)?.let { runCatching { it.decodeURLPart() }.getOrNull() }
-        ?.takeIf { it.isNotBlank() && '/' !in it && it != "." && it != ".." }
+fun localPostLink(url: String, appBaseUrl: String): String? {
+    val path = sameOriginLink(url, appBaseUrl)?.encodedPath ?: return null
+    val segment = postLinkPath.matchEntire(path)?.groupValues?.get(1) ?: return null
+    val id = runCatching { segment.decodeURLPart() }.getOrNull() ?: return null
+    if (id.isBlank() || id == "." || id == ".." || id.any { it.isISOControl() }) return null
+    return id.takeIf { '/' !in it || path.startsWith("/home/posts/") && publicUrl(it) != null }
+}
 
 /**
  * アプリ内で行き先へ移動するパス。`message` はスレッドの返信へ移動する対象で、`thread` は開くスレッド。

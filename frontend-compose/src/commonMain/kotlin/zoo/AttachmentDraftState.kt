@@ -283,6 +283,29 @@ class AttachmentDrafts(
             ::add,
         )
 
+    private fun rejection(file: Row, count: Int): String? =
+        attachmentRejection(file, count)
+            ?: if (acceptedTypes?.let { attachmentType(file.text("name"), file.text("type")) !in it } == true) "unsupported"
+            else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
+
+    private fun rejectionLabel(reason: String) = app.t("attachments.$reason",
+        "max" to if (reason == "tooMany") MAX_ATTACHMENTS.toString() else (maximumBytes / (1024 * 1024)).toString())
+
+    /** Validate the complete incoming share before changing the destination draft. */
+    fun addShare(raw: String): String? {
+        val files = json.parseToJsonElement(raw).jsonObject.array("files").rows()
+        val errors = files.mapIndexedNotNull { index, file ->
+            val reason = rejection(file, items.size + index) ?: return@mapIndexedNotNull null
+            "${file.text("name")}: ${rejectionLabel(reason)}"
+        }
+        if (errors.isNotEmpty()) {
+            files.forEach { app.platform.action("fileRelease:${it.text("id")}") }
+            return errors.joinToString("\n")
+        }
+        add(raw)
+        return null
+    }
+
     fun add(raw: String): Boolean {
         val data = json.parseToJsonElement(raw).jsonObject
         val candidates = (data["files"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
@@ -301,16 +324,9 @@ class AttachmentDrafts(
                 return@forEach
             }
             handled = true
-            val rejected = attachmentRejection(file, items.size)
-                ?: if (acceptedTypes?.let { mime !in it } == true) "unsupported"
-                else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
+            val rejected = rejection(file, items.size)
             if (rejected != null) {
-                if (batchError == null)
-                    batchError =
-                        app.t(
-                            "attachments.$rejected",
-                            "max" to if (rejected == "tooMany") "10" else "50",
-                        )
+                if (batchError == null) batchError = rejectionLabel(rejected)
                 app.platform.action("fileRelease:${file.text("id")}")
                 return@forEach
             }

@@ -25,6 +25,9 @@ class ChannelLinksTest {
         assertEquals(external, parsed.external)
         assertNull(localPostLink("https://zoo.example:8000/home/posts/42", base))
         assertNull(localPostLink("$base/home/posts/%2Ffoo", base))
+        val remote = "https%3A%2F%2Fremote.example%2Fnotes%2F42"
+        assertEquals("https://remote.example/notes/42", localPostLink("$base/home/posts/$remote", base))
+        assertNull(localPostLink("$base/api/activitypub/notes/$remote", base))
     }
 
     private val app = "https://zoo.test"

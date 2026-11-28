@@ -63,14 +63,17 @@ internal class ConnectedScreenState(
     /** 暗号化した添付として上げる下書き（[channelFiles] のキー）。 */
     private val encryptedFileKeys = mutableSetOf<String>()
 
-    suspend fun receiveShare(share: IncomingShare, channelId: String?) {
+    suspend fun receiveShare(share: IncomingShare, channelId: String?): String? {
         val files = if (share.images.isEmpty()) null else platform.registerFiles(share.images)
+        if (files != null) {
+            val attachments = if (channelId == null) postFiles else attachmentDrafts(channelId, channelId)
+            attachments.addShare(files)?.let { return it }
+        }
         fun append(original: String) = listOf(original, share.text).filter { it.isNotBlank() }.joinToString("\n")
         if (channelId == null) {
             postDraft = append(postDraft)
             postSelection = TextRange(postDraft.length)
             overlay = "new-post"
-            if (files != null) postFiles.add(files)
         } else {
             val old = drafts[channelId] ?: InputState()
             val text = append(old.text)
@@ -78,8 +81,8 @@ internal class ConnectedScreenState(
             app.thread = null
             overlay = null
             platform.navigate("/channels/${channelId.encodeURLParameter()}")
-            if (files != null) attachmentDrafts(channelId, channelId).add(files)
         }
+        return null
     }
 
     /**
@@ -321,7 +324,7 @@ internal class ConnectedScreenState(
         }
         val body = data.text("content").let { content ->
             val rawQuoteUrl = quoteRow.text("uri")
-            if (quote == null) content
+            if (quote == null || !data.flag("remote")) content
             else content.trimEnd().removeSuffix("\n\nRE: <$rawQuoteUrl>").removeSuffix("<$rawQuoteUrl>").removeSuffix(rawQuoteUrl).trimEnd()
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
@@ -495,7 +498,7 @@ internal class ConnectedScreenState(
             }
             EntryOperation.QuoteRenote -> if (post && action.item.canQuoteRenote) {
                 quoteDraft = action.item
-                if (action.item.postHeader?.audience == PostAudience.Unlisted && postVisibility == "public") postVisibility = "unlisted"
+                if (action.item.postHeader?.audience == PostAudience.Unlisted && postVisibility in setOf("public", "local")) postVisibility = "unlisted"
                 overlay = "new-post"
             }
             EntryOperation.Repost -> if (post && action.item.canRepost) changeEntry(action) {
@@ -1399,7 +1402,7 @@ internal class ConnectedScreenState(
             AndroidUiAction.LoadOlderMessages -> if (channelId.isNotBlank()) app.scope.launch {
                 app.repo.messages(channelId).loadOlder(app.thread?.let(PageScope::Replies) ?: PageScope.Main)
             }
-            is AndroidUiAction.SelectPostVisibility -> if (quoteDraft?.postHeader?.audience != PostAudience.Unlisted || action.id != "public") postVisibility = action.id
+            is AndroidUiAction.SelectPostVisibility -> if (quoteDraft?.postHeader?.audience != PostAudience.Unlisted || action.id !in setOf("public", "local")) postVisibility = action.id
             AndroidUiAction.MinimizeCall, AndroidUiAction.FloatCall -> Unit
             AndroidUiAction.Answer -> phone.answer()
             AndroidUiAction.HangUp -> phone.hangup()
@@ -1466,9 +1469,18 @@ internal class ConnectedScreenState(
         inputMenu = null
     }
 
-    private data class Outgoing(val destination: String, val entry: TimelineItem)
+    private data class Outgoing(val destination: String, val entry: TimelineItem, val onConfirmed: (() -> Unit)? = null)
     private val outgoing = mutableStateListOf<Outgoing>()
     private val sendLocks = mutableMapOf<String, Mutex>()
+
+    fun reconcileOutgoing(confirmed: List<Row>) {
+        if (outgoing.isEmpty()) return
+        val ids = confirmed.mapTo(mutableSetOf()) { it.text("id") }
+        outgoing.filter { it.entry.id in ids }.forEach {
+            outgoing.remove(it)
+            it.onConfirmed?.invoke()
+        }
+    }
 
     fun withOutgoing(key: String, entries: List<TimelineItem>, newestFirst: Boolean = false): List<TimelineItem> {
         val pending = outgoing.filter { it.destination == key }.map { it.entry }
@@ -1505,6 +1517,7 @@ internal class ConnectedScreenState(
         } else drafts[key] = InputState(lastSend = id)
         val lock = sendLocks.getOrPut(destination) { Mutex() }
         app.scope.launch {
+            var serverAccepted = false
             try {
                 lock.withLock {
                     if (homePost) {
@@ -1518,14 +1531,17 @@ internal class ConnectedScreenState(
                         home.refresh(retain = true)
                     } else check(app.send(channelId, text, parent,
                         attachmentIds = uploaded.filter { it["encrypted"] == null }.map { it.text("id") },
-                        encryptedAttachments = uploaded.mapNotNull { it["encrypted"] as? JsonObject }, messageId = id))
+                        encryptedAttachments = uploaded.mapNotNull { it["encrypted"] as? JsonObject }, messageId = id, onAccepted = { serverAccepted = true }))
                 }
                 files?.release(sent)
-                outgoing.remove(pending)
+                val index = outgoing.indexOf(pending)
+                if (serverAccepted && index >= 0) outgoing[index] = pending.copy(entry = entry.copy(delivery = "送信済み"))
+                else outgoing.remove(pending)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 val index = outgoing.indexOf(pending)
-                if (index >= 0) outgoing[index] = pending.copy(entry = entry.copy(delivery = "送信を確認できませんでした",
+                if (index < 0) files?.release(sent)
+                else outgoing[index] = pending.copy(onConfirmed = { files?.release(sent) }, entry = entry.copy(delivery = "送信を確認できませんでした",
                     recoverDraft = {
                         val current = if (homePost) postDraft else drafts[key]?.text.orEmpty()
                         if (current.isNotEmpty() || (homePost && quoteDraft != null) || !files?.items.isNullOrEmpty()) app.toast = "編集中の下書きを先に送信してください"
