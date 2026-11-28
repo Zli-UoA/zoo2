@@ -28,13 +28,14 @@ final class AppSession {
     private var profileNeedsSaving = false
 
     init(settings: ConnectionSettings = ConnectionSettings(), transport: HTTPTransport = HTTPTransport(),
+         authentication: Authentication? = nil,
          notificationStore: any PushReceiptStore = KeychainPushReceiptStore(),
          previewKeys: any NotificationPreviewKeyStorage = NotificationPreviewKeyStore(), syncCache: SyncCache? = nil,
          openSyncCache: @escaping @Sendable () async throws -> SyncCache = { try await SyncCache.open(inMemory: AppSession.isUITesting) }) {
         self.syncCache = syncCache
         self.openSyncCache = openSyncCache
-        authentication = Authentication(settings: settings, transport: transport)
-        api = APIClient(settings: settings, auth: authentication, transport: transport)
+        self.authentication = authentication ?? Authentication(settings: settings, transport: transport)
+        api = APIClient(settings: settings, auth: self.authentication, transport: transport)
         notifications = NotificationController(transport: transport, receiptStore: notificationStore, previewKeys: previewKeys)
     }
 
@@ -313,9 +314,11 @@ final class AppSession {
             ZooShortcuts.updateAppShortcutParameters()
             SiriVocabulary.update(nil)
         }
-        notifications.logout()
+        var logoutErrors: [String] = []
+        if let notificationError = notifications.logout() { logoutErrors.append(notificationError) }
         do { try authentication.logout() }
-        catch { self.error = error.localizedDescription }
+        catch { logoutErrors.append(error.localizedDescription) }
+        if !logoutErrors.isEmpty { self.error = logoutErrors.joined(separator: "\n\n") }
         if let syncSession {
             needsCacheCleanup = true
             cacheCleanup = syncSession.close()

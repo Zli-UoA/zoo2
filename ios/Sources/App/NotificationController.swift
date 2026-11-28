@@ -18,6 +18,7 @@ final class NotificationController {
     private var voipTokenRevoked = false
     private let receiptStore: any PushReceiptStore
     private let previewKeys: any NotificationPreviewKeyStorage
+    private var previewKeyError: String?
     private let transport: HTTPTransport
     private var api: APIClient?
     private var userID: String?
@@ -193,7 +194,8 @@ final class NotificationController {
         case .test: _ = receive(notice)
         }
     }
-    func logout() {
+    @discardableResult
+    func logout() -> String? {
         sendingTestID = nil
         generation = UUID()
         registeredReceipt = nil
@@ -203,6 +205,7 @@ final class NotificationController {
         api = nil; account = nil; userID = nil; destination = nil; enabled = false
         UIApplication.shared.unregisterForRemoteNotifications()
         discardAccountNotifications()
+        return previewKeyError
     }
 
     @discardableResult
@@ -230,8 +233,15 @@ final class NotificationController {
 
     @discardableResult
     private func removePreviewKey() -> Bool {
-        do { try previewKeys.save(nil); return true }
-        catch { reportSyncError(error); return false }
+        do {
+            try previewKeys.save(nil)
+            previewKeyError = nil
+            return true
+        } catch {
+            previewKeyError = error.localizedDescription
+            reportSyncError(error)
+            return false
+        }
     }
 
     private func reportSyncError(_ error: any Error) {

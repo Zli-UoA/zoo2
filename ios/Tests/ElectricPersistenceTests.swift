@@ -90,12 +90,53 @@ struct SyncCacheTests {
         let cache = try await SyncCache.open(url: url, revocations: revocations)
         let lease = try await cache.activate(connection: "connection", user: syncUser)
         try await cache.store(Data("保存済み".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        let attachmentScope = "attachment-files:" + syncChannel
+        try await cache.store(Data("添付の保存先".utf8), resource: attachmentScope, channelID: syncChannel, lease: lease)
+        let notifications = "snapshot:api/shapes/notifications"
+        try await cache.store(Data("以前の通知".utf8), resource: notifications, lease: lease)
         revocations.failures.withLock { $0.read = true }
         #expect(try await cache.load("messages", lease: lease) == nil)
+        for resource in ["messages", "read-state"] {
+            await #expect(throws: CocoaError.self) {
+                try await cache.store(Data("新しい値".utf8), resource: resource, channelID: syncChannel, lease: lease)
+            }
+        }
+        await #expect(throws: CocoaError.self) {
+            try await cache.store(Data("新しい通知".utf8), resource: notifications, lease: lease)
+        }
         await #expect(throws: CocoaError.self) { try await cache.profile(connection: "connection") }
         await #expect(throws: CocoaError.self) { try await cache.activate(connection: "connection", user: syncUser) }
         revocations.failures.withLock { $0.read = false }
         #expect(try await cache.load("messages", lease: lease) == Data("保存済み".utf8))
+        #expect(try await cache.load(attachmentScope, lease: lease) == Data("添付の保存先".utf8))
+        #expect(try await cache.load("read-state", lease: lease) == nil)
+        #expect(try await cache.load(notifications, lease: lease) == Data("以前の通知".utf8))
+        let reopened = try await SyncCache.open(url: url)
+        let restored = try await reopened.activate(connection: "connection", user: syncUser)
+        #expect(try await reopened.load("messages", lease: restored) == Data("保存済み".utf8))
+        #expect(try await reopened.load(attachmentScope, lease: restored) == Data("添付の保存先".utf8))
+    }
+
+    @Test("Keychainの削除だけが失敗しても、失効記録のないアカウントは起動できる")
+    func activationWithoutRevocationDoesNotDeleteKeychainItems() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("test.store")
+        let revocations = FaultingCacheRevocations(url: url)
+        let cache = try await SyncCache.open(url: url, revocations: revocations)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("保存済み".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        revocations.failures.withLock { $0.write = true }
+        let reopened = try await SyncCache.open(url: url, revocations: revocations)
+        let restored = try await reopened.activate(connection: "connection", user: syncUser)
+        #expect(try await reopened.load("messages", lease: restored) == Data("保存済み".utf8))
+        // 実際に失効済みなら、解除できるまでは起動を拒否する。
+        try revocations.base.revoke(lease.account + "|account")
+        await #expect(throws: CocoaError.self) { try await reopened.activate(connection: "connection", user: syncUser) }
+        revocations.failures.withLock { $0.write = false }
+        let recovered = try await reopened.activate(connection: "connection", user: syncUser)
+        #expect(try await reopened.load("messages", lease: recovered) == nil)
     }
 
     @Test("全保存先の同時失敗は再起動後を保証できず、復旧後に失効を再試行する")

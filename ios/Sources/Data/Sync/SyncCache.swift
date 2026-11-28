@@ -70,23 +70,23 @@ actor SyncCache {
         return permissionDirectory(account: account)?.appendingPathComponent(scopeHash)
     }
 
-    private func hasPermission(_ scope: String, account: String) -> Bool {
+    private func hasPermission(_ scope: String, account: String) throws -> Bool {
         let key = account + "|" + scope
         guard !revokedPermissions.contains(key) else { return false }
-        // Keychain の確認ができない間も、古い許可ファイルだけで復元しない。
-        if let revocations, (try? revocations.contains(key)) != false { return false }
+        // 照合不能と失効を区別し、一時障害だけで保存済みの行を削除しない。
+        if let revocations, try revocations.contains(key) { return false }
         guard let url = permissionURL(scope, account: account) else { return memoryPermissions.contains(key) }
         return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
     }
 
     private func grantPermission(_ scope: String, account: String) throws {
-        guard !hasPermission(scope, account: account) else { return }
+        guard try !hasPermission(scope, account: account) else { return }
         if let url = permissionURL(scope, account: account) {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data().write(to: url, options: .atomic)
         }
         let key = account + "|" + scope
-        try revocations?.allow(key)
+        if let revocations, try revocations.contains(key) { try revocations.allow(key) }
         memoryPermissions.insert(key)
         revokedPermissions.remove(key)
     }
@@ -143,7 +143,8 @@ actor SyncCache {
         // 取り消された復元が、後続ログインのleaseや保存済みアカウントを変更しない。
         try Task.checkCancellation()
         let account = connection + ":" + user.id
-        if let revocations, try revocations.contains(account + "|account") {
+        let accountRevoked = try revocations?.contains(account + "|account") ?? false
+        if accountRevoked {
             // ログアウト時の DB 削除が失敗した場合は、再ログインでも古い行を引き継がない。
             try deleteRecords(account: account)
         }
@@ -160,7 +161,7 @@ actor SyncCache {
             modelContext.insert(CachedSyncAccount(connection: connection, account: account, profile: data))
         }
         try save()
-        try revocations?.allow(account + "|account")
+        if accountRevoked { try revocations?.allow(account + "|account") }
         let lease = SyncLease(account: account, generation: UUID())
         leases[account] = lease.generation
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
@@ -175,7 +176,8 @@ actor SyncCache {
         let id = lease.account + "|" + resource
         guard let row = try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first else { return nil }
         if let channelID = row.channelID, blockedChannels.contains(lease.account + ":" + channelID) { return nil }
-        guard permissionScopes(resource: resource, channelID: row.channelID).allSatisfy({ hasPermission($0, account: lease.account) }) else { return nil }
+        guard (try? permissionScopes(resource: resource, channelID: row.channelID)
+            .allSatisfy({ try hasPermission($0, account: lease.account) })) == true else { return nil }
         return row.payload
     }
 
@@ -203,7 +205,9 @@ actor SyncCache {
             }
         }
         let account = lease.account
-        if let channelID, !hasPermission("channel:" + channelID, account: account) {
+        let scopes = permissionScopes(resource: resource, channelID: channelID)
+        let permissions = try Dictionary(uniqueKeysWithValues: scopes.map { ($0, try hasPermission($0, account: account)) })
+        if let channelID, permissions["channel:" + channelID] != true {
             // 新しい本文だけで許可を戻し、失効前のリアクションや添付の保存先を復活させない。
             try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
         }

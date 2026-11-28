@@ -127,14 +127,17 @@ final class Authentication {
     private(set) var refreshWaiterCount = 0
     private var pendingTokens: TokenSet?
     private let saveToken: (TokenSet, String) throws -> Void
+    private let deleteToken: (String) throws -> Void
     private var generation = UUID()
     var sessionID: UUID { generation }
 
     init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport(),
-         saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) }) {
+         saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) },
+         deleteToken: @escaping (String) throws -> Void = { try TokenVault.delete($0) }) {
         self.settings = settings
         self.transport = transport
         self.saveToken = saveToken
+        self.deleteToken = deleteToken
     }
 
     private func sessionTokens() throws -> TokenSet? {
@@ -388,6 +391,6 @@ final class Authentication {
         pendingTokens = nil
         tokens = nil
         loadedTokens = true
-        try TokenVault.delete(settings.storageKey)
+        try deleteToken(settings.storageKey)
     }
 }

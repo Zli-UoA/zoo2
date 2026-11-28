@@ -4,6 +4,39 @@ import Testing
 @testable import Zoo
 
 struct LogoutTests {
+    @MainActor
+    private final class FailingPreviewKeys: NotificationPreviewKeyStorage {
+        var failing = true
+        let message = "以前の通知本文が表示される可能性があります。端末のロック解除と空き容量の確認後に再試行してください。"
+        func load() -> NotificationPreviewKey? { nil }
+        func save(_ key: NotificationPreviewKey?) throws {
+            if failing { throw ZooError.auth(message) }
+        }
+    }
+
+    @Test("通知鍵の無効化失敗をログイン画面へ伝え、認証削除の失敗も併記する", arguments: [false, true])
+    @MainActor func logoutReportsPreviewAndAuthenticationFailures(authenticationFails: Bool) throws {
+        let settings = ConnectionSettings(server: "https://logout.test.invalid", clientID: UUID().uuidString)
+        let transport = HTTPTransport()
+        defer { transport.session.invalidateAndCancel() }
+        let authMessage = "認証情報の削除に失敗しました。"
+        let authentication = Authentication(settings: settings, transport: transport, deleteToken: { _ in
+            if authenticationFails { throw ZooError.auth(authMessage) }
+        })
+        let keys = FailingPreviewKeys()
+        let session = AppSession(settings: settings, transport: transport, authentication: authentication,
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys)
+        session.logout()
+        #expect(session.workspace == nil)
+        let error = try #require(session.error)
+        #expect(error.contains(keys.message))
+        #expect(error.contains(authMessage) == authenticationFails)
+        keys.failing = false
+        session.error = nil
+        session.logout()
+        #expect(session.error == (authenticationFails ? authMessage : nil))
+    }
+
     private func root() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
