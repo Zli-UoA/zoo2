@@ -6,10 +6,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -39,6 +44,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import zoo.ChannelLinkTarget
 import kotlinx.coroutines.withContext
@@ -71,6 +77,7 @@ internal data class TimelineQuote(
     val avatar: String? = null,
     val postAuthor: zoo.Row? = null,
     val local: Boolean = false,
+    val remotePostAvailable: Boolean = false,
 ) {
     val canOpen: Boolean get() = postId != null || !local
 }
@@ -79,26 +86,48 @@ internal val LocalKitchenReactionImage = staticCompositionLocalOf<suspend (Strin
 
 internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedia) -> ImageBitmap?> { { null } }
 
+internal val LocalTimelineImageWithPreview =
+    staticCompositionLocalOf<(suspend (TimelineMedia, (ImageBitmap) -> Unit) -> ImageBitmap?)?> { null }
+
+internal val LocalAttachmentImageDenied = staticCompositionLocalOf<(String) -> Boolean> { { false } }
+
 internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia) -> ImageBitmap?> { { null } }
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
+    val isDenied = LocalAttachmentImageDenied.current
+    val denied = media?.attachmentId?.let(isDenied) == true
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
+    val loadWithPreview = LocalTimelineImageWithPreview.current
     val retry = LocalTimelineImageRetry.current
-    val initial = remember(media, cached) { media?.let(cached) }
+    val initial = remember(media, cached) { if (denied) null else media?.let(cached) }
     val isRevealed = rememberUpdatedState(revealed)
-    return key(media, cached, load, retry) {
-        produceState(initial) {
-            if (initial == null && media != null) {
+    return key(media, cached, load, loadWithPreview, retry, isDenied) {
+        var bitmap by remember { mutableStateOf(initial) }
+        LaunchedEffect(Unit) {
+            if (media == null) return@LaunchedEffect
+            var first = true
+            snapshotFlow { media.attachmentId?.let(isDenied) == true }.collectLatest { blocked ->
+                val opening = first
+                first = false
+                if (blocked && !opening) {
+                    bitmap = null
+                    return@collectLatest
+                }
+                if (opening && initial != null) return@collectLatest
+
                 val prefetching = !isRevealed.value
-                value = load(media)
-                if (prefetching && value == null) {
+                bitmap = if (opening && loadWithPreview != null) {
+                    loadWithPreview(media) { bitmap = it }
+                } else load(media)
+                if (prefetching && bitmap == null && !blocked) {
                     snapshotFlow { isRevealed.value }.first { it }
-                    value = retry(media)
+                    bitmap = retry(media)
                 }
             }
-        }.value
+        }
+        bitmap.takeUnless { denied }
     }
 }
 
@@ -123,6 +152,7 @@ internal fun TimelineQuoteCard(
     quote: TimelineQuote, colors: AndroidColors, open: () -> Unit, openMedia: (TimelineMedia) -> Unit,
     openProfile: (() -> Unit)? = null,
 ) {
+    var showOriginal by remember(quote.uri, quote.remotePostAvailable) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
         .background(colors.inputSurface).padding(horizontal = 10.dp, vertical = 6.dp)) {
         if (!quote.canOpen) {
@@ -130,7 +160,7 @@ internal fun TimelineQuoteCard(
             return@Column
         }
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
-            .clickable(role = Role.Button, onClick = open)
+            .clickable(role = Role.Button) { if (quote.remotePostAvailable) showOriginal = true else open() }
         val title: @Composable () -> Unit = {
             Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
                 color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
@@ -157,6 +187,30 @@ internal fun TimelineQuoteCard(
             }
         }
         TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
+    }
+    if (showOriginal) {
+        AlertDialog(
+            onDismissRequest = { showOriginal = false },
+            title = { Text(androidLabel("home.quotedPost", "引用元の投稿")) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (quote.author.isNotBlank()) Text(quote.author)
+                    EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji)
+                    TimelineMediaGroup(quote.media, colors, apub = true) { media ->
+                        showOriginal = false
+                        openMedia(media)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showOriginal = false }) { Text(androidLabel("common.close", "閉じる")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showOriginal = false; open() }) {
+                    Text(androidLabel("home.openQuotedPost", "引用元を開く"))
+                }
+            },
+        )
     }
 }
 
@@ -304,7 +358,8 @@ private fun MediaFrame(
     if (bitmap != null && onImageRatio != null) {
         SideEffect { onImageRatio(bitmap.width.toFloat() / bitmap.height) }
     }
-    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null })
+    val denied = media.attachmentId?.let(LocalAttachmentImageDenied.current) == true
+    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null && !denied })
     val showLabel = if (video) androidLabel("attachments.showSensitiveVideo", "動画を表示") else androidLabel("attachments.showSensitive", "画像を表示")
     val hideLabel = if (video) androidLabel("attachments.hideSensitiveVideo", "動画を隠す") else androidLabel("attachments.hideSensitive", "画像を隠す")
     val playLabel = androidLabel("attachments.play", "再生")

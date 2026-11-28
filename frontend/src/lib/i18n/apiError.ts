@@ -43,6 +43,8 @@ export function localizeApiError(cause: unknown, t: TFunction): string {
       return t("channels.duplicateName");
     }
     switch (apiErrorCode(cause)) {
+      case "THREAD_BUSY":
+        return t("threads.errors.busy");
       case "E2EE_DISABLED":
         return t("e2ee.errors.disabled");
       case "E2EE_PUBLIC_FORBIDDEN":

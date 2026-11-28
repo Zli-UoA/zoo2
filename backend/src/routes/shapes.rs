@@ -29,6 +29,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/channel_leaves", get(channel_leaves_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
         .route(
+            "/api/shapes/channel_notification_settings",
+            get(channel_notification_settings_shape),
+        )
+        .route(
             "/api/shapes/user_pinned_channels",
             get(user_pinned_channels_shape),
         )
@@ -138,6 +142,22 @@ pub(crate) fn attachments_shape_where(channel_id: &str) -> (String, Vec<(&'stati
         "channel_id = $1 AND message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)".to_string(),
         vec![("params[1]", channel_id)],
     )
+}
+
+/// メンバー一覧で配る列。通知設定は本人だけの別 Shape から読むため、ここには含めない。
+pub(crate) const CHANNEL_USERS_SHAPE_COLUMNS: &str = "user_id,channel_id,joined_at";
+/// 本人の通知設定だけを配る Shape の列。
+pub(crate) const CHANNEL_NOTIFICATION_SETTINGS_SHAPE_COLUMNS: &str =
+    "user_id,channel_id,notification_level";
+
+/// Channel Notification Settings Shape の where 句とパラメータの純粋組み立て。
+///
+/// 認証ユーザー自身の行だけを配る。メンバー一覧 (`channel_users`) には設定列を一切含めないため、
+/// 他人の通知設定はこの Shape からも読めない。
+pub(crate) fn channel_notification_settings_shape_where(
+    user_id: &str,
+) -> (String, Vec<(&'static str, &str)>) {
+    ("user_id = $1".to_string(), vec![("params[1]", user_id)])
 }
 
 /// Channel Users Shape の where 句とパラメータの純粋組み立て
@@ -616,11 +636,32 @@ pub(crate) async fn users_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
+    // 既定は従来どおり全件。Web の初期表示だけ `?scope=shared` で共同チャンネル member に
+    // 絞り込む。他クライアントと Apps API はパラメーターなしなので影響しない。
+    // ゲストはフラグに関係なく絞り込みを維持する（従来の境界を保つ）。
+    // `id = $1 OR ...` は users 全体の Seq Scan になる。自分の行は channel_user 経由で
+    // 含まれるため、OR を外して主キー Index Only Scan が使える形にする。
     let mut db = state.db.clone();
-    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
-        return proxy_shape(&state,"users",Some("id = $1 OR id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))"),&[("params[1]",auth_user.id.as_str())],&raw_query,true,&auth_user.id).await;
+    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
+    // ゲストは従来どおり本人の行も返す（所属0件でも消えないようにする）。
+    let guest_where = "id = $1 OR id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
+    let narrow_where = "id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
+    let shared_only = raw_query
+        .get("scope")
+        .is_some_and(|value| value == "shared");
+    if !shared_only && !is_guest {
+        return proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await;
     }
-    proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await
+    proxy_shape(
+        &state,
+        "users",
+        Some(if is_guest { guest_where } else { narrow_where }),
+        &[("params[1]", auth_user.id.as_str())],
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
 }
 
 /// Channel Users Shape (メンバー一覧)
@@ -674,7 +715,7 @@ pub(crate) async fn channel_users_shape(
         (None, true)
     };
 
-    let (mut where_clause, extra_params) =
+    let (mut where_clause, mut extra_params) =
         channel_users_shape_where(channel_id_opt, auth_user.id.as_str());
     if channel_id_opt.is_none() {
         let mut db = state.db.clone();
@@ -683,6 +724,7 @@ pub(crate) async fn channel_users_shape(
                 "channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".into();
         }
     }
+    extra_params.push(("columns", CHANNEL_USERS_SHAPE_COLUMNS));
 
     proxy_shape(
         &state,
@@ -691,6 +733,27 @@ pub(crate) async fn channel_users_shape(
         &extra_params,
         &raw_query,
         is_private,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// Channel Notification Settings Shape（自分の通知設定だけ）
+async fn channel_notification_settings_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, mut extra_params) =
+        channel_notification_settings_shape_where(auth_user.id.as_str());
+    extra_params.push(("columns", CHANNEL_NOTIFICATION_SETTINGS_SHAPE_COLUMNS));
+    proxy_shape(
+        &state,
+        "user_channel_notification_settings",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
         &auth_user.id,
     )
     .await
@@ -1088,6 +1151,19 @@ mod tests {
         assert!(clause.contains("WHERE is_private = false AND deleted_at IS NULL"));
         assert!(clause.contains("WHERE user_id = $1"));
         assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_channel_notification_settings_shape_where() {
+        let (clause, params) = channel_notification_settings_shape_where("user-123");
+        assert_eq!(clause, "user_id = $1");
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+        assert_eq!(
+            CHANNEL_NOTIFICATION_SETTINGS_SHAPE_COLUMNS,
+            "user_id,channel_id,notification_level"
+        );
+        assert!(!CHANNEL_USERS_SHAPE_COLUMNS.contains("notification_level"));
+        assert_eq!(CHANNEL_USERS_SHAPE_COLUMNS, "user_id,channel_id,joined_at");
     }
 
     #[test]

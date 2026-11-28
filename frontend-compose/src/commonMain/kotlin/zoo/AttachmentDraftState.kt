@@ -159,6 +159,12 @@ class AttachmentLinks(private val app: Session) {
     val errors = mutableStateMapOf<String, Boolean>()
     private val cache = mutableMapOf<String, Pair<AttachmentImageLinks, Long>>()
     private val requests = mutableMapOf<String, Deferred<Result<AttachmentImageLinks>>>()
+    private val denied = mutableStateMapOf<String, Boolean>()
+    private val accessVersions = mutableMapOf<String, Long>()
+
+    fun isDenied(id: String): Boolean = denied[id] == true
+
+    fun accessVersion(id: String): Long = accessVersions[id] ?: 0L
 
     fun cachedUrl(id: String): String? = cachedLinks(id)?.original
 
@@ -171,6 +177,7 @@ class AttachmentLinks(private val app: Session) {
     suspend fun get(id: String, force: Boolean = false): String = getLinks(id, force).original
 
     suspend fun getLinks(id: String, force: Boolean = false): AttachmentImageLinks {
+        requests[id]?.let { return it.await().getOrThrow() }
         errors.remove(id)
         val now = timestampMillis(app.platform.now()) ?: 0L
         if (!force) cachedLinks(id, now)?.let { return it }
@@ -185,28 +192,29 @@ class AttachmentLinks(private val app: Session) {
                         require(publicUrl(url) != null)
                         val thumbnail = payload.text("thumbnail_url").takeIf { publicUrl(it) != null }
                         val links = AttachmentImageLinks(url, thumbnail)
+                        app.platform.allowAttachmentImages(id)
                         if (cache.size >= 200) cache.remove(cache.keys.first())
                         cache[id] = links to attachmentExpiry(url, now)
+                        denied.remove(id)
                         Result.success(links)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        if (errors.size >= 200) errors.remove(errors.keys.first())
+                        errors[id] = true
+                        if (e is ApiException && e.status in setOf(401, 403, 404, 410)) {
+                            if (denied.size >= 512) denied.remove(denied.keys.first())
+                            denied[id] = true
+                            accessVersions[id] = accessVersion(id) + 1
+                            cache.remove(id)
+                            app.platform.removeAttachmentImages(id)
+                        }
                         Result.failure(e)
                     }
                 }
             }
         work.invokeOnCompletion { if (requests[id] === work) requests.remove(id) }
-        return try {
-            work.await().getOrThrow()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (errors.size >= 200) errors.remove(errors.keys.first())
-            errors[id] = true
-            throw e
-        } finally {
-            if (work.isCompleted && requests[id] === work) requests.remove(id)
-        }
+        return work.await().getOrThrow()
     }
 
     fun download(file: Row, force: Boolean = false) {

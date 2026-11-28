@@ -390,7 +390,10 @@
     "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
     "participantsDescription": "このスレッドに参加している人です。",
     "joinToReply": "参加するとこのスレッドに返信できます。",
-    "reopenAndJoin": "再Openして参加する"
+    "reopenAndJoin": "再Openして参加する",
+    "errors": {
+      "busy": "スレッドが混み合っています。しばらく待ってからもう一度お試しください。"
+    }
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -476,6 +479,9 @@
     "readError": "通知を既読にできませんでした",
     "mention": "{{actor}} さんがあなたをメンションしました",
     "reply": "{{actor}} さんが返信しました",
+    "channelMessage": "{{actor}} さんがメッセージを投稿しました",
+    "channel_message": "{{actor}} さんがメッセージを投稿しました",
+    "channelMessageContext": "チャンネルのメッセージ",
     "reaction": "{{actor}} さんがリアクションしました",
     "openMessage": "メッセージを開く",
     "unavailable": "チャンネルを利用できません",
@@ -493,7 +499,24 @@
     "readStatus": "既読",
     "actors_one": "{{actor}} さんほか1人",
     "actors_other": "{{actor}} さんほか{{count}}人",
-    "forwardedPreview": "メッセージを転送しました"
+    "forwardedPreview": "メッセージを転送しました",
+    "settings": "通知設定",
+    "settingsDefault": "既定はメンションと返信などです。",
+    "settingsHint": "チャンネルごとの通知レベルは、各チャンネルのヘッダーまたは DM のメニューから変更できます。",
+    "channelSettings": "チャンネルの通知設定",
+    "openChannel": "チャンネルを開く",
+    "noChannel": "参加中のチャンネルがありません。",
+    "notMember": "このチャンネルに参加していないため、通知設定を変更できません。",
+    "levelTitle": "通知レベル",
+    "levelLoading": "通知設定を読み込み中…",
+    "levelAll": "すべてのメッセージ",
+    "levelAllHelp": "通常の投稿も通知します。暗号化チャンネルでも選べます。",
+    "levelMentions": "メンションと返信（既定）",
+    "levelMentionsHelp": "あなたへのメンション、返信、DM、リアクションを通知します。",
+    "levelMute": "ミュート",
+    "levelMuteHelp": "通常の通知は届きません。あなたへのメンションと @channel / @here は届きます。",
+    "levelEncryptedHint": "暗号化チャンネルでも「すべてのメッセージ」を選べます。",
+    "levelError": "通知設定を変更できませんでした。"
   },
   "webhooks": {
     "title": "Webhook設定",

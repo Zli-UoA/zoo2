@@ -33,7 +33,7 @@ use zoo2_client_core::{
     http::{Credentials, HttpError},
 };
 use zoo2_client_types::{
-    api::Me,
+    api::{ChannelNotificationSettings, Me, NotificationLevel},
     ipc::{
         BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginFailed, LoginMethod,
         LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState,
@@ -301,6 +301,32 @@ impl Core {
         Ok(())
     }
 
+    /// チャンネルごとの通知レベル。共有の `ApiClient` で 1 回だけ取得する。
+    pub async fn channel_notification_settings(
+        &self,
+        channel_id: &str,
+    ) -> Result<ChannelNotificationSettings, IpcError> {
+        self.api()
+            .await?
+            .get_channel_notification_settings(channel_id)
+            .await
+            .map_err(to_ipc)
+    }
+
+    /// レベルを変える。Shape でも新しい値が届くが、画面を待たせないため応答で返す。
+    pub async fn set_channel_notification_level(
+        &self,
+        channel_id: &str,
+        level: NotificationLevel,
+    ) -> Result<ChannelNotificationSettings, IpcError> {
+        self.api()
+            .await?
+            .set_channel_notification_level(channel_id, level)
+            .await
+            .map_err(to_ipc)?;
+        Ok(ChannelNotificationSettings { level })
+    }
+
     fn token_path(&self) -> Result<std::path::PathBuf> {
         config_dir_for(APP_NAME)
             .map(|dir| token::token_path(&dir))
@@ -432,6 +458,7 @@ impl Core {
                 ShapeId::Channels,
                 ShapeId::Users,
                 ShapeId::ChannelUsers,
+                ShapeId::ChannelNotificationSettings,
                 ShapeId::Notifications,
             ]);
         }

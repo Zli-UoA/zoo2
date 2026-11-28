@@ -55,52 +55,76 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
-    // Callers supplying a stable key resolve an authorized link before looking up the image.
+    suspend fun freshAttachmentImage(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        attachments.read(cacheKey, freshAt = now())?.bytes
+    }
+
+    suspend fun removeAttachmentImages(id: String) = withContext(Dispatchers.IO) {
+        attachments.revoke("$id:thumbnail")
+        attachments.revoke("$id:original")
+    }
+
+    suspend fun allowAttachmentImages(id: String) = withContext(Dispatchers.IO) {
+        attachments.allow("$id:thumbnail")
+        attachments.allow("$id:original")
+    }
+
+    // Network loads still use an authorized link.
     suspend fun signedImage(url: String, cacheKey: String? = null, retry: Boolean = false): ByteArray {
         if (cacheKey == null) return loadPublicImage(http, url, noStore = true)
         return withContext(Dispatchers.IO) {
-            val urlHash = AttachmentImageDiskCache.digest(url)
-            val signedUrl = url.toHttpUrl()
-            val resource = signedUrl.newBuilder().fragment(null).apply {
-                signedUrl.queryParameterNames
-                    .filter { it.startsWith("X-Amz-", ignoreCase = true) }
-                    .forEach { removeAllQueryParameters(it) }
-            }.build()
-            val resourceHash = AttachmentImageDiskCache.digest(resource.toString())
-            val stored = if (retry) null else attachments.read(cacheKey)
-            val matching = stored?.takeIf { it.urlHash.startsWith("$resourceHash:") }
-            if (matching != null && now() < matching.expiresAt &&
-                (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
-            ) return@withContext matching.bytes
-            if (retry) attachments.remove(cacheKey)
+            val token = attachments.beginLoad(cacheKey) ?: throw ImageHttpFailure(403)
             try {
-                loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes, redirects ->
-                    val receivedAt = now()
-                    val validated = response.status == HttpStatusCode.NotModified
-                    val freshness = attachmentFreshness(response, matching?.freshness?.takeIf { validated })
-                    val redirectDeadlines = redirects.map { redirect ->
-                        attachmentFreshness(redirect)?.let {
-                            val elapsed = (response.responseTime.timestamp - redirect.responseTime.timestamp).coerceAtLeast(0)
-                            attachmentFreshUntil(redirect, it, receivedAt - elapsed, defaultLifetime = 0L)
-                        }
-                    }
-                    if (freshness == null || redirectDeadlines.any { it == null || it <= receivedAt }) {
-                        attachments.remove(cacheKey)
-                        return@loadPublicImage
-                    }
-                    val expiresAt = attachmentFreshUntil(response, freshness, receivedAt, defaultLifetime = 300_000L)
-                    val etag = if (redirects.isEmpty()) {
-                        response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
-                            ?: matching?.etag?.takeIf { validated }
-                    } else null
-                    attachments.write(cacheKey, AttachmentImageDiskCache.Entry(
-                        "$resourceHash:$urlHash", minOf(expiresAt, redirectDeadlines.filterNotNull().minOrNull() ?: expiresAt),
-                        etag, freshness, bytes,
-                    ))
+                val urlHash = AttachmentImageDiskCache.digest(url)
+                val signedUrl = url.toHttpUrl()
+                val resource = signedUrl.newBuilder().fragment(null).apply {
+                    signedUrl.queryParameterNames
+                        .filter { it.startsWith("X-Amz-", ignoreCase = true) }
+                        .forEach { removeAllQueryParameters(it) }
+                }.build()
+                val resourceHash = AttachmentImageDiskCache.digest(resource.toString())
+                val stored = if (retry) null else attachments.read(cacheKey)
+                val matching = stored?.takeIf { it.urlHash.startsWith("$resourceHash:") }
+                if (matching != null && now() < matching.expiresAt &&
+                    (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
+                ) {
+                    if (!attachments.isCurrent(cacheKey, token)) throw ImageHttpFailure(403)
+                    return@withContext matching.bytes
                 }
-            } catch (failure: ImageHttpFailure) {
-                if (failure.status in setOf(401, 403, 404, 410)) attachments.remove(cacheKey)
-                throw failure
+                if (retry) attachments.remove(cacheKey, token)
+                val image = try {
+                    loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes, redirects ->
+                        val receivedAt = now()
+                        val validated = response.status == HttpStatusCode.NotModified
+                        val freshness = attachmentFreshness(response, matching?.freshness?.takeIf { validated })
+                        val redirectDeadlines = redirects.map { redirect ->
+                            attachmentFreshness(redirect)?.let {
+                                val elapsed = (response.responseTime.timestamp - redirect.responseTime.timestamp).coerceAtLeast(0)
+                                attachmentFreshUntil(redirect, it, receivedAt - elapsed, defaultLifetime = 0L)
+                            }
+                        }
+                        if (freshness == null || redirectDeadlines.any { it == null || it <= receivedAt }) {
+                            attachments.remove(cacheKey, token)
+                            return@loadPublicImage
+                        }
+                        val expiresAt = attachmentFreshUntil(response, freshness, receivedAt, defaultLifetime = 300_000L)
+                        val etag = if (redirects.isEmpty()) {
+                            response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
+                                ?: matching?.etag?.takeIf { validated }
+                        } else null
+                        attachments.write(cacheKey, token, AttachmentImageDiskCache.Entry(
+                            "$resourceHash:$urlHash", minOf(expiresAt, redirectDeadlines.filterNotNull().minOrNull() ?: expiresAt),
+                            etag, freshness, bytes,
+                        ))
+                    }
+                } catch (failure: ImageHttpFailure) {
+                    if (failure.status in setOf(401, 403, 404, 410)) attachments.remove(cacheKey, token)
+                    throw failure
+                }
+                if (!attachments.isCurrent(cacheKey, token)) throw ImageHttpFailure(403)
+                image
+            } finally {
+                attachments.endLoad(cacheKey, token)
             }
         }
     }

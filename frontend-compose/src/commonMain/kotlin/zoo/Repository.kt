@@ -287,6 +287,7 @@ class SyncedTable(
 
     private var stream: ShapeStream? = null
     private var refreshJob: Job? = null
+    private val subsetRequests = ShapeSubsetRequests()
     private val cacheKey =
         "zoo-compose:${if (onDemand) "v3" else "v2"}:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
     /** on-demand に移す前の、全件入りの控え（添付・リアクションの別 Shape の分も）。読まずに消す。 */
@@ -324,7 +325,7 @@ class SyncedTable(
 
     private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
         val source = streamReady.await()
-        val snapshot = source.requestSnapshot(subset)
+        val snapshot = subsetRequests.request { source.requestSnapshot(subset) }
         snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
         // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
         if (main && !accepting.value) accepting.value = true
@@ -448,7 +449,15 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
-            val table = if (name == "channel_users") "channel_user" else name
+            // channel_users は channel_user、channel_notification_settings は
+            // user_channel_notification_settings をそれぞれの条件で配る。設定ごとに REST を
+            // 増やさず、Shape の更新を画面へ反映する。
+            val table =
+                when (name) {
+                    "channel_users" -> "channel_user"
+                    "channel_notification_settings" -> "user_channel_notification_settings"
+                    else -> name
+                }
             val shapeParams =
                 if (!direct) params
                 else
@@ -463,7 +472,7 @@ class SyncedTable(
                             )
                             put("params[1]", channelId)
                         }
-                        if (name == "notifications") {
+                        if (name == "notifications" || name == "channel_notification_settings") {
                             put("where", "user_id = $1")
                             put("params[1]", config.userId)
                         }
@@ -721,9 +730,11 @@ class SyncedTable(
         tableScope.cancel()
     }
 
-    fun refresh() {
-        if (refreshJob?.isActive == true) return
+    fun refresh(reconnect: Boolean = false) {
+        val previous = refreshJob
+        if (!reconnect && previous?.isActive == true) return
         refreshJob = tableScope.launch {
+            if (reconnect) previous?.cancelAndJoin()
             val source = stream
             if (synchronize && (source?.error != null || !worker.isActive)) {
                 // A terminal Electric4k runner cannot be restarted by forceDisconnectAndRefresh.
@@ -734,7 +745,9 @@ class SyncedTable(
                 worker = startSync(readCache = false)
                 return@launch
             }
-            if (source == null || source.isPaused() || loading.value) return@launch
+            // A subset read pauses live and resumes it when the read is retried.
+            if (reconnect && subsetRequests.reconnect()) return@launch
+            if (source == null || source.isPaused() || (!reconnect && loading.value)) return@launch
             try {
                 source.forceDisconnectAndRefresh()
             } catch (e: CancellationException) {
@@ -761,6 +774,7 @@ class Repository(
     val channels = SyncedTable("channels", config, platform, http, scope, synchronize = synchronize)
     val users = SyncedTable("users", config, platform, http, scope, synchronize = synchronize)
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
+    val notificationSettings = SyncedTable("channel_notification_settings", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
     private val recentMessages = linkedMapOf<String, CachedFeed>()
@@ -794,6 +808,7 @@ class Repository(
             "channels" -> channels
             "users" -> users
             "channel_users" -> members
+            "channel_notification_settings" -> notificationSettings
             "notifications" -> notifications
             "messages" ->
                 dynamic.getOrPut(name to channelId) {
@@ -834,13 +849,14 @@ class Repository(
 
     fun messages(channelId: String) = table("messages", channelId)
 
-    fun refresh() {
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh() }
+    fun refresh(reconnect: Boolean = false) {
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.refresh(reconnect) }
+        if (reconnect && linked.isInitialized()) linked.value.refresh()
     }
 
     fun close() {
         if (linked.isInitialized()) linked.value.close()
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.close() }
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.close() }
         dynamic.clear()
         recentMessages.clear()
         http.close()
