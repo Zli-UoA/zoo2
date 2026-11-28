@@ -60,7 +60,7 @@ internal fun DraftAttachment(name: String, failed: Boolean, colors: AndroidColor
             Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.38f)))
             UiIconButton(UiIcon.Refresh, "${name}のアップロードを再試行", Color.White, retry,
                 fill = Color.Black.copy(alpha = 0.76f), iconSize = 22.dp,
-                modifier = Modifier.align(Alignment.Center).size(40.dp))
+                modifier = Modifier.align(Alignment.Center).offset(x = (-16).dp).size(40.dp))
         }
         UiIconButton(UiIcon.Close, "${name}を添付から外す", Color.White, remove,
             fill = Color.Black.copy(alpha = 0.76f), iconSize = 16.dp,
@@ -199,7 +199,7 @@ internal fun NewPostPage(
                         remove = { dispatch(AndroidUiAction.RemoveFile(item.id)) }) { modifier ->
                         photo(item, modifier)
                     }
-                    Row {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         UiIconButton(UiIcon.Create, "${item.label}の説明を編集", colors.secondary,
                             { describing = item.id }, iconSize = 18.dp, modifier = Modifier.size(44.dp, 36.dp))
                         UiIconButton(if (item.sensitive) UiIcon.EyeOff else UiIcon.Eye,
