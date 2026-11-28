@@ -1,0 +1,235 @@
+import Foundation
+import Synchronization
+import Testing
+@testable import Zoo
+
+struct LogoutTests {
+    @MainActor
+    private final class FailingPreviewKeys: NotificationPreviewKeyStorage {
+        var failing = true
+        let message = "以前の通知本文が表示される可能性があります。端末のロック解除と空き容量の確認後に再試行してください。"
+        func load() -> NotificationPreviewKey? { nil }
+        func save(_ key: NotificationPreviewKey?) throws {
+            if failing { throw ZooError.auth(message) }
+        }
+    }
+
+    @Test("通知鍵の無効化失敗をログイン画面へ伝え、認証削除の失敗も併記する", arguments: [false, true])
+    @MainActor func logoutReportsPreviewAndAuthenticationFailures(authenticationFails: Bool) throws {
+        let settings = ConnectionSettings(server: "https://logout.test.invalid", clientID: UUID().uuidString)
+        let transport = HTTPTransport()
+        defer { transport.session.invalidateAndCancel() }
+        let authMessage = "認証情報の削除に失敗しました。"
+        let authentication = Authentication(settings: settings, transport: transport, deleteToken: { _ in
+            if authenticationFails { throw ZooError.auth(authMessage) }
+        })
+        let keys = FailingPreviewKeys()
+        let session = AppSession(settings: settings, transport: transport, authentication: authentication,
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys)
+        session.logout()
+        #expect(session.workspace == nil)
+        let error = try #require(session.error)
+        #expect(error.contains(keys.message))
+        #expect(error.contains(authMessage) == authenticationFails)
+        keys.failing = false
+        session.error = nil
+        session.logout()
+        #expect(session.error == (authenticationFails ? authMessage : nil))
+    }
+
+    private func root() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    private struct UnreadableKey: StorageKeyBacking {
+        let base: MemoryKey
+        func load() throws -> Data? { throw CocoaError(.fileReadNoPermission) }
+        func save(_ key: Data) throws { try base.save(key) }
+        func delete() throws { try base.delete() }
+    }
+
+    @Test @MainActor func 保存鍵の読み取りが失敗してもログアウトで状態と鍵を削除する() async throws {
+        let directory = root(), key = MemoryKey()
+        let files = CryptoStoreFiles(directory: directory.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        store.close()
+        let failing = CryptoStoreFiles(directory: files.directory, keys: StorageKeyStore(backing: UnreadableKey(base: key)))
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in (404, [:], Data()) }
+        let controller = E2eeController.make(api: harness.api, userID: user, files: failing)
+        try await controller.finishLogout()
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+        #expect(try key.load() == nil)
+    }
+
+    @Test("登録の応答消失後も端末を削除し、404後に届いた登録は次のログインで削除する", arguments: [false, true])
+    @MainActor func logoutAfterLostRegistration(lateRegistration: Bool) async throws {
+        let directory = root(), key = MemoryKey()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = CryptoStoreFiles(directory: directory.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let registered = Mutex(false)
+        let deletes = Mutex<[String]>([])
+        harness.stub { request in
+            if request.httpMethod == "POST" {
+                registered.withLock { $0 = !lateRegistration }
+                throw URLError(.networkConnectionLost)
+            }
+            #expect(request.httpMethod == "DELETE")
+            deletes.withLock { $0.append(request.url!.lastPathComponent) }
+            let found = registered.withLock { value in let found = value; value = false; return found }
+            return (found ? 200 : 404, [:], Data("{}".utf8))
+        }
+        await #expect(throws: (any Error).self) {
+            try await DeviceRegistration(api: harness.api, files: files, userID: user).ensureRegistered().close()
+        }
+        let metadata = try #require(try files.metadata(userID: user))
+        #expect(!metadata.registered)
+        let controller = E2eeController.make(api: harness.api, userID: user, files: files)
+        try await controller.finishLogout()
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+        let pending = PendingDeviceDeletions(root: directory)
+        if lateRegistration {
+            #expect(pending.load()?.map(\.device) == [metadata.device_id])
+            await controller.retryPendingDeviceDeletions()
+            #expect(pending.load()?.map(\.device) == [metadata.device_id])
+            registered.withLock { $0 = true }
+            let restarted = E2eeController.make(api: harness.api, userID: user, files: files)
+            await restarted.retryPendingDeviceDeletions()
+        }
+        #expect(pending.load() == [])
+        #expect(!registered.withLock { $0 })
+        #expect(deletes.withLock { $0 } == Array(repeating: metadata.device_id, count: lateRegistration ? 3 : 1))
+    }
+
+    @Test func 削除待ちは追加と取り消しができ重複しない() {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pending = PendingDeviceDeletions(root: directory)
+        #expect(pending.load() == [])
+        let entry = PendingDeviceDeletion(server: "https://zoo.example", user: "u", device: "d")
+        #expect(pending.add(entry))
+        #expect(pending.add(entry))
+        #expect(pending.load() == [entry])
+        let other = PendingDeviceDeletion(server: "https://zoo.example", user: "v", device: "e")
+        #expect(pending.add(other))
+        #expect(pending.remove(entry))
+        #expect(pending.load() == [other])
+    }
+
+    @Test("登録済み端末は鍵を読めなくても削除か再試行記録を残す", arguments: [204, 500])
+    @MainActor func logoutRegisteredDeviceWithoutKey(status: Int) async throws {
+        let root = root(), key = MemoryKey()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = CryptoStoreFiles(directory: root.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        let deviceID = store.deviceID
+        try store.markRegistered()
+        store.close()
+        let failing = CryptoStoreFiles(directory: files.directory, keys: StorageKeyStore(backing: UnreadableKey(base: key)))
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let requested = Mutex<[String]>([])
+        harness.stub { request in
+            requested.withLock { $0.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")") }
+            return (status, [:], Data())
+        }
+        try await E2eeController.make(api: harness.api, userID: user, files: failing).finishLogout()
+        #expect(requested.withLock { $0 } == ["DELETE /api/e2ee/devices/\(deviceID)"])
+        #expect(PendingDeviceDeletions(root: root).load()?.map(\.device) == (status == 204 ? [] : [deviceID]))
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+        #expect(try key.load() == nil)
+    }
+
+    @Test("端末メタデータを確認できなければ削除情報を保持する", arguments: [false, true])
+    @MainActor func logoutPreservesUnreadableMetadata(wrongAccount: Bool) async throws {
+        let (files, key, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        try store.markRegistered()
+        store.close()
+        let url = directory.appendingPathComponent(CryptoStore.stateFile)
+        let original = try Data(contentsOf: url)
+        if !wrongAccount { try Data("壊れたメタデータ".utf8).write(to: url) }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let controller = E2eeController.make(api: harness.api, userID: wrongAccount ? UUID().uuidString : user, files: files)
+        await #expect(throws: (any Error).self) { try await controller.finishLogout() }
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(try key.load() != nil)
+        if wrongAccount { #expect(try Data(contentsOf: url) == original) }
+    }
+
+    @Test func 削除待ちを読めないときは空として上書きしない() throws {
+        let directory = root()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pending = PendingDeviceDeletions(root: directory)
+        try Data("壊れた".utf8).write(to: pending.file)
+        #expect(pending.load() == nil)
+        #expect(!pending.add(PendingDeviceDeletion(server: "s", user: "u", device: "d")))
+        #expect(try String(contentsOf: pending.file, encoding: .utf8) == "壊れた")
+    }
+
+    @Test @MainActor func 取消に応答しない処理を期限後まで待たず遅い結果も無視する() async {
+        var held: CheckedContinuation<Bool?, Never>?
+        let started = ContinuousClock.now
+        var releasedByWatchdog = false
+        let watchdog = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            releasedByWatchdog = true
+            held?.resume(returning: true)
+            held = nil
+        }
+        defer { watchdog.cancel(); held?.resume(returning: true) }
+        let result = await e2eeWithTimeout(.milliseconds(30)) {
+            await withCheckedContinuation { held = $0 }
+        }
+        #expect(result == nil && !releasedByWatchdog)
+        #expect(started.duration(to: .now) < .seconds(1))
+        #expect(held != nil)
+        held?.resume(returning: true)
+        held = nil
+        await Task.yield()
+    }
+
+    @Test @MainActor func 新端末が未登録でも削除待ちの旧端末をログアウト後へ引き継ぐ() async throws {
+        let root = root(), key = MemoryKey()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = CryptoStoreFiles(directory: root.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        var store = try #require(try CryptoStore.open(files, userID: user)).store
+        let oldID = store.deviceID
+        try store.markRegistered()
+        store.close()
+        try key.delete()
+        store = try #require(try CryptoStore.open(files, userID: user)).store
+        let newID = store.deviceID
+        #expect(!store.isRegistered && store.pendingDeviceDeletions == [oldID])
+        store.close()
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let requested = Mutex<[String]>([])
+        harness.stub { request in
+            requested.withLock { $0.append(request.url?.path ?? "") }
+            return (500, [:], Data())
+        }
+        try await E2eeController.make(api: harness.api, userID: user, files: files).finishLogout()
+        #expect(Set(requested.withLock { $0 }) == Set([oldID, newID].map { "/api/e2ee/devices/\($0)" }))
+        #expect(Set(PendingDeviceDeletions(root: root).load()?.map(\.device) ?? []) == Set([oldID, newID]))
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+    }
+
+    @Test @MainActor func 期限までに終わらない処理は取り消して待たない() async {
+        let started = Date()
+        let result = await e2eeWithTimeout(.milliseconds(50)) { () -> Bool? in
+            try? await Task.sleep(for: .seconds(2))
+            return Task.isCancelled ? nil : true
+        }
+        #expect(result == nil)
+        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(await e2eeWithTimeout(.milliseconds(500)) { () -> Bool? in true } == true)
+    }
+}

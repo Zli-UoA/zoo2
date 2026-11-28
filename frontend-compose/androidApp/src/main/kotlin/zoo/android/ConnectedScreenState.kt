@@ -1083,6 +1083,8 @@ internal class ConnectedScreenState(
         SettingsGroup("Zoo", listOf(SettingsEntry.Destination("search-engine", "検索エンジン", app.searchEngine),
             SettingsEntry.Destination("notifications", "通知"),
             SettingsEntry.Destination("navigation-cache", app.t("androidNavigationCache.title"), cacheLimitLabel(platform.navigationCacheLimit)),
+            SettingsEntry.Destination("attachment-cache", app.t("androidAttachmentCache.title"),
+                attachmentCacheSizeLabel(platform.attachmentCacheSizeMiB)),
             SettingsEntry.Destination("app-update", "アプリの更新"),
             SettingsEntry.Destination("encryption", "エンドツーエンド暗号化"),
             SettingsEntry.Destination("logout", "ログアウト"))),
@@ -1098,6 +1100,13 @@ internal class ConnectedScreenState(
 
     private fun cacheLimitLabel(limit: Int) = if (limit == 0) app.t("androidNavigationCache.off")
         else app.t("androidNavigationCache.entries", "count" to limit.toString())
+
+    private fun attachmentCacheSizeLabel(sizeMiB: Int) =
+        when {
+            sizeMiB == 0 -> app.t("androidNavigationCache.off")
+            sizeMiB >= 1024 -> "${sizeMiB / 1024} GiB"
+            else -> "$sizeMiB MiB"
+        }
 
     fun settingsDetail(env: Environment, notificationOptions: List<SettingsEntry>): AndroidScreen {
         val (title, entries) = when (overlay) {
@@ -1115,12 +1124,19 @@ internal class ConnectedScreenState(
                         platform.navigationCacheLimit == limit))
                 }
             }
+            "attachment-cache" -> app.t("androidAttachmentCache.title") to buildList<SettingsEntry> {
+                add(SettingsEntry.Information("attachment-cache-info", app.t("androidAttachmentCache.description")))
+                attachmentCacheSizesMiB.forEach { sizeMiB ->
+                    add(SettingsEntry.Choice("attachment-cache:$sizeMiB", attachmentCacheSizeLabel(sizeMiB),
+                        platform.attachmentCacheSizeMiB == sizeMiB))
+                }
+            }
             "search-engine" -> "検索エンジン" to searchEngines.map {
                 SettingsEntry.Destination("engine:${it.key}", it.value, if (app.searchEngine == it.key) "選択中" else null)
             }
             else -> "通知" to notificationOptions
         }
-        val groupTitle = if (overlay == "navigation-cache") "" else title
+        val groupTitle = if (overlay in setOf("navigation-cache", "attachment-cache")) "" else title
         return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(groupTitle, entries)))
     }
 
@@ -1322,6 +1338,12 @@ internal class ConnectedScreenState(
                     action.id.substringAfter(':').toIntOrNull()?.takeIf { it in navigationCacheLimits }?.let { limit ->
                         platform.saveNavigationCacheLimit(limit)
                         app.setNavigationCacheLimit(limit)
+                    }
+                action.id.startsWith("attachment-cache:") ->
+                    action.id.substringAfter(':').toIntOrNull()?.let { sizeMiB ->
+                        app.scope.launch {
+                            if (!platform.saveAttachmentCacheSize(sizeMiB)) app.toast = app.t("offline.deleteFailed")
+                        }
                     }
                 action.id.startsWith("engine:") -> app.searchPreferences.save(action.id.substringAfter(':'))
                 action.id == "rename" && channel != null -> {

@@ -18,10 +18,15 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import zoo.*
 
 internal val navigationCacheLimits = listOf(0, 4, 8, 16)
+internal val attachmentCacheSizesMiB = listOf(0, 128, 256, 512, 1024, 2048)
+private const val DefaultAttachmentCacheMiB = 512
+private const val BytesPerMiB = 1024L * 1024
 
 internal class AndroidPlatform(
     private val activity: Activity,
@@ -83,7 +88,32 @@ internal class AndroidPlatform(
     private val cache = AccountCache(cacheDirectory)
     private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${hash("$base:$userId")}"))
     private val mediaProxy = AndroidMediaProxy(activity, base)
-    private val images = AndroidImageCache(cacheDirectory.resolve("images"))
+    private val attachmentCachePreference = "attachment-cache-mib:${cacheDirectory.name}"
+    var attachmentCacheSizeMiB by mutableIntStateOf(
+        prefs.getInt(attachmentCachePreference, DefaultAttachmentCacheMiB)
+            .takeIf { it in attachmentCacheSizesMiB } ?: DefaultAttachmentCacheMiB
+    )
+        private set
+    private val attachmentCacheSettingsLock = Mutex()
+    private val images = AndroidImageCache(
+        cacheDirectory.resolve("images"), attachmentCacheBytes = attachmentCacheSizeMiB * BytesPerMiB,
+    )
+
+    suspend fun enforceAttachmentCacheSize(): Boolean = attachmentCacheSettingsLock.withLock {
+        images.resizeAttachmentCache(attachmentCacheSizeMiB * BytesPerMiB)
+    }
+
+    suspend fun saveAttachmentCacheSize(sizeMiB: Int): Boolean {
+        if (sizeMiB !in attachmentCacheSizesMiB) return false
+        return attachmentCacheSettingsLock.withLock {
+            if (attachmentCacheSizeMiB == 0 && sizeMiB > 0 && !images.resizeAttachmentCache(0)) {
+                return@withLock false
+            }
+            attachmentCacheSizeMiB = sizeMiB
+            prefs.edit().putInt(attachmentCachePreference, sizeMiB).apply()
+            images.resizeAttachmentCache(sizeMiB * BytesPerMiB)
+        }
+    }
     private val dictionaries = mutableMapOf<String, Row>()
 
     private fun hash(value: String) =
@@ -285,8 +315,8 @@ internal class AndroidPlatform(
     override suspend fun refreshImage(url: String): ByteArray =
         mediaProxy.image(url, http, images, env.online, bypassCache = true)
 
-    override suspend fun freshAttachmentImage(cacheKey: String): ByteArray? =
-        images.freshAttachmentImage(cacheKey)
+    override suspend fun cachedAttachmentPreview(cacheKey: String): ByteArray? =
+        images.cachedAttachmentPreview(cacheKey)
 
     override suspend fun removeAttachmentImages(id: String) = images.removeAttachmentImages(id)
 

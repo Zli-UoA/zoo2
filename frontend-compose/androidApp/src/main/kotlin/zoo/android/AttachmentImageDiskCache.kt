@@ -9,14 +9,14 @@ import java.security.MessageDigest
 /** Stores attachment bytes within one account. Callers check access before every lookup. */
 internal class AttachmentImageDiskCache(
     private val directory: File,
-    private val maxBytes: Long = 128L * 1024 * 1024,
-    private val maxEntries: Int = 512,
+    private var maxBytes: Long,
 ) {
-    data class Freshness(val maxAgeMillis: Long?, val httpExpiresAt: Long?)
+    data class Freshness(val maxAgeMillis: Long?, val httpExpiresAt: Long?, val stalePreviewMillis: Long?)
 
     data class Entry(
         val urlHash: String,
         val expiresAt: Long,
+        val revalidateAt: Long,
         val etag: String?,
         val freshness: Freshness,
         val bytes: ByteArray,
@@ -25,6 +25,9 @@ internal class AttachmentImageDiskCache(
     private var closed = false
     private val blockedKeys = mutableSetOf<String>()
     private val activeLoads = mutableMapOf<String, MutableSet<Any>>()
+    private val filesByUse = linkedMapOf<File, Long>()
+    private var indexed = false
+    private var totalBytes = 0L
 
     @Synchronized
     fun beginLoad(key: String): Any? {
@@ -46,7 +49,7 @@ internal class AttachmentImageDiskCache(
         if (closed) return
         blockedKeys.add(key)
         activeLoads.remove(key)
-        file(key).delete()
+        delete(file(key))
     }
 
     @Synchronized
@@ -59,20 +62,38 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun read(id: String, freshAt: Long? = null): Entry? {
+    fun read(id: String, previewAt: Long? = null): Entry? {
         if (closed || id in blockedKeys) return null
         val file = file(id)
         return try {
             if (!file.isFile || file.length() > maxBytes) return null
             DataInputStream(file.inputStream().buffered()).use { input ->
-                val url = input.readUTF()
+                // Older entries lack this prefix and still require fresh HTTP metadata for a preview.
+                val header = input.readUTF()
+                val hasRevalidationDeadline = header.startsWith(RevalidationPrefix)
+                val storedUrl = header.removePrefix(RevalidationPrefix)
+                val timed = storedUrl.removePrefix(TimedPreviewPrefix)
+                val staleMillis = when {
+                    storedUrl.startsWith(TimedPreviewPrefix) -> timed.substringBefore(':').toLongOrNull()
+                    storedUrl.startsWith(StalePreviewPrefix) -> Long.MAX_VALUE
+                    storedUrl.startsWith(FreshPreviewPrefix) -> 0L
+                    else -> null
+                }
+                val url = if (timed != storedUrl) timed.substringAfter(':')
+                    else storedUrl.removePrefix(StalePreviewPrefix).removePrefix(FreshPreviewPrefix)
                 val expiresAt = input.readLong()
-                if (freshAt != null && expiresAt <= freshAt) return null
+                if (previewAt != null && expiresAt <= previewAt &&
+                    previewAt - expiresAt >= (staleMillis ?: 0L)
+                ) return null
+                val revalidateAt = if (hasRevalidationDeadline) input.readLong() else expiresAt
                 val etag = input.readUTF().ifEmpty { null }
                 val maxAge = input.readLong().takeUnless { it == Long.MIN_VALUE }
                 val httpExpiry = input.readLong().takeUnless { it == Long.MIN_VALUE }
-                Entry(url, expiresAt, etag, Freshness(maxAge, httpExpiry), input.readBytes())
-            }.also { file.setLastModified(System.currentTimeMillis()) }
+                Entry(url, expiresAt, revalidateAt, etag, Freshness(maxAge, httpExpiry, staleMillis), input.readBytes())
+            }.also {
+                file.setLastModified(System.currentTimeMillis())
+                filesByUse.remove(file)?.let { size -> filesByUse[file] = size }
+            }
         } catch (_: IOException) {
             null
         }
@@ -83,8 +104,14 @@ internal class AttachmentImageDiskCache(
         if (!isCurrent(id, token)) return
         val metadata = java.io.ByteArrayOutputStream()
         DataOutputStream(metadata).use { output ->
-            output.writeUTF(entry.urlHash)
+            val prefix = when (val staleMillis = entry.freshness.stalePreviewMillis) {
+                null, 0L -> FreshPreviewPrefix
+                Long.MAX_VALUE -> StalePreviewPrefix
+                else -> "$TimedPreviewPrefix$staleMillis:"
+            }
+            output.writeUTF(RevalidationPrefix + prefix + entry.urlHash)
             output.writeLong(entry.expiresAt)
+            output.writeLong(entry.revalidateAt)
             output.writeUTF(entry.etag.orEmpty())
             output.writeLong(entry.freshness.maxAgeMillis ?: Long.MIN_VALUE)
             output.writeLong(entry.freshness.httpExpiresAt ?: Long.MIN_VALUE)
@@ -93,25 +120,18 @@ internal class AttachmentImageDiskCache(
         if (closed || sizeOnDisk > maxBytes) return
         if (!directory.isDirectory && !directory.mkdirs()) return
         val target = file(id)
-        val files = directory.listFiles()?.filter { it != target } ?: return
-        var total = files.sumOf { it.length() } + sizeOnDisk
-        var entries = files.size + 1
-        for (candidate in files.sortedBy { it.lastModified() }) {
-            if (total <= maxBytes && entries <= maxEntries) break
-            val size = candidate.length()
-            if (candidate.delete()) {
-                total -= size
-                entries--
-            }
-        }
-        if (total > maxBytes || entries > maxEntries) return
+        if (!indexFiles()) return
         val temporary = directory.resolve("${target.name}.tmp")
         try {
             temporary.outputStream().buffered().use { output ->
                 metadata.writeTo(output)
                 output.write(entry.bytes)
             }
-            temporary.renameTo(target)
+            if (!temporary.renameTo(target)) return
+            totalBytes -= filesByUse.remove(target) ?: 0L
+            filesByUse[target] = sizeOnDisk
+            totalBytes += sizeOnDisk
+            trimToBudget()
         } catch (_: IOException) {
             // The response can still be displayed when the disk cache is unavailable.
         } finally {
@@ -120,11 +140,55 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
+    fun resize(bytes: Long): Boolean {
+        if (closed) return false
+        maxBytes = bytes
+        return trimToBudget()
+    }
+
+    private fun indexFiles(): Boolean {
+        if (indexed) return true
+        if (!directory.exists()) return true
+        val files = directory.listFiles() ?: return false
+        files.filter { it.isFile }
+            .map { it to it.lastModified() }
+            .sortedBy { it.second }
+            .forEach { (file, _) ->
+                val size = file.length()
+                filesByUse[file] = size
+                totalBytes += size
+            }
+        indexed = true
+        return true
+    }
+
+    private fun trimToBudget(): Boolean {
+        if (!indexFiles()) return false
+        val entries = filesByUse.entries.iterator()
+        while ((totalBytes > maxBytes || maxBytes == 0L) && entries.hasNext()) {
+            val (file, size) = entries.next()
+            if (file.delete() || !file.exists()) {
+                totalBytes -= size
+                entries.remove()
+            }
+        }
+        return if (maxBytes == 0L) filesByUse.isEmpty() else totalBytes <= maxBytes
+    }
+
+    private fun delete(file: File) {
+        if (file.delete() || !file.exists()) totalBytes -= filesByUse.remove(file) ?: 0L
+    }
+
+    @Synchronized
     fun remove(id: String, token: Any) {
-        if (isCurrent(id, token)) file(id).delete()
+        if (isCurrent(id, token)) delete(file(id))
     }
 
     companion object {
+        private const val RevalidationPrefix = "http:"
+        private const val TimedPreviewPrefix = "stale:"
+        private const val StalePreviewPrefix = "preview:"
+        private const val FreshPreviewPrefix = "fresh:"
         fun digest(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
             .joinToString("") { "%02x".format(it) }
     }

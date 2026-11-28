@@ -589,7 +589,7 @@ internal fun ConnectedScreens(
                 loadFailed = state.postLoadFailed, online = env.online, loading = state.postPending)
         }
         state.overlay == "post" -> AndroidScreen.PostLoading(env.online, state.postLoadFailed)
-        state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache") -> state.settingsDetail(env, notificationOptions)
+        state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache", "attachment-cache") -> state.settingsDetail(env, notificationOptions)
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
         route == "/home" -> AndroidScreen.Home(state.withOutgoing("/home", posts, newestFirst = true), state.home.timeline, state.home.canLoadOlder,
             showingSavedHead = state.home.showingSavedHead, loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)

@@ -1836,6 +1836,10 @@
   "androidUpdate": {
     "title": "アプリの更新"
   },
+  "androidAttachmentCache": {
+    "title": "添付画像キャッシュ",
+    "description": "このアカウントの署名付き添付画像を端末に保存します。上限を下げると、最近使っていない画像から削除します。オフにすると保存済みの画像を削除します。公開画像は別のキャッシュを使います。"
+  },
   "androidNavigationCache": {
     "title": "画面遷移キャッシュ",
     "description": "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。",

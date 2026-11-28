@@ -1,3 +1,10 @@
 [bindings.kotlin]
 package_name = "zoo.crypto.ffi"
 cdylib_name = "zoo_crypto_ffi"
+
+[bindings.swift]
+# モジュール名は XCFramework の module.modulemap と Swift の `import` 名になる。
+module_name = "ZooCryptoFFI"
+ffi_module_name = "ZooCryptoFFIFFI"
+ffi_module_filename = "ZooCryptoFFIFFI"
+generate_module_map = true

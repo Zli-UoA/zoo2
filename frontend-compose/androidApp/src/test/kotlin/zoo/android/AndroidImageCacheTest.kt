@@ -210,26 +210,159 @@ class AndroidImageCacheTest {
         }
     }
 
-    @Test fun readsOnlyFreshAttachmentPreviewsWithoutANetworkRequest() = runBlocking {
+    @Test fun previewsOldAttachmentsUnlessTheServerRequiresRevalidation() = runBlocking {
         Fixture().use { f ->
             var time = 1_000L
-            repeat(2) {
-                f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60").setBody("image"))
-            }
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60").setBody("image"))
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60, must-revalidate").setBody("image"))
             f.cache(now = { time }).use { cache ->
                 cache.signedImage(f.url, "id:thumbnail")
                 cache.signedImage(f.url, "id:original")
             }
             f.cache(now = { time }).use { cache ->
-                assertEquals("image", cache.freshAttachmentImage("id:thumbnail")?.decodeToString())
-                time += 60_000
-                assertNull(cache.freshAttachmentImage("id:thumbnail"))
+                assertEquals("image", cache.cachedAttachmentPreview("id:thumbnail")?.decodeToString())
+                assertEquals("image", cache.cachedAttachmentPreview("id:original")?.decodeToString())
+                time += TimeUnit.DAYS.toMillis(7)
+                assertEquals("image", cache.cachedAttachmentPreview("id:thumbnail")?.decodeToString())
+                assertNull(cache.cachedAttachmentPreview("id:original"))
                 cache.removeAttachmentImages("id")
                 time = 1_000L
-                assertNull(cache.freshAttachmentImage("id:thumbnail"))
-                assertNull(cache.freshAttachmentImage("id:original"))
+                assertNull(cache.cachedAttachmentPreview("id:thumbnail"))
+                assertNull(cache.cachedAttachmentPreview("id:original"))
             }
             assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun honorsAnExplicitStalePreviewWindowAcrossRestarts() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60, stale-while-revalidate=30")
+                .setBody("image"))
+            f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                time += 89_999
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                time++
+                assertNull(cache.cachedAttachmentPreview(key))
+            }
+            assertEquals(1, f.server.requestCount)
+        }
+    }
+
+    @Test fun responseAgeReducesTheRemainingStalePreviewWindow() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60, stale-while-revalidate=30")
+                .setHeader("Age", "80").setBody("image"))
+            f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
+            f.cache(now = { time }).use { cache ->
+                time += 9_999
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                time++
+                assertNull(cache.cachedAttachmentPreview(key))
+            }
+            assertEquals(1, f.server.requestCount)
+        }
+    }
+
+    @Test fun theNetworkRevalidationCapDoesNotShortenTheStoredPreviewWindow() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=600, stale-while-revalidate=30")
+                .setHeader("ETag", "\"image\"").setBody("image"))
+            f.server.enqueue(MockResponse().setResponseCode(304))
+            f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
+            f.cache(now = { time }).use { cache ->
+                time += 360_000
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                assertEquals(1, f.server.requestCount)
+                assertEquals("image", cache.signedImage(f.url, key).decodeToString())
+                assertEquals(2, f.server.requestCount)
+                time += 629_999
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+                time++
+                assertNull(cache.cachedAttachmentPreview(key))
+            }
+        }
+    }
+
+    @Test fun failedCapacityCleanupCanBeRetriedWithTheSameSize() = runBlocking {
+        Fixture().use { f ->
+            val cachePath = f.directory.resolve("account/images-attachment-bodies-v3")
+            assertTrue(cachePath.parentFile.mkdirs())
+            cachePath.writeText("unreadable as a directory")
+            f.cache().use { cache ->
+                assertFalse(cache.resizeAttachmentCache(0))
+                assertTrue(cachePath.delete())
+                assertTrue(cache.resizeAttachmentCache(0))
+            }
+        }
+    }
+
+    @Test fun refreshesLegacyEntriesOnceToLearnTheirPreviewPolicy() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            repeat(2) {
+                f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60")
+                    .setHeader("ETag", "\"image\"").setBody("image"))
+            }
+            val key = "legacy:thumbnail"
+            f.cache(now = { time }).use { cache -> cache.signedImage(f.url, key) }
+            val file = f.directory.resolve("account/images-attachment-bodies-v3")
+                .resolve(AttachmentImageDiskCache.digest(key))
+            val (hash, expiresAt, remainingHeaderAndBody) = java.io.DataInputStream(file.inputStream()).use {
+                val hash = it.readUTF().removePrefix("http:preview:")
+                val expiresAt = it.readLong()
+                it.readLong()
+                Triple(hash, expiresAt, it.readBytes())
+            }
+            java.io.DataOutputStream(file.outputStream()).use {
+                it.writeUTF(hash)
+                it.writeLong(expiresAt)
+                it.write(remainingHeaderAndBody)
+            }
+            time += 60_000
+            f.cache(now = { time }).use { cache ->
+                assertNull(cache.cachedAttachmentPreview(key))
+                assertEquals("image", cache.signedImage(f.url, key).decodeToString())
+                time += TimeUnit.DAYS.toMillis(7)
+                assertEquals("image", cache.cachedAttachmentPreview(key)?.decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+            f.server.takeRequest()
+            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
+    @Test fun resizingKeepsRecentlyUsedAttachmentsAndDisablingClearsTheCache() = runBlocking {
+        Fixture().use { f ->
+            val image = "x".repeat(512)
+            repeat(3) { f.server.enqueue(MockResponse().setBody(image)) }
+            f.cache().use { cache ->
+                cache.signedImage(f.url, "keep:thumbnail")
+                cache.signedImage(f.url, "evict:thumbnail")
+                val directory = f.directory.resolve("account/images-attachment-bodies-v3")
+                val old = directory.resolve(AttachmentImageDiskCache.digest("evict:thumbnail"))
+                assertTrue(old.setLastModified(1_000L))
+                assertEquals(image, cache.cachedAttachmentPreview("keep:thumbnail")?.decodeToString())
+
+                cache.resizeAttachmentCache(1_000)
+                assertNull(cache.cachedAttachmentPreview("evict:thumbnail"))
+                assertEquals(image, cache.cachedAttachmentPreview("keep:thumbnail")?.decodeToString())
+                cache.resizeAttachmentCache(0)
+                assertNull(cache.cachedAttachmentPreview("keep:thumbnail"))
+                assertEquals(image, cache.signedImage(f.url, "keep:thumbnail").decodeToString())
+                assertNull(cache.cachedAttachmentPreview("keep:thumbnail"))
+            }
+            f.cache().use { cache ->
+                assertNull(cache.cachedAttachmentPreview("keep:thumbnail"))
+            }
+            assertEquals(3, f.server.requestCount)
         }
     }
 
@@ -252,18 +385,18 @@ class AndroidImageCacheTest {
                 try {
                     assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
                     cache.removeAttachmentImages("id")
-                    assertNull(cache.freshAttachmentImage(key))
+                    assertNull(cache.cachedAttachmentPreview(key))
                     assertEquals(403, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
                     cache.allowAttachmentImages("id")
                 } finally {
                     releaseResponse.countDown()
                 }
                 assertEquals(403, pending.await().status)
-                assertNull(cache.freshAttachmentImage(key))
+                assertNull(cache.cachedAttachmentPreview(key))
                 assertEquals("new", cache.signedImage(f.url, key).decodeToString())
             }
             f.cache().use { cache ->
-                assertEquals("new", cache.freshAttachmentImage(key)?.decodeToString())
+                assertEquals("new", cache.cachedAttachmentPreview(key)?.decodeToString())
             }
             assertEquals(2, f.server.requestCount)
         }
@@ -295,7 +428,7 @@ class AndroidImageCacheTest {
                     finishReading.countDown()
                 }
                 assertEquals(403, pending.await().status)
-                assertNull(cache.freshAttachmentImage(key))
+                assertNull(cache.cachedAttachmentPreview(key))
             }
             assertEquals(1, f.server.requestCount)
         }

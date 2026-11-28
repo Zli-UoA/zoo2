@@ -1,8 +1,11 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
+import { classifyTranslationChanges, isFrontendLocale, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, validateChangedTranslations, workflowChanges } from './test-selection-diff.mjs';
 import { routeTestTargets, testLeg } from './backend-e2e-selection.mjs';
-import { isRelatedFrontendModule } from './frontend-test-selection.mjs';
+import { isRelatedFrontendModule, isVitestInput } from './frontend-test-selection.mjs';
+import { isStorybookVitestInput } from './frontend-test-selection-paths.mjs';
+import { playwrightOwners } from './playwright-test-selection.mjs';
+import { PR_WORKFLOWS } from './merge-queue-changes.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
 import { workflowJobs, restrictWorkflow } from './workflow-test-selection.mjs';
 
@@ -26,6 +29,7 @@ export function selectSuites(eventName, changes) {
   });
   if (!usesSelectiveTests(eventName)) return full('push and manual runs use all suites by default');
   if (!changes?.length) return full('diff unavailable or empty');
+  if (eventName === 'pull_request') return selectPullRequest(changes, full);
   // The proxy test uses mock Node servers, not the application or its Wasm.
   if (changes.every(c => ['A', 'M'].includes(c.status) && /^(infra\/proxy\/|infra\/Dockerfile-proxy-deploy)/.test(c.path))) {
     return {
@@ -42,29 +46,6 @@ export function selectSuites(eventName, changes) {
       frontendBuild: { check: false, build: false, wasm: false },
       backend: { full: false, targets: [], legs: [], run: false, emoji: false },
     };
-  }
-  const additionsOrEdits = changes.every(c => ['A', 'M'].includes(c.status));
-  if (eventName === 'pull_request' && additionsOrEdits) {
-    const relatedProjects = ['unit', 'browser', 'vrt', 'storybook'];
-    if (changes.every(c => isRelatedFrontendModule(c.path)) &&
-        changes.some(c => !/\.(test|spec)\.tsx?$/.test(c.path))) {
-      return {
-        reason: 'frontend modules covered by the Vitest import graph',
-        frontend: Object.fromEntries(suites.map(s => [s, relatedProjects.includes(s)])),
-        frontendBuild: { check: true, build: true, wasm: true },
-        backend: { full: false, check: false, targets: [], legs: [], run: false, emoji: false },
-      };
-    }
-    const routeTargets = changes.flatMap(c => routeTestTargets[c.path] ?? []);
-    if (routeTargets.length && changes.every(c => Object.hasOwn(routeTestTargets, c.path) || /^backend\/tests\/[a-zA-Z0-9_]+_test\.rs$/.test(c.path))) {
-      const targets = [...new Set([...routeTargets, ...changes.filter(c => c.path.startsWith('backend/tests/')).map(c => c.path.slice('backend/tests/'.length, -3))])].sort();
-      return {
-        reason: 'backend routes with dedicated integration coverage',
-        frontend: Object.fromEntries(suites.map(s => [s, false])),
-        frontendBuild: { check: false, build: false, wasm: false },
-        backend: { full: false, source: true, targets, legs: [...new Set(targets.map(testLeg))].sort(), run: true, emoji: targets.includes('emoji_service_test') },
-      };
-    }
   }
   const frontend = Object.fromEntries(suites.map(s => [s, false]));
   const targets = [];
@@ -97,22 +78,111 @@ export function selectSuites(eventName, changes) {
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  let changes;
-  let base;
-  try {
-    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
-    base = testBaseSha(process.env.GITHUB_EVENT_NAME, event);
-    if (base) changes = readChanges(base);
-  } catch {
-    console.log('Test Selection: diff unavailable; running all suites');
+function selectPullRequest(changes, full) {
+  const frontend = Object.fromEntries(suites.map(suite => [suite, false]));
+  const frontendBuild = { check: false, build: false, wasm: false };
+  const backend = { check: false, deploy: false, full: false, source: false, targets: [], legs: [], run: false, emoji: false };
+  const targets = new Set();
+  const affected = new Map();
+  function enable(path, ...selected) {
+    for (const suite of selected) frontend[suite] = true;
+    affected.set(path, selected.join(', '));
   }
-  const workflow = process.env.TEST_WORKFLOW;
-  const relevant = workflowChanges(workflow, changes);
-  let selection = {
-    ...selectSuites(process.env.GITHUB_EVENT_NAME, relevant),
-    ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, relevant),
-  };
+
+  for (const change of changes) {
+    const { path, status } = change;
+    if (isLightweightChange(change) || !isFrontendTestInput(path)) continue;
+    const edit = ['A', 'M'].includes(status);
+    if (path.startsWith('backend/') || /^(infra\/db\/|crates\/zoo-components\/|docs\/slack-event-coverage\.json$)/.test(path) ||
+        path === 'frontend/src/lib/emoji/emoji-kitchen.json') {
+      backend.check = true;
+      if (!path.startsWith('backend/tests/')) backend.deploy = true;
+      const test = /^backend\/tests\/([a-zA-Z0-9_]+_test)\.rs$/.exec(path);
+      if (edit && test) targets.add(test[1]);
+      else if (edit && Object.hasOwn(routeTestTargets, path)) {
+        backend.source = true;
+        for (const target of routeTestTargets[path]) targets.add(target);
+      } else backend.full = true;
+      affected.set(path, backend.full ? 'backend shared inputs' : 'backend integration targets');
+      if (path !== 'frontend/src/lib/emoji/emoji-kitchen.json') continue;
+    }
+
+    if (/^infra\/(Dockerfile-(backend|migrate)-deploy[^/]*|compose\.stack[^/]*\.yaml)$/.test(path)) {
+      backend.deploy = true;
+      if (!path.startsWith('infra/compose.stack')) continue;
+    }
+    if (/^infra\/(proxy\/|Dockerfile-proxy-deploy)/.test(path)) {
+      enable(path, 'proxy');
+    } else if (/^infra\/(frontend-(nginx\.conf|entrypoint\.sh)|csp-hashes\.mjs|Dockerfile-frontend-deploy[^/]*|compose\.stack[^/]*\.yaml)$/.test(path)) {
+      const selected = ['container'];
+      if (path.startsWith('infra/compose.stack')) selected.push('proxy');
+      if (path === 'infra/frontend-nginx.conf') selected.push('offline');
+      enable(path, ...selected);
+    } else if (isFrontendLocale(path) && edit) {
+      enable(path, 'unit', 'browser', 'vrt', 'storybook', 'i18n', 'layout');
+    } else if (Object.hasOwn(specs, path)) {
+      if (/\.tsx?$/.test(path)) frontendBuild.check = true;
+      enable(path, specs[path]);
+    } else if (/^frontend\/playwright[^/]*\.config\.ts$|^frontend\/e2e\//.test(path)) {
+      if (/\.tsx?$/.test(path)) frontendBuild.check = true;
+      if (path === 'frontend/e2e/mock-idp.ts') frontend.unit = true;
+      const owners = playwrightOwners(path) ?? ['i18n', 'layout', 'frontend-selection', 'csp', 'oidc', 'e2ee'];
+      enable(path, ...owners.map(suite => suite === 'csp' ? 'container' : suite === 'oidc' ? 'auth' : suite));
+    } else if (path.startsWith('frontend/')) {
+      const test = edit && isRelatedFrontendModule(path, 'pull_request');
+      if (test && /\.vrt\.test\.tsx$/.test(path)) enable(path, 'vrt');
+      else if (test && /\.browser\.test\.tsx?$/.test(path)) enable(path, 'browser');
+      else if (test && /\.test\.ts$/.test(path)) enable(path, 'unit');
+      else if (path.startsWith('frontend/.storybook/')) {
+        const selected = ['vrt', 'storybook', 'catalog'];
+        for (const project of ['unit', 'browser']) {
+          if (isStorybookVitestInput(path, project)) selected.push(project);
+        }
+        enable(path, ...selected);
+      } else if (/\.stories\.[^/]+$/.test(path)) {
+        enable(path, 'vrt', 'storybook', 'catalog');
+      } else {
+        frontendBuild.build = true;
+        const selected = ['unit', 'browser', 'vrt', 'storybook'];
+        if (path.startsWith('frontend/src/lib/i18n/')) selected.push('i18n');
+        if (path === 'frontend/src/styles.css' || playwrightOwners(path)?.includes('layout')) selected.push('layout');
+        if (/^frontend\/(public\/sw(?:-push)?\.js$|src\/(sw\/|lib\/pwa\/))/.test(path)) {
+          selected.push('pwa', 'offline', 'container');
+        }
+        if (/^frontend\/(public\/(sw(?:-push)?\.js|icons\/(favicon-32|badge-96)\.png)$|src\/lib\/pwa\/avatar-cache\.ts$)/.test(path)) {
+          selected.push('avatar');
+        }
+        if (path === 'frontend/public/manifest.webmanifest' || path.startsWith('frontend/public/icons/')) selected.push('pwa');
+        if (path.startsWith('frontend/src/lib/offline/')) selected.push('offline');
+        if (path === 'frontend/public/android/reauth-callback.html') selected.push('container');
+        if (!isVitestInput(path) || /^frontend\/(package\.json|pnpm-lock\.yaml|vite\.config\.)/.test(path)) {
+          selected.push('pwa', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection', 'container', 'catalog');
+        }
+        enable(path, ...new Set(selected));
+      }
+    } else {
+      return full(`unclassified shared input: ${path}`);
+    }
+  }
+
+  frontendBuild.check ||= frontendBuild.build || frontend.unit || frontend.browser || frontend.vrt || frontend.storybook;
+  frontendBuild.wasm = frontendBuild.check || ['pwa', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection', 'catalog'].some(suite => frontend[suite]);
+  backend.targets = backend.full ? [] : [...targets].sort();
+  backend.legs = backend.full ? ['slack', 'core'] : [...new Set(backend.targets.map(testLeg))].sort();
+  backend.run = backend.legs.length > 0;
+  backend.emoji = backend.full || targets.has('emoji_service_test');
+  return { reason: 'PR suites selected by input', affected: Object.fromEntries(affected), frontend, frontendBuild, backend };
+}
+
+export function selectWorkflowPlan(eventName, workflow, changes, base) {
+  const relevant = workflowChanges(workflow, changes, eventName);
+  const otherChanges = eventName === 'pull_request' && relevant?.length
+    ? relevant.filter(change => !isLightweightChange(change) && isFrontendTestInput(change.path))
+    : relevant;
+  const otherJobs = otherChanges?.length === 0 && relevant?.length
+    ? { clients: { tui: false }, bots: { bot: false, sdk: false, image: false }, storybookPreview: false }
+    : selectOtherJobs(eventName, otherChanges);
+  let selection = { ...selectSuites(eventName, relevant), ...otherJobs };
   if (base && changes) {
     const jobs = workflowJobs(workflow, changes, { base });
     if (jobs) console.log(`Changed workflow job closure (${workflow}): ${[...jobs].join(', ') || 'no application jobs'}`);
@@ -122,10 +192,80 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     path === '.github/workflows/ci-android.yaml' ||
     (path.startsWith('frontend/') && !/^(?:frontend\/src\/(?:android-phone|lib\/(?:sip|call))\/|frontend\/vite\.android-phone\.config\.ts$|frontend\/scripts\/android-phone-smoke\.mjs$)/.test(path)));
   selection.desktopTauri ??= { check: true, macos: true, windows: true };
+  if (eventName === 'pull_request' && relevant?.length &&
+      ['ci-frontend-auth-e2e', 'ci-frontend-e2ee-e2e'].includes(workflow)) {
+    const suite = workflow === 'ci-frontend-auth-e2e' ? 'auth' : 'e2ee';
+    // Dedicated E2E tests also use translated accessible names.
+    const hasInput = relevant.some(change => {
+      if (isLightweightChange(change)) return false;
+      if (!/^frontend\/(?:e2e\/|playwright\.)/.test(change.path)) return true;
+      const owners = playwrightOwners(change.path);
+      return !owners || owners.includes(suite === 'auth' ? 'oidc' : 'e2ee');
+    });
+    // Mixed unowned fixture changes can make the generic plan select every
+    // Playwright suite. Dedicated workflows must apply their own ownership.
+    selection.frontend[suite] = hasInput;
+
+  }
+  if (relevant?.some(({ path }) => path.startsWith('.github/scripts/rust-test-selection/'))) {
+    selection.backend.verifyCaseSelector = true;
+    selection.backend.check = true;
+  }
   selection.backend.check ??= true;
   selection.backend.deploy ??= selection.backend.full;
+  return selection;
+}
+
+export function selectPrPlans(changes, base) {
+  const plans = {};
+  for (const workflow of PR_WORKFLOWS) {
+    if (changes?.length && !workflowChanges(workflow, changes, 'pull_request').length) continue;
+    const selection = selectWorkflowPlan('pull_request', workflow, changes, base);
+    const { backend, frontend, frontendBuild, clients, bots } = selection;
+    if (workflow === 'ci-backend' && (backend.check || backend.deploy || backend.run || backend.emoji)) plans[workflow] = { backend };
+    if (workflow === 'ci-frontend' && (
+      Object.values(frontendBuild).some(Boolean) ||
+      Object.entries(frontend).some(([key, enabled]) => !['auth', 'e2ee'].includes(key) && enabled)
+    )) plans[workflow] = { frontend, frontendBuild };
+    if (workflow === 'ci-tui' && clients.tui) plans[workflow] = { clients };
+    if (workflow === 'ci-github-bot' && (bots.bot || bots.sdk)) plans[workflow] = { bots };
+  }
+  return plans;
+}
+
+export function shouldVerifySelector(eventName, changes) {
+  return eventName !== 'pull_request' || !changes?.length || changes.some(({ path }) =>
+    path.startsWith('.github/') || [
+      'desktop/scripts/collect-lucide-icons.mjs',
+      'frontend/src/lib/i18n/translation-policy.ts',
+    ].includes(path));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const workflow = process.env.TEST_WORKFLOW;
+  let changes;
+  let base;
+  try {
+    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+    base = testBaseSha(eventName, event);
+    if (base) changes = readChanges(base);
+  } catch {
+    console.log('Test Selection: diff unavailable; running all suites');
+  }
+  if (eventName === 'pull_request' && changes) {
+    validateChangedTranslations(changes);
+    changes = classifyTranslationChanges(base, changes);
+  }
+  const sharedPlan = process.env.TEST_PR_BATCH === 'true';
+  const selection = sharedPlan ? selectPrPlans(changes, base) : selectWorkflowPlan(eventName, workflow, changes, base);
+  const verify = shouldVerifySelector(eventName, changes);
+  const output = process.env.GITHUB_OUTPUT;
+  appendFileSync(output, `plan=${JSON.stringify(Object.fromEntries(Object.entries(selection).filter(([key]) => key !== 'affected')))}\nverify=${verify}\n`);
   console.log(JSON.stringify(selection, null, 2));
-  for (const key of ['frontend', 'frontendBuild', 'backend', 'clients', 'bots', 'storybookPreview', 'desktopTauri', 'androidMedia']) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${JSON.stringify(selection[key])}\n`);
+  if (!sharedPlan) {
+    for (const key of ['frontend', 'frontendBuild', 'backend', 'clients', 'bots', 'storybookPreview', 'desktopTauri', 'androidMedia']) {
+      appendFileSync(output, `${key}=${JSON.stringify(selection[key])}\n`);
+    }
   }
 }

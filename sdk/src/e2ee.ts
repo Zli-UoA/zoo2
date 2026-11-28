@@ -780,7 +780,10 @@ export class ZooE2ee {
           const page: JsonObject = await this.options.app.request<JsonObject>("GET", params.size > 0 ? `${base}?${params}` : base);
           pages.push(page);
           epoch ??= String(page.membership_epoch ?? 0);
-          after = typeof page.next_after === "string" ? page.next_after : null;
+          if (page.next_after != null && typeof page.next_after !== "string") {
+            throw new Error("配布先の次ページの位置が不正です");
+          }
+          after = page.next_after ?? null;
         } while (after !== null);
       } catch (error) {
         if (error instanceof ZooError && error.code === "E2EE_STALE_EPOCH") continue;

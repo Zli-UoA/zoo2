@@ -29,7 +29,7 @@ import { ForwardedMessageCard } from "./ForwardedMessageCard";
 import { MessageBody } from "./MessageRow";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { MfmContent } from "./MfmContent";
-import { LinkPreviews } from "./LinkPreviews";
+import { LinkPreviews } from "./LinkPreviews.tsx";
 
 const summaly = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../../../lib/summaly", () => ({ createSummalyClient: () => summaly }));

@@ -1836,6 +1836,10 @@
   "androidUpdate": {
     "title": "應用程式更新"
   },
+  "androidAttachmentCache": {
+    "title": "附件圖片快取",
+    "description": "將此帳號使用簽署連結的附件圖片儲存在裝置上。降低上限時，優先刪除最久未使用的圖片。關閉後會清除已儲存的圖片。公開圖片使用獨立的快取。"
+  },
   "androidNavigationCache": {
     "title": "頁面切換快取",
     "description": "設定記憶體中保留的首頁、貼文詳情與個人資料項目數，以及獨立的頻道項目數。",
