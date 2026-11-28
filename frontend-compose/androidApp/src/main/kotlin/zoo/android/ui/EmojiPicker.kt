@@ -110,6 +110,12 @@ internal fun EmojiPicker(
     val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
     val sections = remember(filtered, tab, query, unicode, recentUnicode, recentCategory) {
         when {
+            tab == EmojiTab.Unicode && query.isNotBlank() -> {
+                val matchesByCategory = filtered.groupBy { it.category }
+                unicode.map { it.category }.distinct().mapNotNull { category ->
+                    matchesByCategory[category]?.let { category to it }
+                }
+            }
             query.isNotBlank() || tab == EmojiTab.Kitchen -> listOf("" to filtered)
             tab == EmojiTab.Unicode -> buildList {
                 if (recentUnicode.isNotEmpty()) add(recentCategory to recentUnicode)
