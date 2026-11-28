@@ -106,6 +106,7 @@ internal fun ConnectedScreens(
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
     val initialMessageSyncReady = messageTable?.initialSyncReady?.collectAsState()?.value == true
     val messageSyncFailed = messageTable?.error?.collectAsState()?.value != null
+    val initialMessagePageFailed = messageTable?.initialPageFailed?.collectAsState()?.value == true
     LaunchedEffect(messageTable) {
         messageTable?.replicatedRows?.collect(state::reconcileOutgoing)
     }
@@ -279,12 +280,18 @@ internal fun ConnectedScreens(
             !session.channelReadPositionsChecked else !mainPageReady)
     val unreadPositionPending = !unreadPositioned && (awaitingInitialRead ||
         (env.online && currentThread == null && focusMessage == null && needsUnreadHistory))
+    val canLoadUnreadHistory = channel != null && currentThread == null && env.online && env.visible &&
+        focusMessage == null && positionForHistory?.hasUnread == true
+    val waitingForTarget = focusMessage != null && rows.none { it.text("id") == focusMessage }
     val loadingDetail = when {
+        !env.online || (mainPageReady && !unreadPositionPending && !waitingForTarget) -> null
         messageSyncFailed -> session.t("threads.loadingDetails.syncError")
         !initialMessageSyncReady -> session.t("threads.loadingDetails.sync")
+        initialMessagePageFailed -> session.t("threads.loadingDetails.pageRetry")
         !mainPageReady -> session.t("threads.loadingDetails.messages")
+        waitingForTarget -> session.t("threads.loadingDetails.position")
         awaitingInitialRead -> session.t("threads.loadingDetails.readPosition")
-        needsUnreadHistory -> session.t("threads.loadingDetails.unread")
+        needsUnreadHistory && canLoadUnreadHistory -> session.t("threads.loadingDetails.unread")
         else -> session.t("threads.loadingDetails.position")
     }
     val unreadId = firstUnreadInWindow.takeUnless {
@@ -668,10 +675,8 @@ internal fun ConnectedScreens(
         screen is AndroidScreen.Thread -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
         else -> screen
     }
-    val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
-        focusMessage == null && positionForHistory?.hasUnread == true
     LaunchedEffect(messageTable, generation, positionForHistory, canLoadUnreadHistory) {
-        if (!canLoadUnreadHistory || messageTable == null) return@LaunchedEffect
+        if (screen !is AndroidScreen.Conversation || !canLoadUnreadHistory || messageTable == null) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
             val page = messageTable.pageStates.first { states ->
                 states[PageScope.Main]?.let { it.loaded && !it.loading } == true

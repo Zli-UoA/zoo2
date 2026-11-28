@@ -361,6 +361,7 @@
       "readPosition": "檢查緊上次睇到邊度",
       "unread": "載入緊較早嘅未讀訊息",
       "position": "還原緊對話入面嘅位置",
+      "pageRetry": "載入唔到第一頁訊息，重試緊…",
       "syncError": "同步訊息嗰陣出現錯誤"
     },
     "title": "子討論",

@@ -361,6 +361,7 @@
       "readPosition": "正在檢查上次閱讀的位置",
       "unread": "正在載入較早的未讀訊息",
       "position": "正在還原對話中的位置",
+      "pageRetry": "無法載入第一頁訊息，正在重試…",
       "syncError": "同步訊息時發生錯誤"
     },
     "title": "子討論",

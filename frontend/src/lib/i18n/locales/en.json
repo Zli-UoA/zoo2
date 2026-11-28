@@ -361,6 +361,7 @@
       "readPosition": "Checking where you last read",
       "unread": "Loading older unread messages",
       "position": "Restoring your position in the conversation",
+      "pageRetry": "Could not load the first page of messages. Retrying…",
       "syncError": "Message sync encountered an error"
     },
     "title": "Thread",

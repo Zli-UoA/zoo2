@@ -361,6 +361,7 @@
       "readPosition": "正在检查上次阅读的位置",
       "unread": "正在加载较早的未读消息",
       "position": "正在恢复对话中的位置",
+      "pageRetry": "未能加载第一页消息，正在重试…",
       "syncError": "同步消息时出错"
     },
     "title": "子线程",

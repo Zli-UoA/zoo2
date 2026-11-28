@@ -332,6 +332,20 @@ internal fun AndroidScreens(
 ) {
     val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
     val systemHaptics = LocalHapticFeedback.current
+    val waitingRoute = when (screen) {
+        is AndroidScreen.Conversation -> screen.routeKey().takeIf { screen.loadingDetail != null }
+        is AndroidScreen.OpeningConversation -> screen.routeKey().takeIf {
+            screen.loadingDetail != null && screen.online && !screen.failed
+        }
+        else -> null
+    }
+    var showLoadingDetail by remember(waitingRoute) { mutableStateOf(false) }
+    LaunchedEffect(waitingRoute) {
+        if (waitingRoute != null) {
+            delay(5_000)
+            showLoadingDetail = true
+        }
+    }
     pageState.SaveableStateProvider("screen-history") {
         var recentRoutes by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
         val route = screen.routeKey()
@@ -346,7 +360,8 @@ internal fun AndroidScreens(
         val render: @Composable (AndroidScreen) -> Unit = { visibleScreen ->
             pageState.SaveableStateProvider(visibleScreen.routeKey()) {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
+                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions,
+                    showLoadingDetail && visibleScreen.routeKey() == waitingRoute, photo)
             }
         }
         if (interaction.reducedMotion) render(screen) else AnimatedContent(
@@ -407,6 +422,7 @@ private fun RenderAndroidScreen(
     remoteAudioLevel: () -> Float,
     loadNotificationAvatar: suspend (String) -> ImageBitmap?,
     loadNotificationReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji>,
+    showLoadingDetail: Boolean,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val top = when (screen) {
@@ -466,7 +482,7 @@ private fun RenderAndroidScreen(
                     }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                         unreadPositionPending = screen.unreadPositionPending,
-                        loadingDetail = screen.loadingDetail,
+                        loadingDetail = screen.loadingDetail.takeIf { showLoadingDetail },
                         onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
                         headerMeasured = headerHeight > 0.dp,
@@ -487,7 +503,8 @@ private fun RenderAndroidScreen(
             is AndroidScreen.OpeningConversation -> {
                 PageHeader(screen.title, colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    LoadingStatus(screen.online, screen.failed, colors, screen.retry, screen.loadingDetail)
+                    LoadingStatus(screen.online, screen.failed, colors, screen.retry,
+                        screen.loadingDetail.takeIf { showLoadingDetail })
                 }
             }
             is AndroidScreen.PostLoading -> {
@@ -618,17 +635,9 @@ private fun LoadingStatus(online: Boolean, failed: Boolean, colors: AndroidColor
 
 @Composable
 private fun ChannelLoadingIndicator(colors: AndroidColors, detail: String?) {
-    val hasDetail = detail != null
-    var showDetail by remember(hasDetail) { mutableStateOf(false) }
-    LaunchedEffect(hasDetail) {
-        if (hasDetail) {
-            delay(5_000)
-            showDetail = true
-        }
-    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         CircularProgressIndicator(color = colors.accent)
-        if (showDetail && detail != null) {
+        if (detail != null) {
             Text(
                 detail,
                 Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
