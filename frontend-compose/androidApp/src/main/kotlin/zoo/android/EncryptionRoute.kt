@@ -2,18 +2,11 @@ package zoo.android
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -153,12 +146,7 @@ internal fun EncryptionRoute(
                     if (passkey != null) TextAction("パスキーで解錠", colors, enabled, icon = UiIcon.Key) {
                         unlock(UnlockMethod.Passkey(passkey.client, passkey.rpId))
                     }
-                    Text("リカバリーキー", color = colors.foreground)
-                    BasicTextField(recovery, { recovery = it }, Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        enabled = enabled, singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                        textStyle = TextStyle(color = colors.foreground, fontSize = 16.sp),
-                        cursorBrush = SolidColor(colors.foreground))
+                    RecoveryKeyField("リカバリーキー", recovery, enabled, colors) { recovery = it }
                     TextAction("リカバリーキーで解錠", colors, enabled && recovery.isNotBlank(), icon = UiIcon.Key) {
                         unlock(UnlockMethod.Recovery(recovery))
                     }
@@ -264,7 +252,7 @@ internal fun EncryptionRoute(
         AlertDialog(
             onDismissRequest = { rename = null },
             title = { Text(session.t("e2ee.devices.rename")) },
-            text = { OutlinedTextField(deviceName, { deviceName = it }, singleLine = true) },
+            text = { LabeledField("端末名", deviceName, AndroidColors(platform.env.dark)) { deviceName = it } },
             confirmButton = {
                 DialogAction("保存", UiIcon.Save, enabled = deviceName.isNotBlank() && deviceName.codePointCount() <= 100) {
                     val name = deviceName.trim()

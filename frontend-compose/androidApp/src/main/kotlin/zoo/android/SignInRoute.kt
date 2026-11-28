@@ -12,7 +12,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -95,10 +94,10 @@ internal fun SignInRoute(
             PageHeader("接続先の設定", colors, onBack = { editing = false })
             Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text("Zoo サーバー URL") }, singleLine = true)
-                OutlinedTextField(issuer, { issuer = it }, Modifier.fillMaxWidth(), label = { Text("OIDC issuer") }, singleLine = true)
-                OutlinedTextField(client, { client = it }, Modifier.fillMaxWidth(), label = { Text("Android 用 public client ID") }, singleLine = true)
-                OutlinedTextField(resource, { resource = it }, Modifier.fillMaxWidth(), label = { Text("Resource / audience") }, singleLine = true)
+                LabeledField("Zoo サーバー URL", server, colors) { server = it }
+                LabeledField("OIDC issuer", issuer, colors) { issuer = it }
+                LabeledField("Android 用 public client ID", client, colors) { client = it }
+                LabeledField("Resource / audience", resource, colors) { resource = it }
                 (signInError.ifBlank { error }).takeIf(String::isNotEmpty)?.let { Text(it, color = colors.foreground) }
                 if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
                     style = TextActionStyle.Plain) { showDiagnostics = true }

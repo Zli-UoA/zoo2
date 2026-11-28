@@ -196,7 +196,7 @@ internal fun NewPostPage(
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(Modifier.weight(1f)) {
-                    ChannelField("画像の説明 · ${item.label}", item.description, colors, singleLine = false) { text ->
+                    LabeledField("画像の説明 · ${item.label}", item.description, colors, singleLine = false) { text ->
                         if (text.codePointCount(0, text.length) <= 1000) dispatch(AndroidUiAction.DescribePhoto(item.id, text))
                     }
                 }
@@ -273,10 +273,10 @@ internal fun ChannelEditorPage(
 ) {
     PageHeader(screen.title, colors, onBack = { dispatch(AndroidUiAction.Back) })
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        ChannelField("チャンネル名", screen.name, colors, singleLine = true) {
+        LabeledField("チャンネル名", screen.name, colors, singleLine = true) {
             dispatch(AndroidUiAction.ChannelNameChanged(it))
         }
-        ChannelField("説明", screen.description, colors, singleLine = false) {
+        LabeledField("説明", screen.description, colors, singleLine = false) {
             dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
         }
         screen.saveError?.let { Text(it, color = colors.unread, fontSize = 14.sp) }
@@ -306,27 +306,6 @@ internal fun ChannelEditorPage(
         }
     }
 }
-
-@Composable
-private fun ChannelField(
-    label: String,
-    value: String,
-    colors: AndroidColors,
-    singleLine: Boolean,
-    change: (String) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(label, color = colors.secondary, fontSize = 13.sp)
-        BasicTextField(
-            value, change,
-            Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(10.dp)).padding(12.dp),
-            singleLine = singleLine, minLines = if (singleLine) 1 else 3,
-            textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-            cursorBrush = SolidColor(colors.inputText),
-        )
-    }
-}
-
 
 @Composable
 private fun PostAudienceButton(visibility: String, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
