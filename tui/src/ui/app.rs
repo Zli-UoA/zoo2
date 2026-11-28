@@ -356,7 +356,7 @@ pub struct App {
     pending_link: Option<PendingLink>,
     /// 暗号文の行が届いたことのあるチャンネル。行を捨てたあとも、起動中は暗号化として扱う。
     ciphertext_channels: HashSet<String>,
-    /// チャンネルごとの、本同期の待ち始めと停止。行がそろっている間は使わない。
+    /// チャンネルごとの、本同期の待ち始めと停止。
     sync_waits: HashMap<String, SyncWait>,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
@@ -599,8 +599,10 @@ impl App {
                     self.ciphertext_channels.insert(channel_id.clone());
                 }
                 let synced = self.store.is_synced(id);
-                // そろっていた行を取り直すときは、ここから待ち直す。
-                if synced && batch.reset {
+                // そろっていた行を取り直すときは、ここから待ち直す。停止の知らせのあとに行が届くのは、
+                // 前の購読の知らせが遅れて届いた場合なので、停止を取り消す。
+                let stopped = matches!(self.sync_waits.get(channel_id), Some(SyncWait::Stopped));
+                if stopped || (synced && batch.reset) {
                     self.sync_waits
                         .insert(channel_id.clone(), SyncWait::Since(Instant::now()));
                 }
@@ -2097,26 +2099,29 @@ impl App {
     }
 
     fn linked_fetch(&self, channel_id: &str, message_id: &str, now: Instant) -> LinkedFetch {
+        let key = (channel_id.to_owned(), message_id.to_owned());
+        if self.current.as_deref() != Some(channel_id) {
+            return self.links.fetch(&key, now);
+        }
+        // 開いているチャンネルは本同期の行を使う。同期が停止したら、権限を失ったかもしれないので、
+        // 届いていた行も出さない。
+        let wait = self.sync_waits.get(channel_id);
+        if matches!(wait, Some(SyncWait::Stopped)) {
+            return LinkedFetch::Failed;
+        }
         if let Some(message) = self.store.message(channel_id, message_id) {
             return LinkedFetch::Found(Box::new(message.clone()));
         }
         if self.synced_channel(channel_id) {
             return LinkedFetch::Missing;
         }
-        let fetch = self
-            .links
-            .fetch(&(channel_id.to_owned(), message_id.to_owned()), now);
-        if self.current.as_deref() != Some(channel_id) {
-            return fetch;
-        }
-        // 開いているチャンネルは本同期の行を待つ。前に取得できた結果があれば、そろうまで使う。
-        match (fetch, self.sync_waits.get(channel_id)) {
+        // 前に取得できた結果があれば、行がそろうまで使う。
+        match (self.links.fetch(&key, now), wait) {
             (fetch @ (LinkedFetch::Found(_) | LinkedFetch::Missing), _) => fetch,
-            (_, Some(SyncWait::Stopped)) => LinkedFetch::Failed,
             (_, Some(SyncWait::Since(since))) => LinkedFetch::Loading {
                 stalled: now.saturating_duration_since(*since) >= LOAD_TIMEOUT,
             },
-            (fetch, None) => fetch,
+            (fetch, _) => fetch,
         }
     }
 

@@ -78,68 +78,71 @@ pub fn parse_channel_link(value: &str, app_base_url: &str) -> Option<LinkTarget>
 }
 
 /// 本文の中の、記法を解釈しない部分（コードブロック、インラインコード、`<plain>`）かどうかで分ける。
-/// コードブロックは [`crate::mfm`] の表示と同じく、```` ``` ```` で始まる行で開閉し、閉じていなければ
-/// 末尾まで続く。
+/// 先に始まった記法を優先するので、`<plain>` の中のコードブロックの開閉も、コードブロックの中の
+/// `<plain>` も文字になる。コードブロックは [`crate::mfm`] の表示と同じく、```` ``` ```` で始まる行で
+/// 開閉し、閉じていなければ末尾まで続く。インラインコードは行をまたがない。
 fn segments(content: &str) -> Vec<(bool, &str)> {
     let mut result = Vec::new();
-    let mut in_code = false;
-    // コードブロックでない行が続いている部分の先頭。
+    // 地の文の先頭。
     let mut text = 0;
     let mut at = 0;
-    for line in content.split_inclusive('\n') {
-        let fence = line.trim_start().starts_with("```");
-        if fence || in_code {
-            result.extend(inline_segments(&content[text..at]));
-            result.push((true, line));
-            text = at + line.len();
-            in_code ^= fence;
-        }
-        at += line.len();
-    }
-    result.extend(inline_segments(&content[text..]));
-    result
-}
-
-/// コードブロックの外を、インラインコードと `<plain>` かどうかで分ける。
-fn inline_segments(content: &str) -> Vec<(bool, &str)> {
-    let mut result = Vec::new();
-    // 閉じ記号がもうないと分かった記法は、後ろで探し直さない。
-    let mut unclosed = [false; 3];
-    let mut start = 0;
-    let mut at = 0;
+    // `</plain>` がもうないと分かったら、後ろで探し直さない。
+    let mut plain_unclosed = false;
     while at < content.len() {
         let rest = &content[at..];
-        let literal = [("```", "```"), ("<plain>", "</plain>"), ("`", "`")]
-            .into_iter()
-            .enumerate()
-            .find(|(_, (open, _))| rest.starts_with(open))
-            .filter(|(kind, _)| !unclosed[*kind])
-            .and_then(|(kind, (open, close))| {
-                let Some(end) = rest[open.len()..].find(close) else {
-                    unclosed[kind] = true;
-                    return None;
-                };
-                if open == "`" && rest[1..1 + end].contains('\n') {
-                    return None;
-                }
-                Some(open.len() + end + close.len())
-            });
+        let literal = if (at == 0 || content[..at].ends_with('\n')) && is_fence(rest) {
+            Some(code_block_length(rest))
+        } else if rest.starts_with("<plain>") && !plain_unclosed {
+            let end = rest.find("</plain>");
+            plain_unclosed = end.is_none();
+            end.map(|end| end + "</plain>".len())
+        } else if let Some(after) = rest.strip_prefix("```") {
+            // 行の途中の ``` は、同じ行で閉じるもの。
+            let line = after.split('\n').next().unwrap_or_default();
+            line.find("```").map(|end| end + 6)
+        } else if let Some(after) = rest.strip_prefix('`') {
+            after
+                .find(['`', '\n'])
+                .filter(|end| after[*end..].starts_with('`'))
+                .map(|end| end + 2)
+        } else {
+            None
+        };
         match literal {
             Some(length) => {
-                if start < at {
-                    result.push((false, &content[start..at]));
+                if text < at {
+                    result.push((false, &content[text..at]));
                 }
                 result.push((true, &content[at..at + length]));
                 at += length;
-                start = at;
+                text = at;
             }
             None => at += rest.chars().next().map_or(1, char::len_utf8),
         }
     }
-    if start < content.len() {
-        result.push((false, &content[start..]));
+    if text < content.len() {
+        result.push((false, &content[text..]));
     }
     result
+}
+
+/// `text` の最初の行が、コードブロックを開閉する行か。
+fn is_fence(text: &str) -> bool {
+    text.split('\n')
+        .next()
+        .is_some_and(|line| line.trim_start().starts_with("```"))
+}
+
+/// `text` の先頭の行で開いたコードブロックの長さ（閉じる行まで。なければ末尾まで）。
+fn code_block_length(text: &str) -> usize {
+    let mut length = 0;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        length += line.len();
+        if index > 0 && is_fence(line) {
+            break;
+        }
+    }
+    length
 }
 
 /// `[文字](URL)` と `?[文字](URL)` を、文字だけにする。
@@ -722,9 +725,25 @@ mod tests {
             assert!(app_links(&content, APP).is_empty(), "{content}");
             assert!(bare_links(&content, APP).is_empty(), "{content}");
         }
-        // 行をまたぐ `<plain>` の前後のリンクは残る。
-        let content = format!("{url}<plain>\n```\n</plain>");
-        assert_eq!(app_links(&content, APP)[0].0, url);
+        // 行をまたぐ `<plain>` の中のコードブロックの行は、文字になる。
+        for content in [
+            format!("<plain>\n{url}\n```\n</plain>"),
+            format!("<plain>\n```\n{url}\n</plain>"),
+        ] {
+            assert!(app_links(&content, APP).is_empty(), "{content}");
+            assert!(bare_links(&content, APP).is_empty(), "{content}");
+        }
+        // 行をまたぐ `<plain>` の前後のリンクは残る。コードの中の `<plain>` は文字になる。
+        for content in [
+            format!("{url}<plain>\n```\n</plain>"),
+            format!("<plain>\n```\n</plain>\n{url}"),
+            format!("```\n<plain>\n```\n{url}\n</plain>"),
+            format!("`<plain>`\n{url}\n</plain>"),
+        ] {
+            let links = app_links(&content, APP);
+            assert_eq!(links.len(), 1, "{content}: {links:?}");
+            assert_eq!(links[0].0, url, "{content}");
+        }
     }
 
     #[test]

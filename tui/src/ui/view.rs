@@ -2147,6 +2147,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stopped_main_sync_hides_the_rows_it_delivered() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c1?message=m1");
+        assert!(render(&mut app).contains("┃ 親の本文"));
+        let shape = ShapeId::Messages("c1".into());
+        app.on_shape(ShapeEvent::Failed(shape.clone(), "403".into()));
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("┃ リンク先を読み込めませんでした"),
+            "{screen}"
+        );
+        assert!(!screen.contains("┃ 親の本文"), "{screen}");
+        assert!(!screen.contains("💬 Bobさん"), "{screen}");
+        // 届いていない行も、見られないとは決めない。
+        let missing = LinkTarget {
+            channel_id: "c1".into(),
+            message_id: Some("none".into()),
+            thread_id: None,
+        };
+        assert_eq!(
+            app.link_state(&missing, std::time::Instant::now(), &DrawCache::default()),
+            LinkState::Failed
+        );
+        // 開き直した購読の行が届けば、また出す。
+        app.on_shape(ShapeEvent::Batch(shape, batch(Vec::new())));
+        assert!(render(&mut app).contains("┃ 親の本文"));
+    }
+
+    #[tokio::test]
     async fn ciphertext_seen_by_a_link_subscription_hides_and_blocks_plaintext() {
         let mut app = app_with_link(SECRET_LINK);
         linked_row(&mut app, "平文の差し込み", json!({}));
