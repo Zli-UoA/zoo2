@@ -148,3 +148,58 @@ it("does not end a group call while another member is still negotiating", async 
     await context.close();
   }
 });
+
+it("lowers the audio bitrate on loss and raises it after sustained recovery", async () => {
+  const context = new AudioContext();
+  const stream = context.createMediaStreamDestination().stream;
+  const pc = new RTCPeerConnection();
+  const constructor = vi.spyOn(window, "RTCPeerConnection").mockImplementation(function () {
+    return pc;
+  });
+  const driver = new DmMedia("a", [], vi.fn(), async () => stream);
+  try {
+    await driver.start();
+    await driver.event("room_state", { participants: [{ session_id: "b" }] });
+    const [sender] = pc.getSenders();
+    const setParameters = vi.spyOn(sender, "setParameters").mockResolvedValue(undefined);
+    let timestamp = 0;
+    let fractionLost = 0.03;
+    vi.spyOn(sender, "getStats").mockImplementation(async () => {
+      const report = {
+        type: "remote-inbound-rtp",
+        timestamp: ++timestamp,
+        fractionLost,
+        roundTripTime: 0.1,
+      };
+      return new Map([["remote", report]]) as RTCStatsReport;
+    });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(pc, "connectionState", "get").mockReturnValue("connected");
+    pc.dispatchEvent(new Event("connectionstatechange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 16);
+
+    fractionLost = 0.1;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 15);
+
+    fractionLost = 0;
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(setParameters).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 16);
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(setParameters.mock.lastCall?.[0].encodings[0].maxBitrate).toBe(2 ** 17);
+
+    driver.close();
+    const samples = timestamp;
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(timestamp).toBe(samples);
+  } finally {
+    driver.close();
+    vi.useRealTimers();
+    constructor.mockRestore();
+    await context.close();
+  }
+});

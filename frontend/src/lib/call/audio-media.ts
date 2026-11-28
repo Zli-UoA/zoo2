@@ -5,11 +5,15 @@ import {
   answerAudioOffer,
   applyAudioAnswer,
 } from "./rtc-audio";
+const AUDIO_BITRATES = [2 ** 15, 2 ** 16, 2 ** 17] as const;
+const QUALITY_SAMPLE_INTERVAL_MS = 3_000;
+
 /** Audio-only WebRTC mesh using zoo2's existing channel-call signaling protocol. */
 interface Peer {
   pc: RTCPeerConnection;
   audio: HTMLAudioElement;
   candidates: RTCIceCandidateInit[];
+  bitrateTimer?: number;
   answer?: { offer: string; sdp: string };
 }
 export class AudioCallMedia {
@@ -48,6 +52,67 @@ export class AudioCallMedia {
       });
     return this.queue;
   }
+  private adaptAudioBitrate(peer: Peer, sender: RTCRtpSender) {
+    let tier = 1;
+    let appliedTier: number | undefined;
+    let goodSamples = 0;
+    let lastReport: number | undefined;
+
+    const sample = async () => {
+      if (peer.pc.connectionState === "closed") return;
+      if (peer.pc.connectionState === "connected") {
+        try {
+          const reports = await sender.getStats();
+          for (const report of reports.values()) {
+            if (report.type !== "remote-inbound-rtp" || report.timestamp === lastReport) continue;
+            lastReport = report.timestamp;
+            const loss = report.fractionLost;
+            const rtt = report.roundTripTime;
+            if (loss >= 0.05 || rtt >= 0.45) {
+              tier = 0;
+              goodSamples = 0;
+            } else if (loss <= 0.02 && rtt < 0.25) {
+              if (++goodSamples === 3) {
+                tier = Math.min(tier + 1, AUDIO_BITRATES.length - 1);
+                goodSamples = 0;
+              }
+            } else {
+              goodSamples = 0;
+            }
+          }
+        } catch {
+          // Some WebViews do not expose remote receiver statistics.
+        }
+        try {
+          if (peer.pc.connectionState === "connected" && tier !== appliedTier) {
+            const parameters = sender.getParameters();
+            if (parameters.encodings.length) {
+              for (const encoding of parameters.encodings) {
+                encoding.maxBitrate = AUDIO_BITRATES[tier];
+              }
+              await sender.setParameters(parameters);
+              appliedTier = tier;
+            }
+          }
+        } catch {
+          // Leave congestion control to WebRTC when sender parameters cannot be changed.
+        }
+      } else {
+        goodSamples = 0;
+      }
+      if (peer.pc.signalingState !== "closed") {
+        peer.bitrateTimer = window.setTimeout(sample, QUALITY_SAMPLE_INTERVAL_MS);
+      }
+    };
+
+    peer.bitrateTimer = window.setTimeout(sample, 0);
+  }
+  private closePeer(peer: Peer) {
+    window.clearTimeout(peer.bitrateTimer);
+    peer.pc.close();
+    peer.audio.pause();
+    peer.audio.srcObject = null;
+  }
   private peer(id: string): Peer {
     const existing = this.peers.get(id);
     if (existing) return existing;
@@ -56,11 +121,12 @@ export class AudioCallMedia {
     const pc = createAudioPeer(this.iceServers, this.relay);
     const audio = document.createElement("audio");
     audio.autoplay = false;
-    const peer = { pc, audio, candidates: this.early.get(id) ?? [] };
+    const peer: Peer = { pc, audio, candidates: this.early.get(id) ?? [] };
     this.early.delete(id);
     this.peers.set(id, peer);
     this.hadRemote = true;
-    this.stream.getTracks().forEach((track) => pc.addTrack(track, this.stream!));
+    const [track] = this.stream.getAudioTracks();
+    const sender = track && pc.addTrack(track, this.stream);
     pc.onicecandidate = (event) => {
       if (event.candidate && !this.closed)
         this.signal(id, { type: "candidate", candidate: event.candidate.toJSON() });
@@ -78,9 +144,12 @@ export class AudioCallMedia {
     };
     pc.onconnectionstatechange = () => {
       if (this.closed) return;
-      if (pc.connectionState === "connected" && !this.connected) {
-        this.connected = true;
-        this.emit("connected");
+      if (pc.connectionState === "connected") {
+        if (sender && peer.bitrateTimer === undefined) this.adaptAudioBitrate(peer, sender);
+        if (!this.connected) {
+          this.connected = true;
+          this.emit("connected");
+        }
       }
       if (pc.connectionState === "failed") this.emit("failed");
     };
@@ -149,9 +218,7 @@ export class AudioCallMedia {
       this.participantUsers.delete(id);
       const p = this.peers.get(id);
       if (p) {
-        p.pc.close();
-        p.audio.pause();
-        p.audio.srcObject = null;
+        this.closePeer(p);
         this.peers.delete(id);
       }
       this.early.delete(id);
@@ -198,11 +265,7 @@ export class AudioCallMedia {
     this.closed = true;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
-    this.peers.forEach((p) => {
-      p.pc.close();
-      p.audio.pause();
-      p.audio.srcObject = null;
-    });
+    this.peers.forEach((p) => this.closePeer(p));
     this.peers.clear();
     this.early.clear();
     this.members.clear();

@@ -239,14 +239,14 @@ class PhoneController(
                 if (!accepted.flag("ok") || accepted.text("channel_id") != next.target) error("Invalid invitation")
                 if (epoch == callEpoch) {
                     inviteExpiry?.cancel(); invite = null; answeringInvite = null
-                    call = call?.copy(status = "dialing"); joinDm(next, epoch)
+                    call = call?.copy(status = "connecting"); joinDm(next, epoch)
                 }
             }
         }
     }
     private fun joinDm(next: PhoneCall, epoch: Int) {
         val session = uuid(); sessionId = session
-        setupExpiry = scope.launch { delay(45_000); if (epoch == callEpoch && call?.status == "dialing") hangup() }
+        setupExpiry = scope.launch { delay(45_000); if (epoch == callEpoch && call?.status != "active") hangup() }
         callJob = scope.launch {
             val early = mutableListOf<Pair<String, Row>>()
             try {
@@ -270,12 +270,7 @@ class PhoneController(
                         dm = engine
                         engine.command("rtc.start", obj("session_id" to session, "ice_servers" to (value["ice_servers"] ?: JsonArray(emptyList())),
                             "peer_user_id" to next.peerUserId))
-                        heartbeat = scope.launch {
-                            try { while (isActive && epoch == callEpoch) { delay(10_000); api("/api/channels/${next.target.encodeURLPathPart()}/call/heartbeat", "POST", obj("session_id" to session)) } }
-                            catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
-                            catch (cancel: CancellationException) { throw cancel }
-                            catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
-                        }
+                        heartbeat = scope.launch { maintainDmPresence(next.target, session, epoch) }
                     }
                     dm?.command("rtc.event", obj("event" to event, "data" to value))
                     for ((name, pending) in early) dm?.command("rtc.event", obj("event" to name, "data" to pending))
@@ -285,6 +280,31 @@ class PhoneController(
             } catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
             catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
+        }
+    }
+    private suspend fun maintainDmPresence(channel: String, session: String, epoch: Int) {
+        val path = "/api/channels/${channel.encodeURLPathPart()}/call/heartbeat"
+        val body = obj("session_id" to session)
+        var failures = 0
+        while (epoch == callEpoch) {
+            delay(if (failures == 0) 10_000 else 1_000)
+            try {
+                // Allow three serialized attempts within the server's 30-second presence lease.
+                withTimeout(5_000) { request(path, "POST", body) }
+                failures = 0
+            } catch (_: TimeoutCancellationException) {
+                failures++
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (failure: Exception) {
+                val status = (failure as? ApiException)?.status
+                if (status != null && status < 500 && status != 408 && status != 429) {
+                    if (epoch == callEpoch) { hangup(); error = true }
+                    return
+                }
+                failures++
+            }
+            if (failures == 3 && epoch == callEpoch) { hangup(); error = true }
         }
     }
     private fun signal(channel: String, session: String, epoch: Int, payload: Row) {
@@ -326,7 +346,7 @@ class PhoneController(
         if (busy || !lifetime.isActive) return
         busy = true; error = false
         scope.launch {
-            try { block() }
+            try { if (epoch == callEpoch) block() }
             catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { if (fatal) hangup(); error = true } }
             catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { if (epoch == callEpoch) { val sipCall = call?.kind == "sip"; if (fatal) { hangup(); if (sipCall) disconnectSip() }; error = true } }
