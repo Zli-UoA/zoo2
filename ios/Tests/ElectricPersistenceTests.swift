@@ -1720,7 +1720,7 @@ struct PersistentSyncIntegrationTests {
             return (200, [:], response)
         }
         let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
-            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache, voipStore: PreviewPushReceiptStore())
         defer { app.logout() }
         let pending = Task { await app.resume(); started.continuation.finish() }
         defer { pending.cancel() }
@@ -1756,7 +1756,7 @@ struct PersistentSyncIntegrationTests {
             return (200, [:], response)
         }
         let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
-            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache, voipStore: PreviewPushReceiptStore())
         defer { app.logout() }
         await app.resume()
         let workspace = try #require(app.workspace)
@@ -1785,7 +1785,7 @@ struct PersistentSyncIntegrationTests {
         try await sync.store([syncUser], key: "workspace:people")
         harness.stub { _ in throw URLError(.notConnectedToInternet) }
         let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
-                             notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: sync.cache)
+                             notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: sync.cache, voipStore: PreviewPushReceiptStore())
         await app.resume()
         #expect(app.userID == syncUser.id)
         let workspace = try #require(app.workspace)

@@ -88,7 +88,7 @@ struct GlobalSearchTests {
             return (200, [:], Self.page([Self.messageJSON("first"), Self.fileJSON], next: "older"))
         }
         let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
-            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache, voipStore: PreviewPushReceiptStore())
         defer { app.logout() }
         await app.resume()
         let workspace = try #require(app.workspace)

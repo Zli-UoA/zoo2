@@ -8,6 +8,11 @@ struct TokenSet: Codable, Sendable {
     let expires: Date
 }
 
+struct LoggedOutSessionCleanupError: LocalizedError {
+    let cause: any Error
+    var errorDescription: String? { cause.localizedDescription }
+}
+
 enum TokenVault {
     private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
@@ -34,7 +39,8 @@ enum TokenVault {
 
     static func load(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete) throws -> TokenSet? {
         if try hasLogoutMarker(account) {
-            try delete(account, deleteItem: deleteItem)
+            do { try delete(account, deleteItem: deleteItem) }
+            catch { throw LoggedOutSessionCleanupError(cause: error) }
             return nil
         }
         var request = query(account)
@@ -47,7 +53,8 @@ enum TokenVault {
             throw ZooError.auth("保存したログイン情報を読み取れませんでした。端末のロックを解除して再度お試しください。")
         }
         guard let token = try JSONDecoder().decode(TokenSet?.self, from: data) else {
-            try delete(account, deleteItem: deleteItem)
+            do { try delete(account, deleteItem: deleteItem) }
+            catch { throw LoggedOutSessionCleanupError(cause: error) }
             return nil
         }
         // 既存の保存項目も移行し、通話中に画面をロックしても更新トークンを保存できるようにする。

@@ -139,7 +139,7 @@ struct TokenVaultTests {
             // 全保存操作が拒否された場合は、再起動後の復元を保証できない。
             #expect(try TokenVault.load(account)?.access == token.access)
         } else {
-            #expect(throws: ZooError.self) {
+            #expect(throws: LoggedOutSessionCleanupError.self) {
                 _ = try TokenVault.load(account, deleteItem: { _ in errSecInteractionNotAllowed })
             }
             #expect(try TokenVault.load(account) == nil)
@@ -184,7 +184,7 @@ struct TokenVaultTests {
             try TokenVault.delete(account, deleteItem: { _ in errSecInteractionNotAllowed })
         }
         var retries = 0
-        #expect(throws: ZooError.self) {
+        #expect(throws: LoggedOutSessionCleanupError.self) {
             _ = try TokenVault.load(account, deleteItem: { _ in retries += 1; return errSecInteractionNotAllowed })
         }
         #expect(retries == 1)
@@ -289,7 +289,7 @@ struct NetworkTests {
         UserDefaults.standard.set(true, forKey: preference)
         let receipts = PreviewPushReceiptStore()
         let previewKeys = InMemoryNotificationPreviewKeys()
-        let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: previewKeys)
+        let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: previewKeys, voipStore: PreviewPushReceiptStore())
         let started = AsyncStream<UUID?>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         defer {
@@ -364,7 +364,7 @@ struct NetworkTests {
         await second.value
         #expect(await iterator.next() == .some(nil))
         #expect(controller.testStatus == "テスト通知を送信しました。")
-        let restarted = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: previewKeys)
+        let restarted = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: previewKeys, voipStore: PreviewPushReceiptStore())
         restarted.opened(.test(userID: user, id: nextID))
         restarted.connect(api: api, userID: user)
         #expect(previewKeys.load() == previewKey)
@@ -390,7 +390,7 @@ struct NetworkTests {
         let preference = "zoo.push.enabled." + PushReceipt.digest(api.settings.storageKey + "|" + user)
         UserDefaults.standard.set(true, forKey: preference)
         let receipts = PreviewPushReceiptStore(), keys = InMemoryNotificationPreviewKeys()
-        let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys)
+        let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys, voipStore: PreviewPushReceiptStore())
         defer {
             UserDefaults.standard.removeObject(forKey: preference)
             try? api.auth.logout()
@@ -421,7 +421,7 @@ struct NetworkTests {
         #expect(keys.load() == nil)
         await rotation?.value
         #expect(keys.load() == nil)
-        let retry = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys)
+        let retry = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys, voipStore: PreviewPushReceiptStore())
         retry.connect(api: api, userID: user)
         #expect(keys.load() == nil)
         failRegistration.withLock { $0 = false }
@@ -442,7 +442,7 @@ struct NetworkTests {
         let preference = "zoo.push.enabled." + PushReceipt.digest(api.settings.storageKey + "|" + user)
         UserDefaults.standard.set(true, forKey: preference)
         let receipts = PreviewPushReceiptStore(), keys = InMemoryNotificationPreviewKeys()
-        let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys)
+        let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys, voipStore: PreviewPushReceiptStore())
         let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
         defer {
             started.continuation.finish()
@@ -521,7 +521,7 @@ struct NetworkTests {
         }
         let matching = PushNotice.test(userID: user, id: id)
         let unrelated = PushNotice.test(userID: UUID().uuidString, id: id)
-        let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
+        let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         let delegate = NotificationDelegate()
         UserDefaults.standard.set(pending, forKey: attemptKey)
         #expect(delegate.presentationOptions(for: unrelated).isEmpty)
@@ -532,7 +532,7 @@ struct NetworkTests {
         #expect(controller.testStatus == "この端末でテスト通知を受信しました。")
 
         UserDefaults.standard.set(pending, forKey: attemptKey)
-        let restored = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
+        let restored = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         delegate.bind(restored)
         #expect(delegate.presentationOptions(for: matching).isEmpty)
         #expect(delegate.presentationOptions(for: unrelated).isEmpty)
@@ -566,7 +566,7 @@ struct NetworkTests {
             api.transport.session.invalidateAndCancel()
         }
         let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
-                                                previewKeys: InMemoryNotificationPreviewKeys())
+                                                previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         controller.connect(api: api, userID: user)
         let delegate = NotificationDelegate()
         delegate.bind(controller)
@@ -597,7 +597,7 @@ struct NetworkTests {
         let api = try client()
         defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel() }
         let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
-                                                previewKeys: InMemoryNotificationPreviewKeys())
+                                                previewKeys: InMemoryNotificationPreviewKeys(), voipStore: PreviewPushReceiptStore())
         let delegate = NotificationDelegate()
         if bindBeforeResponse { delegate.bind(controller) }
         let payload = validPayload ? ["user_id": UUID().uuidString, "channel_id": UUID().uuidString] : [:]

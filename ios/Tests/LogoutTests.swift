@@ -29,7 +29,7 @@ struct LogoutTests {
                                  openSyncCache: {
                                      if cacheFails { throw cacheError }
                                      return cache
-                                 })
+                                 }, voipStore: PreviewPushReceiptStore())
         await session.resume()
         let error = try #require(session.error)
         #expect(error.contains(keys.message))
@@ -49,11 +49,11 @@ struct LogoutTests {
         defer { transport.session.invalidateAndCancel() }
         let authMessage = "ログアウト済みの認証情報を削除できませんでした。"
         let authentication = Authentication(settings: settings, transport: transport, loadToken: { _ in
-            throw ZooError.auth(authMessage)
+            throw LoggedOutSessionCleanupError(cause: ZooError.auth(authMessage))
         })
         let keys = FailingPreviewKeys()
         let session = AppSession(settings: settings, transport: transport, authentication: authentication,
-                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys)
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys, voipStore: PreviewPushReceiptStore())
         await session.resume()
         let error = try #require(session.error)
         #expect(error.contains(authMessage))
@@ -78,7 +78,7 @@ struct LogoutTests {
         let keys = FailingPreviewKeys()
         let cache = try await SyncCache.open(inMemory: true)
         let session = AppSession(settings: settings, transport: transport, authentication: authentication,
-                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys, syncCache: cache)
+                                 notificationStore: PreviewPushReceiptStore(), previewKeys: keys, syncCache: cache, voipStore: PreviewPushReceiptStore())
         session.logout()
         #expect(session.workspace == nil)
         let error = try #require(session.error)
