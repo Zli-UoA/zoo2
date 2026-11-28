@@ -295,7 +295,11 @@ internal class AndroidPushRegistration(
     }
 
     fun open(intent: Intent, dismissed: (String) -> Unit = {}): Boolean {
-        if (intent.action != OPEN_ACTION || !store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) return false
+        if (intent.action != OPEN_ACTION) return false
+        if (!store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) {
+            app.toast = "この通知を受け取ったときのログイン情報が変わりました。通知一覧を確認してください"
+            return true
+        }
         val path = pushDestination(intent.getStringExtra("path")) ?: return false
         app.navigate(path)
         intent.getStringExtra("tag")?.takeIf { it.startsWith("zoo:${app.config.userId}:") }?.let {
