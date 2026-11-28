@@ -2092,7 +2092,7 @@ async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
-        let (status, post) = request(&app, "POST", Some(&owner), "/api/home", Some(json!({"content":"mixed images","image_ids":images,"sensitive_image_ids":[images[1]],"channel_id":channel,"apub":true,"visibility":"public"}))).await?;
+        let (status, post) = request(&app, "POST", Some(&owner), "/api/home", Some(json!({"content":"mixed images","image_ids":images,"sensitive_image_ids":[images[1]],"image_descriptions":{(images[1].clone()):"北口の地図"},"channel_id":channel,"apub":true,"visibility":"public"}))).await?;
         assert_eq!(status, StatusCode::CREATED);
         let id = post["id"].as_str().unwrap();
         let (_, detail) =
@@ -2109,6 +2109,10 @@ async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
             None,
         )
         .await?;
+        assert_eq!(detail["media"][1]["name"], "photo.png");
+        assert_eq!(detail["media"][1]["description"], "北口の地図");
+        assert_eq!(note["attachment"][0]["name"], "photo.png");
+        assert_eq!(note["attachment"][1]["name"], "北口の地図");
         assert_eq!(note["sensitive"], true);
         assert_eq!(note["attachment"][0]["sensitive"], nsfw);
         assert_eq!(note["attachment"][1]["sensitive"], true);
