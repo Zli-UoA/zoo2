@@ -98,14 +98,13 @@ struct ShortcutActionsTests {
         #expect(recipients.allSatisfy { !$0.matches(" ") })
     }
 
-    @Test("Siriの宛先照合は同期済み一覧を使い、送信前には相手を再検証する", arguments: [false, true])
+    @Test("参加状態未保存でもSiriは保存済みの宛先を使い、送信前には相手を再検証する", arguments: [false, true])
     func usesSyncedRecipients(loadWorkspace: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let cache = try await SyncCache.open(inMemory: true)
         let lease = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: user)
         let sync = SyncSession(cache: cache, lease: lease)
-        try await sync.store([Channel](), key: "workspace:channels")
         try await sync.store([user, peer], key: "workspace:people")
         let workspace = WorkspaceStore(client: NativeChatClient(api: harness.api, sync: sync), user: user, recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
@@ -123,7 +122,8 @@ struct ShortcutActionsTests {
             run.cancel()
             await run.value
             restored.continuation.finish()
-            #expect(workspace.hasLoaded)
+            #expect(!workspace.hasLoaded)
+            #expect(workspace.people[peer.id] == peer)
         } else {
             #expect(!workspace.hasLoaded)
         }

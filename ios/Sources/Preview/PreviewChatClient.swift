@@ -33,6 +33,7 @@ final class PreviewTestControl {
 @MainActor
 final class PreviewChatClient: ChatClient {
     private var typingStartedAt: [String: ContinuousClock.Instant] = [:]
+    private var directoryRequests = 0
 
     func typingUsers(channelID: String, parentID: String?) async throws -> [TypingUser] {
         guard channelID == Self.channelID else { return [] }
@@ -416,10 +417,21 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channels() async throws -> [Channel] {
-        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-loading") {
+        directoryRequests += 1
+        let retry = ProcessInfo.processInfo.arguments.contains("--uitesting-directory-retry")
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-error") || (retry && directoryRequests == 1) {
+            throw ZooError.rejected(503, "チャンネルを取得できませんでした。")
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-loading") || retry {
             try await Task.sleep(for: .seconds(86_400))
         }
         return allChannels
+    }
+    func cachedWorkspace() async throws -> CachedWorkspace? {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-cache-loading") {
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        return nil
     }
     func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage {
         let replies = Dictionary(grouping: allMessages.filter { $0.parent_id != nil && $0.deleted_at == nil }, by: \.parent_id)

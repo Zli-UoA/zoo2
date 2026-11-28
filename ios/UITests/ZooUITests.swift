@@ -1096,11 +1096,48 @@ final class ZooUITests: XCTestCase {
         app.launch()
         let indicator = app.descendants(matching: .any)["directory-loading"].firstMatch
         XCTAssertTrue(indicator.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
         let top = app.navigationBars.firstMatch.frame.maxY
         let bottom = app.tabBars.firstMatch.frame.minY
         XCTAssertEqual(indicator.frame.midX, app.frame.midX, accuracy: 2)
         XCTAssertEqual(indicator.frame.midY, (top + bottom) / 2, accuracy: 2)
         capture(app, name: "中央に配置した一覧の読み込み表示")
+    }
+
+    @MainActor
+    func testDirectoryWaitsForCachedMemberships() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-cache-loading"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
+        selectTab("DM", in: app)
+        XCTAssertFalse(app.staticTexts["DMはまだありません"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testDirectoryFailureDoesNotShowEmptyState() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-error"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["操作に失敗しました（503）。チャンネルを取得できませんでした。"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["directory-loading"].firstMatch.exists)
+        selectTab("DM", in: app)
+        XCTAssertFalse(app.staticTexts["DMはまだありません"].exists)
+    }
+
+    @MainActor
+    func testDirectoryRetryShowsLoading() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-retry"]
+        app.launch()
+        let error = app.staticTexts["操作に失敗しました（503）。チャンネルを取得できませんでした。"]
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["directory-loading"].firstMatch.waitForExistence(timeout: 35))
+        XCTAssertFalse(error.exists)
+        XCTAssertFalse(app.staticTexts["参加中のチャンネルはありません"].exists)
     }
 
     @MainActor

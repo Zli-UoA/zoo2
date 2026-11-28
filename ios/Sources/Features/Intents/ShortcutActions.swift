@@ -41,8 +41,8 @@ struct ShortcutActions {
         if workspace.hasLoaded {
             return try recipients(in: Array(workspace.people.values))
         }
-        if let cached = try await workspace.client.cachedWorkspace() {
-            return try recipients(in: cached.people)
+        if let people = try await workspace.client.cachedPeople() {
+            return try recipients(in: people)
         }
         let people = try await workspace.client.people()
         return try recipients(in: people)
