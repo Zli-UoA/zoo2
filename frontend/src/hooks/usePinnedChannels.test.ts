@@ -3,7 +3,7 @@ import { act, renderHook, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { ApiError } from "../lib/api/client";
+import { ApiError, createApiClient, createChannelPinsApi } from "../lib/api/client";
 import {
   PinnedChannelsProvider,
   channelPinsConflict,
@@ -166,6 +166,42 @@ describe("pure pin helpers", () => {
 });
 
 describe("usePinnedChannels", () => {
+  it("取得が応答しなくても待機期限で一覧の読み込みを終え、再取得で回復する", async () => {
+    vi.useFakeTimers();
+    try {
+      fixture.live = [];
+      fixture.liveLoading = true;
+      fixture.persistedReady = true;
+      fixture.api.getChannelPins.mockImplementationOnce(
+        createChannelPinsApi(
+          createApiClient({
+            telemetry: false,
+            getToken: async () => null,
+            fetch: () => new Promise(() => {}),
+          }),
+        ).getChannelPins,
+      );
+      const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+      expect(result.current.loading).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBe("common.errors.network");
+      expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(1);
+
+      fixture.api.getChannelPins.mockResolvedValueOnce({ pins: [], version: 1 });
+      await act(async () => {
+        await result.current.refresh();
+      });
+      expect(result.current.error).toBeNull();
+      expect(result.current.loading).toBe(false);
+      expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("同期前の空配列で初回の読み込みを完了しない", async () => {
     fixture.live = [];
     fixture.liveLoading = true;

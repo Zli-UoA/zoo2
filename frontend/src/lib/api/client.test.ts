@@ -433,6 +433,60 @@ it("starts an exit write synchronously using the latest resolved auth without re
 });
 
 describe("createChannelPinsApi", () => {
+  it("一覧取得が成功したら待機期限を解除する", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createApiClient({
+        telemetry: false,
+        getToken: async () => null,
+        fetch: async () => jsonResponse({ pins: [], version: 2 }),
+      });
+      await expect(createChannelPinsApi(client).getChannelPins()).resolves.toEqual({
+        pins: [],
+        version: 2,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([true, false])(
+    "認証・通信が応答しなくても取得を10秒で終える（認証待ち: %s）",
+    async (authPending) => {
+      vi.useFakeTimers();
+      try {
+        let resolveToken!: (token: string | null) => void;
+        const fetchMock = vi.fn<FetchLike>(() => new Promise(() => {}));
+        const client = createApiClient({
+          telemetry: false,
+          getToken: () =>
+            authPending
+              ? new Promise((resolve) => {
+                  resolveToken = resolve;
+                })
+              : Promise.resolve(null),
+          fetch: fetchMock,
+        });
+        const waiting = createChannelPinsApi(client).getChannelPins();
+        const rejected = expect(waiting).rejects.toBeInstanceOf(TypeError);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await rejected;
+        if (authPending) {
+          resolveToken(null);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(fetchMock).not.toHaveBeenCalled();
+        } else {
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          expect(fetchMock.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+        }
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("keeps the structured conflict body so the caller can recover", async () => {
     const fetchMock = vi.fn<FetchLike>(async () =>
       jsonResponse(

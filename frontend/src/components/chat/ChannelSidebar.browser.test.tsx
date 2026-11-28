@@ -195,6 +195,9 @@ it.each([true, false])("ピン留めと通常の一覧を同時に表示する�
   const { container, rerender } = render(view());
   expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
   expect(screen.queryByRole("link", { name: /general/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "チャンネルを探す" }).hasAttribute("disabled")).toBe(
+    false,
+  );
 
   fixture.pins = hasPins ? [pinRow("general", 0)] : [];
   fixture.pinsLoading = false;

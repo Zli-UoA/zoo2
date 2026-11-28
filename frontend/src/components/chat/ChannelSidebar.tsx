@@ -78,13 +78,13 @@ export function ChannelSidebar({
     return counts;
   }, [membershipsQuery.data]);
   const leaveDates = useChannelLeaveDates(currentUserId, joinedChannelIds);
-  // 参加状態とピン留めがそろってから一覧を出し、ピン留めの後挿入で行が動くのを防ぐ。
-  const sidebarLoading =
+  const channelsLoading =
     loading ||
-    pins.loading ||
     (membershipsQuery.isLoading &&
       !(membershipsQuery.isPersistedReady && joinedChannelIds.size > 0)) ||
     currentUserLoading;
+  // 参加状態とピン留めがそろってから一覧を出し、ピン留めの後挿入で行が動くのを防ぐ。
+  const sidebarLoading = channelsLoading || pins.loading;
   const sidebarError = error || membershipsQuery.isError;
   const regularChannels = useMemo(() => channels.filter((channel) => !channel.is_dm), [channels]);
   const sidebarChannels = useMemo(
@@ -151,7 +151,7 @@ export function ChannelSidebar({
                 aria-label={t("channels.browseTitle")}
                 title={t("channels.browseTitle")}
                 onClick={() => setBrowserOpen(true)}
-                disabled={sidebarLoading || regularChannels.length === 0}
+                disabled={channelsLoading || regularChannels.length === 0}
               >
                 <SearchIcon />
               </Button>
