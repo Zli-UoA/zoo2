@@ -45,10 +45,16 @@ internal class AndroidPhoneHost(
         waiting = ::waiting,
         uuid = { UUID.randomUUID().toString() },
     )
+    private val sipAvailability: Job
     private val state: Job
     init {
         current?.close(); current = this
         available = runCatching { manager.registerPhoneAccount(PhoneAccount.builder(handle, "Zoo").setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED).setSupportedUriSchemes(listOf(PhoneAccount.SCHEME_TEL, PhoneAccount.SCHEME_SIP)).build()) }.isSuccess
+        sipAvailability = app.scope.launch {
+            snapshotFlow { app.env.online to app.env.visible }.collect { (online, visible) ->
+                if (online && visible && !controller.loaded) controller.refresh()
+            }
+        }
         state = app.scope.launch {
             snapshotFlow { listOf(controller.call, controller.registration, controller.dmWaiting, controller.busy) }.collect {
                 val call = controller.call
@@ -152,7 +158,7 @@ internal class AndroidPhoneHost(
     }
     fun close() {
         if (current !== this) return
-        current = null; state.cancel(); invites?.cancel(); inviteTable?.close(); controller.close()
+        current = null; sipAvailability.cancel(); state.cancel(); invites?.cancel(); inviteTable?.close(); controller.close()
         connection?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL)); connection?.destroy(); connection = null
         runCatching { manager.unregisterPhoneAccount(handle) }
         context.stopService(Intent(context, PhoneService::class.java))

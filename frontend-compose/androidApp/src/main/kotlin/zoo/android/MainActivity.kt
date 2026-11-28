@@ -444,8 +444,13 @@ class MainActivity : ComponentActivity() {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
             return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
-                session.start()
-                e2ee.start()
+                try {
+                    session.start()
+                    e2ee.start()
+                } catch (failure: Throwable) {
+                    it.close()
+                    throw failure
+                }
             }
         } catch (failure: Throwable) {
             auth.close()

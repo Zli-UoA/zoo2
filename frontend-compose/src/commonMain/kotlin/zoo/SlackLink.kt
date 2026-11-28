@@ -47,6 +47,7 @@ class SlackLinkController(
     private val scope = CoroutineScope(parent.coroutineContext + lifetime)
     // 連携の完了・解除で状態を書き換えるたびに進める。それより前に始めた読み込みの結果は捨てる。
     private var revision = 0
+    private var loadingRevision: Int? = null
 
     var state by mutableStateOf<Row?>(null)
         private set
@@ -68,17 +69,27 @@ class SlackLinkController(
     var unlinked by mutableStateOf(0)
         private set
 
+    fun ensureLoaded() {
+        if (state == null) load()
+    }
+
     fun load() {
-        if (!lifetime.isActive) return
+        if (!lifetime.isActive || loadingRevision == revision) return
         val started = revision
+        loadingRevision = started
         scope.launch {
             try {
                 val value = request("/api/slack/link", "GET", null).jsonObject
-                if (revision == started) state = value
+                if (revision == started) {
+                    state = value
+                    if (error == "slackLink.loadError") error = null
+                }
             } catch (cause: CancellationException) {
                 throw cause
             } catch (_: Exception) {
                 if (revision == started) error = "slackLink.loadError"
+            } finally {
+                if (loadingRevision == started) loadingRevision = null
             }
         }
     }
@@ -193,13 +204,8 @@ fun SlackLinkPanel(
     app: Session,
     navigate: suspend (String) -> Unit = { app.platform.invoke("redirect", it) },
 ) {
-    val scope = rememberCoroutineScope()
-    val state =
-        remember(app) {
-            SlackLinkController(scope) { path, method, body -> app.api.request(path, method, body) }
-        }
-    LaunchedEffect(state) { state.load() }
-    DisposableEffect(state) { onDispose { state.close() } }
+    val state = app.slackLink
+    LaunchedEffect(state) { state.ensureLoaded() }
     // 外部ブラウザーで認可してアプリに戻ったら (前面に戻ったら)、連携の状態を読み直す
     LaunchedEffect(app.env.visible) {
         if (app.env.visible && state.pending) state.resume()
@@ -214,11 +220,17 @@ fun SlackLinkPanel(
         app.platform.replace("/settings?tab=slack")
         state.handle(result)
     }
-    LaunchedEffect(state.linked) {
-        if (state.linked > 0) app.showToast(app.t("slackLink.linked"), ToastKind.Success)
-    }
-    LaunchedEffect(state.unlinked) {
-        if (state.unlinked > 0) app.showToast(app.t("slackLink.unlinked"), ToastKind.Success)
+    var seenLinked by remember(state) { mutableIntStateOf(state.linked) }
+    var seenUnlinked by remember(state) { mutableIntStateOf(state.unlinked) }
+    LaunchedEffect(state.linked, state.unlinked) {
+        if (state.linked > seenLinked) {
+            seenLinked = state.linked
+            app.showToast(app.t("slackLink.linked"), ToastKind.Success)
+        }
+        if (state.unlinked > seenUnlinked) {
+            seenUnlinked = state.unlinked
+            app.showToast(app.t("slackLink.unlinked"), ToastKind.Success)
+        }
     }
     var confirmUnlink by remember { mutableStateOf(false) }
     val current = state.state

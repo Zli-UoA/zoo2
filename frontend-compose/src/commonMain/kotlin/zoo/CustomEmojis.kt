@@ -46,20 +46,14 @@ fun emojiRatio(emoji: Row): Float {
 @Composable
 fun CustomEmojiSettings(app: Session) {
     val scope = rememberCoroutineScope()
-    var service by remember { mutableStateOf<Row?>(null) }
-    var failed by remember { mutableStateOf(false) }
-    fun load() { scope.launch {
-        failed = false
-        try { service = app.api.request("/api/emoji-service").jsonObject }
-        catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
-    } }
-    LaunchedEffect(app) { load() }
-    if (service != null && service!!.text("url").isEmpty()) { LocalCustomEmojiSettings(app); return }
+    val service = app.emojiService
+    val failed = app.emojiServiceFailed
+    if (service != null && service.text("url").isEmpty()) { LocalCustomEmojiSettings(app); return }
     SettingsSection(app.t("home.customEmojis"), app.t("customEmoji.serviceHint")) {
         val url = service?.text("url").orEmpty()
         if (url.startsWith("https://") || url.startsWith("http://")) NativeLink(url) { Text(app.t("customEmoji.manageService"), color = LocalLinkColor.current) }
         if (service == null && !failed) Text(app.t("home.loading"), Modifier.then(webControlModifier("status")))
-        if (failed) { Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert"))); Button(app.t("home.refresh")) { load() } }
+        if (failed) { Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert"))); Button(app.t("home.refresh")) { scope.launch { app.loadEmojiService() } } }
     }
 }
 

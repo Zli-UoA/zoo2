@@ -40,7 +40,7 @@ fun HomeScreen(
         }
     val scroll = rememberLazyListState()
     val composer = rememberHomeComposerState()
-    var enabled by remember { mutableStateOf(false) }
+    val enabled = app.activityPubAvailable == true
     var controlsError by remember { mutableStateOf(false) }
     var follows by remember { mutableStateOf<List<Row>>(emptyList()) }
     var search by remember { mutableStateOf(false) }
@@ -50,31 +50,15 @@ fun HomeScreen(
     var actionError by remember { mutableStateOf("") }
     var delete by remember { mutableStateOf<Row?>(null) }
     var deleteError by remember { mutableStateOf(false) }
-    suspend fun controls() = coroutineScope {
-        var failed = false
-        val status = async {
-            try {
-                (app.api.request("/api/activitypub/status") as Row).flag("enabled")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                failed = true
-                null
-            }
+    suspend fun controls() {
+        try {
+            follows = app.api.request("/api/activitypub/follows").rows()
+            controlsError = false
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            controlsError = true
         }
-        val relationships = async {
-            try {
-                app.api.request("/api/activitypub/follows").rows()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                failed = true
-                null
-            }
-        }
-        status.await()?.let { enabled = it }
-        relationships.await()?.let { follows = it }
-        controlsError = failed
     }
     fun mutate(post: Row, path: String, method: String, payload: Row) {
         if (pending) return
@@ -326,7 +310,7 @@ fun HomeScreen(
         }
     }
     if (search)
-        HomeUserSearch(app, enabled, follows, controlsError, { search = false }) { controls() }
+        HomeUserSearch(app, enabled, follows, controlsError || app.activityPubAvailable == null, { search = false }) { controls() }
 }
 
 @Composable

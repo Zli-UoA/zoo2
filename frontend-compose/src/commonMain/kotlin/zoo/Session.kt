@@ -7,6 +7,8 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
@@ -25,6 +27,43 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     val config
         get() = repo.config
+
+    var activityPubAvailable by mutableStateOf<Boolean?>(null)
+        private set
+
+    private suspend fun loadActivityPubAvailability() {
+        if (!env.online || activityPubAvailable != null) return
+        activityPubAvailable = try {
+            withTimeoutOrNull(3_000) {
+                (api.request("/api/activitypub/status") as Row).flag("enabled")
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private val slackLinkState = lazy { SlackLinkController(scope) { path, method, body -> api.request(path, method, body) } }
+    internal val slackLink by slackLinkState
+
+    var emojiService by mutableStateOf<Row?>(null)
+        private set
+    var emojiServiceFailed by mutableStateOf(false)
+        private set
+    private val emojiServiceMutex = Mutex()
+
+    suspend fun loadEmojiService() = emojiServiceMutex.withLock {
+        if (emojiService != null) return@withLock
+        emojiServiceFailed = false
+        try {
+            emojiService = api.request("/api/emoji-service").jsonObject
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emojiServiceFailed = true
+        }
+    }
 
     var standardShortcodes by mutableStateOf<Row?>(null)
         private set
@@ -314,14 +353,31 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         check(row.flag("encrypted")) { "e2ee.downgraded" }
     }
 
-    fun start() {
+    suspend fun start() {
         if (isPublicProfilePath(env.path)) return
+        scope.launch {
+            snapshotFlow { env.online && env.visible }.collect { ready ->
+                if (ready) {
+                    slackLink.ensureLoaded()
+                    loadEmojiService()
+                }
+            }
+        }
+        loadActivityPubAvailability()
         scope.launch {
             repo.channels.rows.collect { rows ->
                 try { encryptedChannels.remember(rows.filter { it.flag("encrypted") }.map { it.text("id") }) }
                 catch (failure: CancellationException) { throw failure }
                 catch (_: Exception) { toast = t("common.writeError") }
             }
+        }
+        if (activityPubAvailable == null) scope.launch {
+            snapshotFlow { env.online to env.visible }
+                .drop(1) // Startup already attempted the initial read.
+                .first { (online, visible) ->
+                    if (online && visible) loadActivityPubAvailability()
+                    activityPubAvailable != null
+                }
         }
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
@@ -540,6 +596,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     fun close() {
         if (homeLiveState.isInitialized()) homeLiveState.value.close()
+        if (slackLinkState.isInitialized()) slackLink.close()
         activityPubNotifications.close()
         toastController.close()
         if (preferenceState.isInitialized()) preferenceState.value.close()

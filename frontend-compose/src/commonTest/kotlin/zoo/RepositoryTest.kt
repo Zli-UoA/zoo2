@@ -76,6 +76,44 @@ class RepositoryTest {
     }
 
     @Test
+    fun startupReadsActivityPubAvailabilityOncePerSession() = runTest {
+        var requests = 0
+        for (expected in listOf(true, false)) {
+            val http = HttpClient(MockEngine) {
+                engine {
+                    dispatcher = StandardTestDispatcher(testScheduler)
+                    addHandler { request ->
+                        when (request.url.encodedPath) {
+                            "/api/activitypub/status" -> {
+                                requests++
+                                respond("""{"enabled":$expected}""")
+                            }
+                            else -> respond("{}", HttpStatusCode.NotFound)
+                        }
+                    }
+                }
+            }
+            val lifetime = CoroutineScope(backgroundScope.coroutineContext + SupervisorJob(backgroundScope.coroutineContext[Job]))
+            val repo = Repository(config, FakePlatform(), http, lifetime, synchronize = false)
+            val app = Session(repo, lifetime, Environment())
+            try {
+                assertNull(app.activityPubAvailable)
+                app.start()
+                assertEquals(expected, app.activityPubAvailable)
+                runCurrent()
+                app.update(app.env.copy(visible = false))
+                runCurrent()
+                app.update(app.env.copy(visible = true))
+                runCurrent()
+            } finally {
+                app.close()
+                lifetime.cancel()
+            }
+        }
+        assertEquals(2, requests)
+    }
+
+    @Test
     fun restResolvesAuthenticationForEachRequestAndDoesNotSendSecretsInTheUrl() = runTest {
         val platform = FakePlatform()
         val tokens = mutableListOf<String?>()
