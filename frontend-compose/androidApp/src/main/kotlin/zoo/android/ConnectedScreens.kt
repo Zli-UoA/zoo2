@@ -638,6 +638,21 @@ internal fun ConnectedScreens(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
+    val typingEnabled = env.visible && env.focused && canPost && (screen is AndroidScreen.Conversation ||
+        (screen is AndroidScreen.Thread && threadRoot != null && !threadDetail.present("thread_archive_at") &&
+            (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined")))
+    val typing = remember(session, channelId, currentThread, typingEnabled) {
+        if (typingEnabled && channelId != null) ChannelTyping(session, channelId, currentThread) else null
+    }
+    DisposableEffect(typing) { onDispose { typing?.close() } }
+    LaunchedEffect(typing) { typing?.poll() }
+    val typingLabel = typing?.label.orEmpty()
+    val visibleScreen = when {
+        typingLabel.isBlank() -> screen
+        screen is AndroidScreen.Conversation -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
+        screen is AndroidScreen.Thread -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
+        else -> screen
+    }
     val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
         focusMessage == null && positionForHistory?.hasUnread == true
     LaunchedEffect(messageTable, generation, positionForHistory, canLoadUnreadHistory) {
@@ -771,8 +786,10 @@ internal fun ConnectedScreens(
                     LocalMentionProfiles provides mentionProfiles,
                     LocalMentionUsernames provides mentionUsernames,
                 ) {
-                    AndroidScreens(screen, env.dark, env.visible && env.focused,
+                    AndroidScreens(visibleScreen, env.dark, env.visible && env.focused,
                         dispatch = { action ->
+                            if (action is AndroidUiAction.TextChanged) typing?.edit(action.text.isNotBlank())
+                            if (action == AndroidUiAction.UseInputTool(InputTool.Send)) typing?.edit(false)
                             when {
                                 action == AndroidUiAction.Back -> back()
                                 action == AndroidUiAction.MinimizeCall -> minimized = true
