@@ -355,7 +355,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         return bitmap
     }
 
-    fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+    internal var networkRevision by mutableIntStateOf(0)
+        private set
+
+    fun update(next: Environment, networkChanged: Boolean = false): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)
@@ -372,7 +375,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     "chat"
                 else "sidebar"
         }
-        if (next.online && (!old.online || (!old.visible && next.visible))) repo.refresh(reconnect = true)
+        if (next.online && (networkChanged || !old.online || (!old.visible && next.visible))) {
+            networkRevision++
+            repo.refresh(reconnect = true)
+        }
     }
 
     private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
@@ -455,7 +461,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 "chat"
             else "sidebar"
         scope.launch {
-            pollWhileVisible(snapshotFlow { env.online && env.visible }, interval = 10_000) {
+            pollWhileVisible(
+                snapshotFlow { env.online && env.visible },
+                interval = 10_000,
+                onTimeout = { channelReadPositionsChecked = true },
+            ) {
                 try {
                     channelReadMutex.withLock {
                         channelReadPositions = api.request("/api/channel-read-states").rows()

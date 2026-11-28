@@ -757,12 +757,12 @@ fn ChannelNotificationSettings() -> impl IntoView {
                     .is_some_and(|save| save.generation == generation)
             }) {
                 ctx.notification_pending.update(|pending| {
-                    if let Some(save) = pending.get_mut(&channel_id) {
-                        if save.generation == generation {
-                            save.in_flight = save.in_flight.saturating_sub(1);
-                            latest = save.request == request_id && save.level == next;
-                            finished = save.in_flight == 0;
-                        }
+                    if let Some(save) = pending.get_mut(&channel_id)
+                        && save.generation == generation
+                    {
+                        save.in_flight = save.in_flight.saturating_sub(1);
+                        latest = save.request == request_id && save.level == next;
+                        finished = save.in_flight == 0;
                     }
                 });
             }
@@ -782,10 +782,8 @@ fn ChannelNotificationSettings() -> impl IntoView {
                     saved.insert(channel_id.clone(), previous);
                 });
             }
-            if latest {
-                if let Err(err) = result {
-                    ctx.error.set(Some(err.message));
-                }
+            if latest && let Err(err) = result {
+                ctx.error.set(Some(err.message));
             }
             // 成功した値は Shape が届くまで保持し、届いたら App の SHAPE 処理が解除する。
         });

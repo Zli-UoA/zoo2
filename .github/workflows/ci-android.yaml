@@ -81,12 +81,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   test-selection:
-    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-android
   android:
-    if: github.event_name != 'pull_request'
     needs: test-selection
     runs-on: ubuntu-latest
     steps:

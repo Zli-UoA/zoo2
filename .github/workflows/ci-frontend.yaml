@@ -2,40 +2,12 @@ name: CI Frontend
 on:
   # merge-queue.yaml がマージキューで呼び出す。
   workflow_call:
+    inputs:
+      test-plan:
+        type: string
+        default: ""
   push:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - "!frontend/src/android-phone/engine.ts"
-      - "!frontend/src/media-preview-entry.tsx"
-      - "!frontend/media-preview.html"
-      - "!frontend/vite.media-preview.config.ts"
-      - "!frontend/vite.android-phone.config.ts"
-      - "!frontend/scripts/android-phone-smoke.mjs"
-      - "!frontend/scripts/media-preview-bundle.test.mjs"
-      - "!frontend/e2e/oidc.spec.ts"
-      - "!frontend/playwright.oidc.config.ts"
-      - "!frontend/e2e/e2ee.spec.ts"
-      - "!frontend/playwright.e2ee.config.ts"
-      # frontend が link: 依存で読む E2EE の wasm（@zoo/crypto-wasm）。
-      - "crates/zoo-crypto/**"
-      - "crates/zoo-crypto-wasm/**"
-      - "rust-toolchain.toml"
-      - "infra/Dockerfile-frontend-deploy*"
-      - "infra/frontend-nginx.conf"
-      - "infra/csp-hashes.mjs"
-      - "infra/frontend-entrypoint.sh"
-      - "infra/Dockerfile-proxy-deploy*"
-      - "infra/proxy/**"
-      - "infra/compose.stack*.yaml"
-      - ".github/scripts/*test-selection*.mjs"
-      - ".github/scripts/backend-e2e-selection.mjs"
-      - ".github/workflows/select-tests.yaml"
-      - ".github/scripts/crypto-wasm-cache.test.mjs"
-      - ".github/actions/crypto-wasm/**"
-      - ".github/workflows/ci-frontend.yaml"
-      - ".github/workflows/select-runner.yaml"
-  pull_request:
     paths:
       - "frontend/**"
       - "!frontend/src/android-phone/engine.ts"
@@ -78,6 +50,7 @@ concurrency:
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   test-selection:
+    if: inputs.test-plan == ''
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-frontend
@@ -90,7 +63,10 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   container:
-    if: fromJSON(needs.test-selection.outputs.frontend).container
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.container)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
@@ -321,7 +297,10 @@ jobs:
           docker compose --project-directory . -f infra/compose.stack.yaml down
 
   proxy:
-    if: fromJSON(needs.test-selection.outputs.frontend).proxy
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.proxy)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
@@ -355,7 +334,10 @@ jobs:
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）を 1 回だけ作り、check・unit-test・browser-test に渡す。
   crypto-wasm:
-    if: fromJSON(needs.test-selection.outputs.frontendBuild).wasm
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontendBuild.wasm)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30
@@ -376,7 +358,10 @@ jobs:
 
   # check と build は同じ Wasm を使い、互いの成功を待たずに実行する。
   check:
-    if: fromJSON(needs.test-selection.outputs.frontendBuild).check
+    if: >-
+      !cancelled() && needs.runner.result == 'success' && needs.crypto-wasm.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontendBuild.check)
     needs: [runner, crypto-wasm, test-selection]
     # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
     # including the runner processes. Use the shared large-job selector.
@@ -425,7 +410,10 @@ jobs:
         run: pnpm check:i18n
 
   build:
-    if: fromJSON(needs.test-selection.outputs.frontendBuild).build
+    if: >-
+      !cancelled() && needs.runner.result == 'success' && needs.crypto-wasm.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontendBuild.build)
     needs: [runner, crypto-wasm, test-selection]
     # Build concurrently with check, with enough memory for bundling.
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
@@ -463,7 +451,10 @@ jobs:
         run: pnpm build
 
   unit-test:
-    if: fromJSON(needs.test-selection.outputs.frontend).unit || fromJSON(needs.test-selection.outputs.frontend).pwa
+    if: >-
+      !cancelled() && needs.runner.result == 'success' && needs.crypto-wasm.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.unit || fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.pwa)
     needs: [runner, crypto-wasm, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
@@ -498,24 +489,26 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: unit test
-        if: fromJSON(needs.test-selection.outputs.frontend).unit
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.unit
         run: node ../.github/scripts/frontend-test-selection.mjs unit
 
       - name: PWA tests
-        if: fromJSON(needs.test-selection.outputs.frontend).pwa
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.pwa
         run: node ../.github/scripts/node-test-selection.mjs pwa
 
   browser-test:
     if: >-
-      fromJSON(needs.test-selection.outputs.frontend).browser ||
-      fromJSON(needs.test-selection.outputs.frontend).vrt ||
-      fromJSON(needs.test-selection.outputs.frontend).storybook ||
-      fromJSON(needs.test-selection.outputs.frontend).avatar ||
-      fromJSON(needs.test-selection.outputs.frontend).offline ||
-      fromJSON(needs.test-selection.outputs.frontend).i18n ||
-      fromJSON(needs.test-selection.outputs.frontend).layout ||
-      fromJSON(needs.test-selection.outputs.frontend)['frontend-selection'] ||
-      fromJSON(needs.test-selection.outputs.frontend).catalog
+      !cancelled() && needs.runner.result == 'success' && needs.crypto-wasm.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.browser ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.vrt ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.storybook ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.avatar ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.offline ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.i18n ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.layout ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['frontend-selection'] ||
+      fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.catalog)
     needs: [runner, crypto-wasm, test-selection]
     # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
@@ -561,25 +554,25 @@ jobs:
         run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} firefox chromium
 
       - name: Avatar cache Service Worker browser test
-        if: fromJSON(needs.test-selection.outputs.frontend)['avatar']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['avatar']
         run: node ../.github/scripts/node-test-selection.mjs avatar
 
       - name: SQLite CSP cold and warm cache tests
-        if: fromJSON(needs.test-selection.outputs.frontend)['offline']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['offline']
         run: |
           pnpm test:csp:offline
           node scripts/offline-csp.test.mjs --warm
 
       - name: Build app for selected i18n tests
-        if: fromJSON(needs.test-selection.outputs.frontend).i18n && !fromJSON(needs.test-selection.outputs.frontend).offline
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.i18n && !fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.offline
         run: pnpm build
 
       - name: i18n browser tests
-        if: fromJSON(needs.test-selection.outputs.frontend)['i18n']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['i18n']
         run: node ../.github/scripts/playwright-test-selection.mjs i18n
 
       - name: Retired Compose selection falls back to React
-        if: fromJSON(needs.test-selection.outputs.frontend)['frontend-selection']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['frontend-selection']
         working-directory: frontend
         run: node ../.github/scripts/playwright-test-selection.mjs frontend-selection
 
@@ -593,27 +586,27 @@ jobs:
           if-no-files-found: ignore
 
       - name: Message layout browser tests
-        if: fromJSON(needs.test-selection.outputs.frontend)['layout']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['layout']
         run: node ../.github/scripts/playwright-test-selection.mjs layout
 
       - name: browser test
-        if: fromJSON(needs.test-selection.outputs.frontend)['browser']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['browser']
         run: node ../.github/scripts/frontend-test-selection.mjs browser
 
       - name: vrt
-        if: fromJSON(needs.test-selection.outputs.frontend)['vrt']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['vrt']
         run: node ../.github/scripts/frontend-test-selection.mjs vrt
 
       - name: storybook test
-        if: fromJSON(needs.test-selection.outputs.frontend)['storybook']
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend['storybook']
         run: node ../.github/scripts/frontend-test-selection.mjs storybook
 
       - name: build storybook
-        if: fromJSON(needs.test-selection.outputs.frontend).catalog
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.catalog
         run: pnpm build-storybook
 
       - name: Upload Storybook static catalog
-        if: fromJSON(needs.test-selection.outputs.frontend).catalog
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').frontend.catalog
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: storybook-static

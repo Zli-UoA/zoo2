@@ -2,7 +2,7 @@ name: CI Frontend E2EE E2E
 # E2EE の通し確認（#363。frontend/e2e/e2ee.spec.ts）。
 # 1 回に数分かかるので、E2EE の経路（暗号、鍵の API、暗号化した DM の送受信と表示、ログインと再認証、
 # Shape、DB のスキーマ）と、テストの仕組みを変えたときだけ実行する。パスの一覧はこのファイルにだけ書き、
-# マージキュー（.github/scripts/merge-queue-changes.mjs）も同じ一覧を読む。
+# マージキューは push の対象パスを使う。辞書の文言変更は PR で検証する。
 on:
   # merge-queue.yaml がマージキューで呼び出す。
   workflow_call:
@@ -62,6 +62,7 @@ on:
       - ".github/workflows/select-runner.yaml"
   pull_request:
     paths:
+      - "frontend/src/lib/i18n/locales/**"
       - "frontend/src/lib/e2ee/**"
       - "frontend/src/components/e2ee/**"
       - "frontend/src/hooks/useMessageDecryptions.ts"
@@ -122,20 +123,18 @@ concurrency:
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   test-selection:
-    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-frontend-e2ee-e2e
 
   runner:
-    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）。アプリが lib/e2ee を読むので、dev サーバーの起動に要る（#359）。
   crypto-wasm:
-    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.frontend).e2ee
+    if: fromJSON(needs.test-selection.outputs.frontend).e2ee
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30

@@ -175,3 +175,59 @@ test('first', () => {
     assert.equal(selectSourceCases('vrt', related, [{ status: 'M', path }], base, options).patterns, undefined);
   }
 });
+
+test('independent Playwright spec and fixture edits keep case-level selection', () => {
+  const git = (command, args) => args.includes('--name-status')
+    ? 'M\0frontend/e2e/layout.spec.ts\0M\0frontend/e2e/frontend-api.mjs\0M\0frontend/e2e/i18n.spec.ts\0'
+    : gitFor('frontend/e2e/layout.spec.ts')(command, args);
+  const code = runPlaywright({
+    suite: 'layout', eventName: 'pull_request', event, compiler, git, log() {},
+    run(command, args) {
+      assert.ok(args.includes('e2e/layout.spec.ts:3'));
+      return { status: 0 };
+    },
+  });
+  assert.equal(code, 0);
+});
+
+test('unit test cases can be selected from a pure app module edit', () => {
+  const path = 'frontend/src/First.ts';
+  const spec = 'frontend/src/example.test.ts';
+  const sources = {
+    [path]: 'export function first() { return 1; }',
+    'frontend/src/Second.ts': 'export function second() { return 2; }',
+    'frontend/src/fallback.test.ts': `import { first } from './First'; it.each([1])('shared %s', () => first());`,
+    [spec]: `import {first} from './First';
+import {second} from './Second';
+test('first case', () => first());
+test('second case', () => second());`,
+  };
+  const result = selectSourceCases('unit', { mode: 'related', files: ['src/First.ts'] }, [{ path, status: 'M' }], base, {
+    compiler, files: [spec, 'frontend/src/fallback.test.ts'], git: () => 'export function first() { return 0; }',
+    read: path => sources[path], exists: path => Object.hasOwn(sources, path),
+  });
+  assert.deepEqual(result.patterns, ['(?:^| )first case$']);
+  assert.deepEqual(result.fullFiles, ['src/fallback.test.ts']);
+  assert.ok(testArguments('unit', result).includes('--exclude'));
+});
+
+test('case dependencies trace nested destructured aliases back to imports', () => {
+  const source = `
+    import { first } from './First';
+    import { second } from './Second';
+    const { run: [fn] } = { run: [first] };
+    const { other: { execute } } = { other: { execute: second } };
+    test('affected', () => expect(fn()).toBe(1));
+    test('independent', () => expect(execute()).toBe(2));
+  `;
+  assert.deepEqual(caseDependencies(source, compiler)?.map(testCase => testCase.modules), [['./First'], ['./Second']]);
+});
+
+test('case dependencies include literal dynamic imports and retain computed imports in full', () => {
+  const source = `
+    test('affected', async () => (await import('./First')).first());
+    test('independent', async () => (await import('./Second')).second());
+  `;
+  assert.deepEqual(caseDependencies(source, compiler)?.map(testCase => testCase.modules), [['./First'], ['./Second']]);
+  assert.equal(caseDependencies(source.replace("'./First'", "name"), compiler), null);
+});
