@@ -632,6 +632,20 @@ mod tests {
     }
 
     #[test]
+    fn many_labels_sharing_one_link_candidate_are_scanned_once() {
+        // 多くの `[` が、同じ `]` と成り立たない行き先に続く。`[` ごとに同じ範囲を調べると、
+        // 時間内に終わらない。
+        let labels = "[".repeat(400_000);
+        let started = std::time::Instant::now();
+        // リンクの抽出も要約も、この解析を使う。
+        for rest in ["](https://a", "](https://a b)", "](https://a[](b)"] {
+            crate::mfm::parse(&format!("{labels}{rest}"), None);
+        }
+        // 2 乗の時間がかかると、これを超える。
+        assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    }
+
+    #[test]
     fn markdown_links_keep_their_rules() {
         let urls = |content: &str| urls(content, true);
         assert_eq!(urls("[a]b](https://x.test/1)"), ["https://x.test/1"]);

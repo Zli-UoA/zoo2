@@ -794,13 +794,15 @@ pub(crate) fn leading_url(text: &str) -> Option<&str> {
     (url.len() > scheme).then_some(url)
 }
 
-/// `[label](url)` と `?[label](url)`。`show_url` なら、ラベルの後に URL を添える。
+/// `[label](url)` と `?[label](url)`。`show_url` なら、ラベルの後に URL を添える。`scan` の本文は
+/// 1 行の中。成り立たない候補では、ラベルの中を調べ直さない（`[` が並ぶ本文で 2 乗の時間にならない
+/// ように）。
 fn link(scan: &mut Scan, i: usize, base: Style, show_url: bool) -> Option<(usize, Vec<Span>)> {
     let offset = usize::from(scan.text[i..].starts_with('?'));
     let label = scan.between(i + offset, "[", "]")?;
     let text = scan.text;
     let after = text[i + offset + label.len() + 2..].strip_prefix('(')?;
-    if !(after.starts_with("https://") || after.starts_with("http://")) || label.contains('\n') {
+    if !(after.starts_with("https://") || after.starts_with("http://")) {
         return None;
     }
     let start = text.len() - after.len();
