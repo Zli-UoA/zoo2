@@ -19,6 +19,9 @@ final class MessageTargetHighlightUITests: XCTestCase {
         XCTAssertTrue(source.waitForExistence(timeout: 5))
         app.staticTexts["投稿へ移動"].coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5)).withOffset(CGVector(dx: 20, dy: 0)).tap()
         let target = app.staticTexts["message-content-77777777-7777-4777-8777-777777777777"]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        // 遷移待ちで短い発光を見逃さないよう、返信の表示後にリンクを押し直して測定する。
+        app.staticTexts["投稿へ移動"].coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5)).withOffset(CGVector(dx: 20, dy: 0)).tap()
         try assertGlowFades(target: target, app: app)
     }
 
