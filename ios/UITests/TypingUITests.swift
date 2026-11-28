@@ -60,8 +60,10 @@ final class TypingUITests: XCTestCase {
         app.activate()
         XCTAssertTrue(indicator.waitForExistence(timeout: 5))
         XCTAssertEqual(indicator.label, "さくらが入力中…")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["channel-55555555-5555-4555-8555-555555555555"].tap()
+        if !app.buttons["ipad-tab-channels"].exists { app.navigationBars.buttons.element(boundBy: 0).tap() }
+        let development = app.buttons["channel-55555555-5555-4555-8555-555555555555"]
+        XCTAssertTrue(development.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        development.tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "message-input").firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["channel-details"].wait(for: \.label, toEqual: "開発の詳細", timeout: 5))
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "が入力中")).firstMatch.exists,
