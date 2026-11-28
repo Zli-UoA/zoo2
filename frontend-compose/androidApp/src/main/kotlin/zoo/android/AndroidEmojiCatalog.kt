@@ -44,7 +44,8 @@ internal class AndroidEmojiCatalog(
                 val row = metadata[glyph.withoutVariationSelector()]
                 val choice = EmojiChoice(
                     glyph, glyph, names.first().replace('_', ' '),
-                    keywords = (names + listOfNotNull(row?.text("label")) +
+                    localizedName = row?.text("label").orEmpty(),
+                    keywords = (names +
                         row?.array("tags").orEmpty().map { it.jsonPrimitive.content }).joinToString(" "),
                     category = groups[row?.text("group")] ?: uncategorized,
                 )
