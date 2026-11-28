@@ -95,6 +95,7 @@ import androidx.compose.ui.graphics.withSaveLayer
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -102,6 +103,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 
 internal enum class EntryOperation { Edit, Delete, React, Repost, QuoteRenote, Attachment, Link, Media, Quote }
 
@@ -177,6 +179,7 @@ internal sealed interface AndroidScreen {
         /** 古いページが残っていて、いま取れる。 */
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
+        val loadingDetail: String? = null,
         val retrySync: (() -> Unit)? = null,
         val unreadPositionPending: Boolean = false,
         val unreadHistoryIncomplete: Boolean = false,
@@ -193,6 +196,7 @@ internal sealed interface AndroidScreen {
     ) : AndroidScreen
     data class OpeningConversation(
         val key: String, val title: String, val online: Boolean, val failed: Boolean = false,
+        val loadingDetail: String? = null,
         val retry: (() -> Unit)? = null,
     ) : AndroidScreen
     data class PostLoading(val online: Boolean, val failed: Boolean) : AndroidScreen
@@ -462,6 +466,7 @@ private fun RenderAndroidScreen(
                     }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                         unreadPositionPending = screen.unreadPositionPending,
+                        loadingDetail = screen.loadingDetail,
                         onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
                         headerMeasured = headerHeight > 0.dp,
@@ -482,7 +487,7 @@ private fun RenderAndroidScreen(
             is AndroidScreen.OpeningConversation -> {
                 PageHeader(screen.title, colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    LoadingStatus(screen.online, screen.failed, colors, screen.retry)
+                    LoadingStatus(screen.online, screen.failed, colors, screen.retry, screen.loadingDetail)
                 }
             }
             is AndroidScreen.PostLoading -> {
@@ -603,11 +608,35 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
 }
 
 @Composable
-private fun LoadingStatus(online: Boolean, failed: Boolean, colors: AndroidColors, retry: (() -> Unit)?) {
+private fun LoadingStatus(online: Boolean, failed: Boolean, colors: AndroidColors, retry: (() -> Unit)?, detail: String? = null) {
     when {
         !online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
         failed -> retry?.let { TextAction(androidLabel("offline.retry", "再試行"), colors, click = it) }
-        else -> CircularProgressIndicator(color = colors.accent)
+        else -> ChannelLoadingIndicator(colors, detail)
+    }
+}
+
+@Composable
+private fun ChannelLoadingIndicator(colors: AndroidColors, detail: String?) {
+    val hasDetail = detail != null
+    var showDetail by remember(hasDetail) { mutableStateOf(false) }
+    LaunchedEffect(hasDetail) {
+        if (hasDetail) {
+            delay(5_000)
+            showDetail = true
+        }
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        CircularProgressIndicator(color = colors.accent)
+        if (showDetail && detail != null) {
+            Text(
+                detail,
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+                color = colors.secondary,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
@@ -711,6 +740,7 @@ internal fun ColumnScope.TimelineWithInput(
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
     unreadPositionPending: Boolean = false,
+    loadingDetail: String? = null,
     onUnreadPositioned: (() -> Unit)? = null,
     onReadThrough: ((String?) -> Unit)? = null,
     reducedMotion: Boolean = false,
@@ -939,7 +969,7 @@ internal fun ColumnScope.TimelineWithInput(
             if (maxHeight > 0.dp && waitingForPosition) {
                 if (!input.expanded) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = colors.accent)
+                        ChannelLoadingIndicator(colors, loadingDetail)
                     }
                 }
             } else if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {

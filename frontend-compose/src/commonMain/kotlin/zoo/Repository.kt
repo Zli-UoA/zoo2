@@ -247,6 +247,8 @@ class SyncedTable(
             .stateIn(tableScope, SharingStarted.Eagerly, initialRows)
     val loading = MutableStateFlow(true)
     val error = MutableStateFlow<Throwable?>(null)
+    private val initialSyncCompleted = MutableStateFlow(false)
+    val initialSyncReady: StateFlow<Boolean> = initialSyncCompleted.asStateFlow()
     val persistenceError = MutableStateFlow(false)
     private val seenTxids = MutableStateFlow<Set<String>>(emptySet())
     /** 取得した subset snapshot の可視範囲。snapshot に含まれて捨てられた変更の txid を、確認済みとして扱う。 */
@@ -408,6 +410,7 @@ class SyncedTable(
     }
 
     private fun startSync(readCache: Boolean): Job {
+        initialSyncCompleted.value = false
         streamReady = CompletableDeferred()
         val ready = streamReady
         accepting.value = false
@@ -658,6 +661,7 @@ class SyncedTable(
             }
             try {
                 materialized.awaitRows()
+                initialSyncCompleted.value = true
                 if (onDemand) {
                     // changes_only の最初の up-to-date は空。行は subset snapshot が届くまで反映しない。
                     ready.complete(source)

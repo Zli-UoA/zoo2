@@ -104,6 +104,8 @@ internal fun ConnectedScreens(
         }
     }
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
+    val initialMessageSyncReady = messageTable?.initialSyncReady?.collectAsState()?.value == true
+    val messageSyncFailed = messageTable?.error?.collectAsState()?.value != null
     LaunchedEffect(messageTable) {
         messageTable?.replicatedRows?.collect(state::reconcileOutgoing)
     }
@@ -277,6 +279,14 @@ internal fun ConnectedScreens(
             !session.channelReadPositionsChecked else !mainPageReady)
     val unreadPositionPending = !unreadPositioned && (awaitingInitialRead ||
         (env.online && currentThread == null && focusMessage == null && needsUnreadHistory))
+    val loadingDetail = when {
+        messageSyncFailed -> session.t("threads.loadingDetails.syncError")
+        !initialMessageSyncReady -> session.t("threads.loadingDetails.sync")
+        !mainPageReady -> session.t("threads.loadingDetails.messages")
+        awaitingInitialRead -> session.t("threads.loadingDetails.readPosition")
+        needsUnreadHistory -> session.t("threads.loadingDetails.unread")
+        else -> session.t("threads.loadingDetails.position")
+    }
     val unreadId = firstUnreadInWindow.takeUnless {
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
@@ -630,6 +640,7 @@ internal fun ConnectedScreens(
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || mainPageReady,
+            loadingDetail = loadingDetail,
             unreadPositionPending = unreadPositionPending,
             unreadHistoryIncomplete = unreadHistoryIncomplete,
             onUnreadPositioned = onUnreadPositioned.takeIf { env.online && currentReadPosition != null && !unreadPositioned },
@@ -638,7 +649,8 @@ internal fun ConnectedScreens(
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
-            "channel:$channelId", session.t("common.loading"), env.online)
+            "channel:$channelId", session.t("common.loading"), env.online,
+            loadingDetail = session.t("threads.loadingDetails.channel"))
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val typingEnabled = env.visible && env.focused && canPost && (screen is AndroidScreen.Conversation ||
