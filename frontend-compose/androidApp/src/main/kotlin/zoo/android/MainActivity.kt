@@ -108,6 +108,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var saveResult: CompletableDeferred<Uri?>? = null
+    private val savePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        saveResult?.complete(it.data?.data.takeIf { _ -> it.resultCode == RESULT_OK })
+        saveResult = null
+    }
+    private suspend fun saveFile(bytes: ByteArray, name: String, type: String) {
+        check(saveResult == null)
+        val answer = CompletableDeferred<Uri?>()
+        saveResult = answer
+        val destination = try {
+            savePicker.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(type.ifBlank { "application/octet-stream" }).putExtra(Intent.EXTRA_TITLE, name))
+            answer.await()
+        } finally { if (saveResult === answer) saveResult = null }
+        if (destination != null) withContext(Dispatchers.IO) {
+            checkNotNull(contentResolver.openOutputStream(destination, "wt")).use { it.write(bytes) }
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -458,7 +477,7 @@ class MainActivity : ComponentActivity() {
             stage(LoginStage.Session)
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
-                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys,
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys, ::saveFile,
             )
             platform.systemDark(dark)
             platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))

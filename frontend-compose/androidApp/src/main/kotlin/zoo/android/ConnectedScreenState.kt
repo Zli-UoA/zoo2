@@ -119,7 +119,7 @@ internal class ConnectedScreenState(
      * 暗号化した添付を取得して復号し、端末の共有で開く（ハッシュが合わなければ開かない）。平文の添付ならサーバーが
      * 拒否する種類は、取得も保存もしない（Web の `receivedAttachmentView`）。
      */
-    private fun openEncryptedAttachment(raw: String) {
+    private fun openEncryptedAttachment(raw: String, share: Boolean) {
         val encryption = platform.messageEncryption ?: return
         val info = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return
         val view = receivedAttachment(info)
@@ -138,7 +138,8 @@ internal class ConnectedScreenState(
                 return@launch
             }
             try {
-                platform.shareFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
+                if (share) platform.shareFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
+                else platform.saveFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { app.toast = app.t("attachments.downloadError") }
         }
@@ -384,6 +385,7 @@ internal class ConnectedScreenState(
             canReact = writable || isPost,
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
+            attachmentSizes = fileRows.associate { it.text("id") to it.text("file_size") },
             richContent = richContent, postLinks = links.posts, channelLinks = links.channels.map { it.first },
             needsWorkspaceEmoji = allowPreview && !data.present("ciphertext") && (
                 ((!isPost || !data.flag("remote")) && (
@@ -460,13 +462,7 @@ internal class ConnectedScreenState(
                     obj("post_id" to action.item.id))
                 refreshPost()
             }
-            EntryOperation.Attachment -> {
-                val info = action.item.encryptedFiles[action.value]
-                if (info != null) openEncryptedAttachment(info)
-                else action.item.attachments.firstOrNull { it.first == action.value }?.let {
-                    app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
-                }
-            }
+            EntryOperation.Attachment -> attachmentAction = action
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
             EntryOperation.Media -> if (!encrypted) {
                 val media = if (action.quotedMedia) action.item.quote?.media.orEmpty() else action.item.media
@@ -479,6 +475,20 @@ internal class ConnectedScreenState(
                 if (postId != null) openPost(postId)
                 else if (quote.canOpen) platform.action("open:${quote.uri}")
             }
+        }
+    }
+
+    var attachmentAction by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
+
+    fun exportAttachment(share: Boolean) {
+        val action = attachmentAction ?: return
+        attachmentAction = null
+        action.item.encryptedFiles[action.value]?.let { openEncryptedAttachment(it, share); return }
+        val name = action.item.attachments.firstOrNull { it.first == action.value }?.second ?: return
+        request {
+            val bytes = app.api.getBytes(app.attachmentLinks.get(action.value))
+            val type = attachmentType(name, "") ?: "application/octet-stream"
+            if (share) platform.shareFile(bytes, name, type) else platform.saveFile(bytes, name, type)
         }
     }
 

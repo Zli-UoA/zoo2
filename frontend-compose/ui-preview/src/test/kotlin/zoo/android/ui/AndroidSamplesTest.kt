@@ -1076,6 +1076,17 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun captureAttachmentExport() {
+        var share: Boolean? = null
+        ui.setContent { AttachmentExportDialog("展示の案内.pdf", "1.5 MB", {}, { share = it }) }
+        capture("attachment-save-share", withSheet = true)
+        ui.onNodeWithText("共有").performClick()
+        ui.runOnIdle { assertEquals(true, share) }
+        ui.onNodeWithText("保存").performClick()
+        ui.runOnIdle { assertEquals(false, share) }
+    }
+
+    @Test
     fun captureSettingsNavigationAndReducedMotion() {
         val settings = AndroidScreen.Settings(listOf(SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", "ライト")))))
         val detail = AndroidScreen.SettingsDetail("テーマ", listOf(SettingsGroup("", listOf(

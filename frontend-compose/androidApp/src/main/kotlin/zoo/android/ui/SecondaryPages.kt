@@ -317,3 +317,11 @@ private fun FederationButton(enabled: Boolean, colors: AndroidColors, onToggle: 
         }
     }
 }
+
+@Composable
+internal fun AttachmentExportDialog(name: String, size: String?, cancel: () -> Unit, export: (Boolean) -> Unit) {
+    androidx.compose.material3.AlertDialog(onDismissRequest = cancel, title = { Text(name) },
+        text = { if (size != null) Text(size) },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { export(false) }) { Text("保存") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { export(true) }) { Text("共有") } })
+}

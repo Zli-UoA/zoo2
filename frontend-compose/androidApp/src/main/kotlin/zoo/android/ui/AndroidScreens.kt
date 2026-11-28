@@ -93,6 +93,7 @@ internal data class TimelineItem(
     val reposted: Boolean = false, val reactions: List<TimelineReaction> = emptyList(),
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
     val entryKey: String = id,
+    val attachmentSizes: Map<String, String> = emptyMap(),
     val media: List<TimelineMedia> = emptyList(),
     val quote: TimelineQuote? = null, val repostedBy: String? = null,
     val postHeader: PostHeaderData? = null,

@@ -38,6 +38,7 @@ internal class AndroidPlatform(
      * 端末の削除」）。`count` が負なら数えられなかった。ログアウトしてよければ真を返す。
      */
     private val confirmUnbackedKeys: suspend (count: Int) -> Boolean,
+    val saveFile: suspend (ByteArray, String, String) -> Unit,
 ) : Platform {
     /** E2EE の端末（#359）。ログインしたあとに設定する。 */
     override var messageEncryption: zoo.MessageEncryption? = null

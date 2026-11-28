@@ -913,6 +913,11 @@ internal fun ConnectedScreens(
             dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.confirmingEntry = null } },
         )
     }
+    state.attachmentAction?.let { action ->
+        val file = action.item.attachments.firstOrNull { it.first == action.value }
+        val size = action.item.attachmentSizes[action.value]?.takeIf { it.toLongOrNull() != null }?.let(::attachmentSize)
+        AttachmentExportDialog(file?.second ?: "添付ファイル", size, { state.attachmentAction = null }, state::exportAttachment)
+    }
     state.memberToRemove?.let { user ->
         AlertDialog(
             onDismissRequest = { state.memberToRemove = null },
